@@ -17,6 +17,9 @@
 #define generic_hpp__99FE2034_248F_4C7D_8CD2_EB2BB8247377
 #pragma once
 //------------------------------------------------------------------------------
+#include <boost/container/small_vector.hpp>
+#include <boost/container/static_vector.hpp>
+
 #include <cstdint>
 #include <thread>
 //------------------------------------------------------------------------------
@@ -31,13 +34,13 @@ namespace sweater
 #	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0;
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 
-inline auto hardware_concurency() noexcept { return std::thread::hardware_concurrency(); }
+inline auto hardware_concurency() noexcept { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }
 
 struct impl
 {
 	impl()
 	{
-		auto const actual_threads( std::min( std::uint8_t(max_threads), static_cast<std::uint8_t>( std::thread::hardware_concurrency() ) ) );
+		auto const actual_threads( hardware_concurency() );
 		std::unique_lock<std::mutex> const my_lock( mutex_ );
 		for ( std::uint8_t t( 0U ); t < actual_threads - 1; ++t )
 		{
@@ -83,31 +86,77 @@ struct impl
 	void spread_the_sweat( std::uint16_t const iterations, F & __restrict work ) noexcept
 	{
 		static_assert( noexcept( noexcept( work( iterations, iterations ) ) ), "F must be noexcept" );
-		auto const iterations_per_worker( iterations / number_of_workers() + 1 );
-		auto iteration( 0U );
-		for ( auto & worker : pool_ )
-		{
-			auto & delegate( worker.first );
-			delegate.start_iteration = iteration;
-			delegate.end_iteration   = iteration + iterations_per_worker;
-			delegate.object          = &work;
-			delegate.function        = []( std::uint16_t const start_iteration, std::uint16_t const end_iteration, void * const pFunctor ) noexcept { auto & __restrict f( *static_cast<F *>( pFunctor ) ); f( start_iteration, end_iteration ); };
-			iteration = delegate.end_iteration;
-		}
-		BOOST_ASSERT( pool_.back().first.end_iteration < iterations );
+		auto const invoker
+		(
+			[]( std::uint16_t const start_iteration, std::uint16_t const end_iteration, void * const p_functor ) noexcept
+			{
+				auto & __restrict f( *static_cast<F *>( p_functor ) );
+				f( start_iteration, end_iteration );
+			}
+		);
+
+		auto const number_of_workers           ( this->number_of_workers() );
+		auto const iterations_per_worker       ( iterations / number_of_workers );
+		auto const threads_with_extra_iteration( iterations % number_of_workers );
+
+		std::uint16_t iteration( 0 );
+		iteration = spread_iterations
+		(
+			0, threads_with_extra_iteration,
+			iteration, iterations_per_worker + 1,
+			&work, invoker
+		);
+		iteration = spread_iterations
+		(
+			threads_with_extra_iteration, pool_.size(),
+			iteration, iterations_per_worker,
+			&work, invoker
+		);
 		event_.notify_all();
 
-		work( pool_.back().first.end_iteration, iterations );
+		auto const caller_thread_start_iteration( iteration );
+		BOOST_ASSERT( caller_thread_start_iteration <= iterations );
+		work( caller_thread_start_iteration, iterations );
 
+		join();
+	}
+
+	template <typename F>
+	void fire_and_forget( F && work )
+	{
+		std::thread( std::forward<F>( work ) ).detach();
+	}
+
+private:
+	void join() noexcept
+	{
 		std::unique_lock<std::mutex> my_lock( mutex_ );
 		while ( boost::count_if( pool_, []( auto const & worker ) { return worker.first; } ) )
 			event_.wait( my_lock );
 	}
 
-	template <typename F>
-	void fire_and_forget( F && work ) noexcept
+	BOOST_NOINLINE
+	std::uint16_t spread_iterations
+	(
+		std::uint8_t const begin_thread,
+		std::uint8_t const end_thread,
+		std::uint16_t const begin_iteration,
+		std::uint16_t const iterations_per_worker,
+		void * const p_worker,
+		void (*p_function)( std::uint16_t, std::uint16_t, void * )
+	) noexcept
 	{
-		std::thread( std::forward<F>( work ) ).detach();
+		auto iteration( begin_iteration );
+		for ( auto thread_index( begin_thread ); thread_index < end_thread; ++thread_index )
+		{
+			auto & delegate( pool_[ thread_index ].first );
+			delegate.start_iteration = iteration;
+			delegate.end_iteration   = iteration + iterations_per_worker;
+			delegate.object          = p_worker;
+			delegate.function        = p_function;
+			iteration = delegate.end_iteration;
+		}
+		return iteration;
 	}
 
 private:
@@ -130,15 +179,28 @@ private:
 		explicit operator bool() const { return object; }
 	}; // struct LightWeightDelegate
 
-	ShortVector
+#if BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+	using pool_threads_t = container::static_vector
 	<
 		std::pair
 		<
 			LightWeightDelegate,
 			std::thread
 		>,
-		max_threads - 1 // also sweat on the calling thread
-	> pool_;
+		BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1 // also sweat on the calling thread
+	>;
+#else
+	using pool_threads_t = container::small_vector
+	<
+		std::pair
+		<
+			LightWeightDelegate,
+			std::thread
+		>,
+		4 - 1 // also sweat on the calling thread
+	>;
+#endif
+	pool_threads_t pool_;
 };
 
 //------------------------------------------------------------------------------
