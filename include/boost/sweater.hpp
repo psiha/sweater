@@ -36,7 +36,7 @@ namespace sweater
 {
 //------------------------------------------------------------------------------
 
-class shop
+class shop : public impl
 {
 public:
 }; // class shop
