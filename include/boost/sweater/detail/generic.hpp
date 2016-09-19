@@ -88,14 +88,14 @@ struct impl
 
     /// For GCD dispatch_apply/OMP-like parallel loops
 	template <typename F>
-	void spread_the_sweat( std::uint16_t const iterations, F & __restrict work ) noexcept
+	void spread_the_sweat( std::uint16_t const iterations, F && __restrict work ) noexcept
 	{
 		static_assert( noexcept( noexcept( work( iterations, iterations ) ) ), "F must be noexcept" );
 		auto const invoker
 		(
 			[]( std::uint16_t const start_iteration, std::uint16_t const end_iteration, void * const p_functor ) noexcept
 			{
-				auto & __restrict f( *static_cast<F *>( p_functor ) );
+				auto & __restrict f( *static_cast<typename std::remove_reference<F>::type *>( p_functor ) );
 				f( start_iteration, end_iteration );
 			}
 		);
@@ -155,6 +155,9 @@ private:
 		std::uint16_t const iterations_per_worker,
 		void * const p_worker,
 		void (*p_function)( std::uint16_t, std::uint16_t, void * )
+    #if !BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1900 ) )
+        noexcept
+    #endif // broken lambda -> noexcept function pointer conversion
 	) noexcept
 	{
 		auto iteration( begin_iteration );
