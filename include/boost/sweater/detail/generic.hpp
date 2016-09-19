@@ -34,7 +34,7 @@ namespace sweater
 //------------------------------------------------------------------------------
 
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0;
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 
 inline auto hardware_concurency() noexcept { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }

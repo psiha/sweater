@@ -17,9 +17,9 @@
 //------------------------------------------------------------------------------
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 #if defined(__WINDOWS_PHONE__)
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 2;
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 2
 #else
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0;
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0
 #endif
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 

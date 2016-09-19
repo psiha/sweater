@@ -16,7 +16,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 8; // SGS6 has 8 cores
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 8 // SGS6 has 8 cores
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 #include "generic.hpp"
 //------------------------------------------------------------------------------
