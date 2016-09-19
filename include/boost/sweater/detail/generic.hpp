@@ -22,6 +22,7 @@
 #include <boost/range/algorithm/count_if.hpp>
 
 #include <cstdint>
+#include <future>
 #include <mutex>
 #include <thread>
 //------------------------------------------------------------------------------
@@ -126,10 +127,16 @@ struct impl
 	}
 
 	template <typename F>
-	void fire_and_forget( F && work )
+	static void fire_and_forget( F && work )
 	{
 		std::thread( std::forward<F>( work ) ).detach();
 	}
+
+    template <typename F>
+    static auto dispatch( F && work )
+    {
+        return std::async( std::launch::async | std::launch::deferred, std::forward<F>( work ) );
+    }
 
 private:
 	void join() noexcept

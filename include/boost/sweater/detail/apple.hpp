@@ -16,7 +16,9 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include <cstdint>
+#include <future>
 #include <thread>
+#include <type_traits>
 
 #include <dispatch/dispatch.h>
 //------------------------------------------------------------------------------
@@ -41,10 +43,10 @@ struct impl
 	static auto number_of_workers() { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }
 
 	template <typename F>
-	void spread_the_sweat( std::uint16_t const iterations, F & work ) noexcept
+	static void spread_the_sweat( std::uint16_t const iterations, F & work ) noexcept
 	{
 		static_assert( noexcept( noexcept( work( iterations, iterations ) ) ), "F must be noexcept" );
-		auto const number_of_workers( this->number_of_workers() );
+		auto const number_of_workers( impl::number_of_workers() );
 		auto const iterations_per_worker( iterations / number_of_workers );
 		auto const leftover_iterations( iterations - iterations_per_worker * number_of_workers );
 
@@ -65,10 +67,32 @@ struct impl
 	}
 
 	template <typename F>
-	void fire_and_forget( F & work ) noexcept
+	static void fire_and_forget( F && work ) noexcept
 	{
-
+        /// \note "ObjC++ attempts to copy lambdas, preventing capture of
+        /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
+        ///                                   (14.01.2016.) (Domagoj Saric)
+        __block auto moveable_work( std::forward<F>( work ) );
+        dispatch_async
+		(
+            dispatch_get_global_queue( QOS_CLASS_DEFAULT, 0 ),
+			^() { moveable_work(); }
+		);
 	}
+
+    template <typename F>
+    static auto dispatch( F && work )
+    {
+        using result_t = typename std::result_of<F()>::type;
+        std::promise<result_t> promise;
+        std::future<result_t> future( promise.get_future() );
+        fire_and_forget
+        (
+            [promise = std::move( promise ), work = std::forward<F>( work )]
+            () mutable { promise.set_value( work() ); }
+        );
+        return future;
+    }
 }; // struct impl
 
 //------------------------------------------------------------------------------

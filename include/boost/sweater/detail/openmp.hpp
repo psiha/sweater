@@ -20,6 +20,8 @@
 #include <omp.h>
 
 #include <cstdint>
+#include <future>
+#include <thread>
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -54,6 +56,19 @@ struct impl
 			}
 		}
 	}
+
+    template <typename F>
+    static void fire_and_forget( F && work )
+    {
+        std::thread( std::forward<F>( work ) ).detach();
+    }
+
+    template <typename F>
+    static auto dispatch( F && work )
+    {
+        return std::async( std::launch::async | std::launch::deferred, std::forward<F>( work ) );
+    }
+
 }; // struct impl
 
 //------------------------------------------------------------------------------
