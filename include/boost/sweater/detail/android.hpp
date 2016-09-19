@@ -15,7 +15,10 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#include <cstdint>
+#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 8; // SGS6 has 8 cores
+#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#include "generic.hpp"
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -23,10 +26,6 @@ namespace boost
 namespace sweater
 {
 //------------------------------------------------------------------------------
-
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 8; // SGS6 has 8 cores
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 
 //------------------------------------------------------------------------------
 } // namespace sweater
