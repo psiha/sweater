@@ -19,8 +19,10 @@
 //------------------------------------------------------------------------------
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
+#include <boost/range/algorithm/count_if.hpp>
 
 #include <cstdint>
+#include <mutex>
 #include <thread>
 //------------------------------------------------------------------------------
 namespace boost
@@ -63,6 +65,7 @@ struct impl
 						if ( BOOST_UNLIKELY( brexit_ ) )
 							return;
 						my_work.function( my_work.start_iteration, my_work.end_iteration, my_work.object );
+                        std::unique_lock<std::mutex> my_lock( mutex_ );
 						my_work.clear();
 						event_.notify_all();
 					}
@@ -82,6 +85,7 @@ struct impl
 
 	auto number_of_workers() const { return static_cast<std::uint16_t>( pool_.size() + 1 ); }
 
+    /// For GCD dispatch_apply/OMP-like parallel loops
 	template <typename F>
 	void spread_the_sweat( std::uint16_t const iterations, F & __restrict work ) noexcept
 	{
