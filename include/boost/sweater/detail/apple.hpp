@@ -40,29 +40,45 @@ namespace sweater
 struct impl
 {
 	// http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
-	static auto number_of_workers() { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }
+	static auto number_of_workers() noexcept { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }
 
 	template <typename F>
-	static void spread_the_sweat( std::uint16_t const iterations, F & work ) noexcept
+	static void spread_the_sweat( std::uint16_t const iterations, F && work ) noexcept
 	{
 		static_assert( noexcept( noexcept( work( iterations, iterations ) ) ), "F must be noexcept" );
-		auto const number_of_workers( impl::number_of_workers() );
-		auto const iterations_per_worker( iterations / number_of_workers );
-		auto const leftover_iterations( iterations - iterations_per_worker * number_of_workers );
 
-		dispatch_apply
+        /// \note Stride the iteration count based on the number of workers
+        /// (otherwise dispatch_apply will make an indirect function call for
+        /// each iteration).
+        ///                                   (04.10.2016.) (Domagoj Saric)
+        auto const number_of_workers( impl::number_of_workers() );
+        auto const iterations_per_worker( iterations / number_of_workers + 1 );
+        auto /*const*/ worker
+        (
+            [&work, iterations_per_worker, iterations]
+            ( std::uint16_t const worker_index ) noexcept
+            {
+                auto const start_iteration( worker_index * iterations_per_worker );
+                auto const stop_iteration ( std::min<std::uint16_t>( start_iteration + iterations_per_worker, iterations ) );
+
+                work( start_iteration, stop_iteration );
+            }
+        );
+
+        /// \note dispatch_apply delegates to dispatch_apply_f so we avoid the
+        /// small overhead of an extra jmp and block construction (as opposed to
+        /// just a trivial lambda construction).
+        ///                                   (04.10.2016.) (Domagoj Saric)
+		dispatch_apply_f
 		(
 			number_of_workers,
             dispatch_get_global_queue( QOS_CLASS_DEFAULT, 0 ),
-			^( std::size_t const worker_index )
-			{
-				auto       start_iteration( static_cast<std::uint16_t>( worker_index * iterations_per_worker ) );
-				auto const stop_iteration ( start_iteration + iterations_per_worker + leftover_iterations );
-				if ( worker_index > 0 )
-					start_iteration += leftover_iterations;
-
-				work( start_iteration, stop_iteration );
-			}
+            &worker,
+            []( void * const p_context, std::size_t const worker_index ) noexcept
+            {
+                auto & __restrict the_worker( *static_cast<decltype( worker ) const *>( p_context ) );
+                the_worker( static_cast<std::uint16_t>( worker_index ) );
+            }
 		);
 	}
 
