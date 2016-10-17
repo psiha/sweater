@@ -19,12 +19,14 @@
 //------------------------------------------------------------------------------
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
+#include <boost/functionoid/functionoid.hpp>
 #include <boost/range/algorithm/count_if.hpp>
 
 #include <cstdint>
 #include <future>
 #include <mutex>
 #include <thread>
+#include <vector>
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -65,8 +67,8 @@ struct impl
 						}
 						if ( BOOST_UNLIKELY( brexit_ ) )
 							return;
-						my_work.function( my_work.start_iteration, my_work.end_iteration, my_work.object );
-                        std::unique_lock<std::mutex> my_lock( mutex_ );
+                        my_work();
+                        std::unique_lock<std::mutex> my_lock( the_mutex );
 						my_work.clear();
 						event_.notify_all();
 					}
@@ -90,15 +92,7 @@ struct impl
 	template <typename F>
 	void spread_the_sweat( std::uint16_t const iterations, F && __restrict work ) noexcept
 	{
-		static_assert( noexcept( noexcept( work( iterations, iterations ) ) ), "F must be noexcept" );
-		auto const invoker
-		(
-			[]( std::uint16_t const start_iteration, std::uint16_t const end_iteration, void * const p_functor ) noexcept
-			{
-				auto & __restrict f( *static_cast<typename std::remove_reference<F>::type *>( p_functor ) );
-				f( start_iteration, end_iteration );
-			}
-		);
+		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
 		auto const number_of_workers           ( this->number_of_workers() );
 		auto const iterations_per_worker       ( iterations / number_of_workers );
@@ -109,13 +103,13 @@ struct impl
 		(
 			0, threads_with_extra_iteration,
 			iteration, iterations_per_worker + 1,
-			&work, invoker
+			work
 		);
 		iteration = spread_iterations
 		(
 			threads_with_extra_iteration, pool_.size(),
 			iteration, iterations_per_worker,
-			&work, invoker
+			work
 		);
 		event_.notify_all();
 
@@ -135,6 +129,7 @@ struct impl
     template <typename F>
     static auto dispatch( F && work )
     {
+        // http://scottmeyers.blogspot.hr/2013/03/stdfutures-from-stdasync-arent-special.html
         return std::async( std::launch::async | std::launch::deferred, std::forward<F>( work ) );
     }
 
@@ -142,33 +137,30 @@ private:
 	void join() noexcept
 	{
 		std::unique_lock<std::mutex> my_lock( mutex_ );
-		while ( boost::count_if( pool_, []( auto const & worker ) { return worker.first; } ) )
+		while ( boost::count_if( pool_, []( auto const & worker ) { return !worker.first.empty(); } ) )
 			event_.wait( my_lock );
 	}
 
-	BOOST_NOINLINE
+    template <typename F>
 	std::uint16_t spread_iterations
 	(
 		std::uint8_t const begin_thread,
 		std::uint8_t const end_thread,
 		std::uint16_t const begin_iteration,
 		std::uint16_t const iterations_per_worker,
-		void * const p_worker,
-		void (*p_function)( std::uint16_t, std::uint16_t, void * )
-    #if !BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1900 ) )
-        noexcept
-    #endif // broken lambda -> noexcept function pointer conversion
+		F && work
 	) noexcept
 	{
 		auto iteration( begin_iteration );
 		for ( auto thread_index( begin_thread ); thread_index < end_thread; ++thread_index )
 		{
 			auto & delegate( pool_[ thread_index ].first );
-			delegate.start_iteration = iteration;
-			delegate.end_iteration   = iteration + iterations_per_worker;
-			delegate.object          = p_worker;
-			delegate.function        = p_function;
-			iteration = delegate.end_iteration;
+            auto const end_iteration( iteration + iterations_per_worker );
+            delegate = [&work, start_iteration = iteration, end_iteration]() noexcept
+            {
+				work( start_iteration, end_iteration );
+            };
+			iteration = end_iteration;
 		}
 		return iteration;
 	}
@@ -177,45 +169,42 @@ private:
 	bool volatile           brexit_ = false;
 	std::mutex              mutex_;
 	std::condition_variable event_;
-	// std::function<> breaks down when volatile qualified, and since we don't need its trans-fatty acids:
-	struct LightWeightDelegate
-	{
-		void (* function)( std::uint16_t start_iteration, std::uint16_t end_iteration, void * pFunctor )
-		#ifndef _MSC_VER // srsly
-            noexcept
-        #endif // _MSC_VER
-		= nullptr;
-		void * volatile object        = nullptr;
-		std::uint16_t start_iteration = 0;
-		std::uint16_t end_iteration   = 0;
 
-		void clear() { object = nullptr; }
-		explicit operator bool() const { return object; }
-	}; // struct LightWeightDelegate
+    struct worker_traits : functionoid::std_traits
+    {
+        static constexpr auto copyable             = functionoid::support_level::na    ;
+        static constexpr auto moveable             = functionoid::support_level::nofail;
+        static constexpr auto destructor           = functionoid::support_level::nofail;
+        static constexpr auto is_noexcept          = true;
+        static constexpr auto rtti                 = false;
 
+        static constexpr std::uint8_t sbo_size = 4 * sizeof( void * );
+        static constexpr std::uint8_t sbo_alignment = alignof( std::max_align_t );
+
+        using empty_handler = functionoid::nop_on_empty;
+    }; // struct worker_traits
+
+    using worker = std::pair
+	<
+		functionoid::callable<void(), worker_traits>,
+		std::thread
+	>;
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-	using pool_threads_t = container::static_vector
-	<
-		std::pair
-		<
-			LightWeightDelegate,
-			std::thread
-		>,
-		BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1 // also sweat on the calling thread
-	>;
+	using pool_threads_t = container::static_vector<worker, BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1>; // also sweat on the calling thread
 #else
-	using pool_threads_t = container::small_vector
-	<
-		std::pair
-		<
-			LightWeightDelegate,
-			std::thread
-		>,
-		4 - 1 // also sweat on the calling thread
-	>;
+	using pool_threads_t = std::vector<worker>;
 #endif
 	pool_threads_t pool_;
-};
+
+    /// \note .
+    /// https://en.wikipedia.org/wiki/Work_stealing
+    /// https://github.com/cameron314/readerwriterqueue
+    /// https://github.com/facebook/folly/blob/master/folly/docs/ProducerConsumerQueue.md
+    /// https://github.com/facebook/folly/blob/master/folly/MPMCQueue.h
+    /// http://landenlabs.com/code/ring/ring.html
+    /// https://github.com/Qarterd/Honeycomb/blob/master/src/common/Honey/Thread/Pool.cpp
+    ///                                           (12.10.2016.) (Domagoj Saric)
+}; // struct impl
 
 //------------------------------------------------------------------------------
 } // namespace sweater
