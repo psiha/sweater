@@ -220,7 +220,11 @@ private:
         std::thread                                  thread;
 
         BOOST_NOINLINE
-        void wait( std::mutex & mutex ) noexcept { event.wait( std::unique_lock<std::mutex>( mutex ) ); }
+        void wait( std::mutex & mutex ) noexcept
+        {
+            std::unique_lock<std::mutex> lock( mutex );
+            event.wait( lock );
+        }
 	};
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 	using pool_threads_t = container::static_vector<worker, BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1>; // also sweat on the calling thread
