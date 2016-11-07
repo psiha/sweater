@@ -43,7 +43,7 @@ struct impl
 	template <typename F>
 	static void spread_the_sweat( std::uint16_t const iterations, F & work ) noexcept
 	{
-		static_assert( noexcept( noexcept( work( iterations, iterations ) ) ), "F must be noexcept" );
+		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 		#pragma omp parallel
 		{
 			auto const number_of_workers( static_cast<std::uint8_t>( omp_get_num_threads() ) );
@@ -68,7 +68,6 @@ struct impl
     {
         return std::async( std::launch::async | std::launch::deferred, std::forward<F>( work ) );
     }
-
 }; // struct impl
 
 //------------------------------------------------------------------------------
