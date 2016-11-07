@@ -82,12 +82,7 @@ struct impl
                             if ( BOOST_LIKELY( my_work_available.load( std::memory_order_acquire ) ) )
                             {
                                 my_work();
-                                my_work.clear();
-                                /// \note The
-                                /// std::condition_variable::notify_one() call
-                                /// below should imply a release so we can get
-                                /// away with a relaxed store here.
-                                ///           (14.10.2016.) (Domagoj Saric)
+                                std::unique_lock<std::mutex> lock( mutex_ );
                                 my_work_available.store( false, std::memory_order_relaxed );
                                 my_event.notify_one();
                             }
@@ -165,10 +160,11 @@ struct impl
 private:
 	void join() noexcept
 	{
-        for ( auto & worker : pool_ )
+        for ( auto const & worker : pool_ )
         {
-            while ( worker.have_work.load( std::memory_order_acquire ) )
-                worker.wait( mutex_ );
+            std::unique_lock<std::mutex> lock( mutex_ );
+            while ( worker.have_work.load( std::memory_order_relaxed ) )
+                worker.event.wait( lock );
         }
 	}
 
@@ -191,6 +187,11 @@ private:
             {
 				work( start_iteration, end_iteration );
             };
+            /// \note The std::condition_variable::notify_one() call below
+            /// should imply a release so we can get away with a relaxed store
+            /// here.
+            ///                               (14.10.2016.) (Domagoj Saric)
+            pool_[ thread_index ].have_work.store( true, std::memory_order_relaxed );
             pool_[ thread_index ].event.notify_one();
 			iteration = end_iteration;
 		}
@@ -216,16 +217,15 @@ private:
     {
         std::atomic<bool>                            have_work = ATOMIC_FLAG_INIT;
         functionoid::callable<void(), worker_traits> work  ;
-        std::condition_variable                      event ;
+        mutable std::condition_variable              event ;
         std::thread                                  thread;
 
-        BOOST_NOINLINE
-        void wait( std::mutex & mutex ) noexcept
+        void wait( std::mutex & mutex ) const noexcept
         {
             std::unique_lock<std::mutex> lock( mutex );
             event.wait( lock );
         }
-	};
+	}; // struct worker
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 	using pool_threads_t = container::static_vector<worker, BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1>; // also sweat on the calling thread
 #else
