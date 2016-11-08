@@ -43,8 +43,17 @@ namespace sweater
 
 inline auto hardware_concurency() noexcept { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }
 
-struct impl
+class impl
 {
+private:
+#ifdef __ANROID__
+    // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
+    static auto constexpr spin_count = 30 * 1000 * 1000;
+#else
+    static auto constexpr spin_count =                1;
+#endif // __ANROID__
+
+public:
 	impl()
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1 )
@@ -67,16 +76,6 @@ struct impl
 
                     for ( ; ; )
                     {
-                        if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
-							return;
-
-                    #ifdef __ANROID__
-                        // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
-                        auto constexpr spin_count( 30 * 1000 * 1000 );
-                    #else
-                        auto constexpr spin_count(                1 );
-                    #endif // __ANROID__
-
                         for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
                         {
                             if ( BOOST_LIKELY( my_work_available.load( std::memory_order_acquire ) ) )
@@ -87,7 +86,12 @@ struct impl
                                 my_event.notify_one();
                             }
                         }
+
+                        if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
+							return;
+
                         worker.wait( mutex_ );
+                        BOOST_ASSERT( brexit_ || my_work_available );
                     }
 				}
 			); // worker_loop
@@ -158,10 +162,20 @@ struct impl
     }
 
 private:
+    BOOST_NOINLINE
 	void join() noexcept
 	{
         for ( auto const & worker : pool_ )
         {
+            bool worker_done;
+            for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
+            {
+                worker_done = !worker.have_work.load( std::memory_order_relaxed );
+                if ( worker_done )
+                    break;
+            }
+            if ( worker_done )
+                continue;
             std::unique_lock<std::mutex> lock( mutex_ );
             while ( worker.have_work.load( std::memory_order_relaxed ) )
                 worker.event.wait( lock );
@@ -244,7 +258,7 @@ private:
     /// http://landenlabs.com/code/ring/ring.html
     /// https://github.com/Qarterd/Honeycomb/blob/master/src/common/Honey/Thread/Pool.cpp
     ///                                       (12.10.2016.) (Domagoj Saric)
-}; // struct impl
+}; // class impl
 
 //------------------------------------------------------------------------------
 } // namespace sweater
