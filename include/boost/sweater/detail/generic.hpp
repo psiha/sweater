@@ -90,7 +90,13 @@ public:
                         if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
 							return;
 
-                        worker.wait( mutex_ );
+                        std::unique_lock<std::mutex> lock( mutex_ );
+                        /// \note No need for a another loop here as a
+                        /// suprious-wakeup would be handled by the check in the
+                        /// loop above.
+                        ///                   (08.11.2016.) (Domagoj Saric)
+                        if ( !BOOST_LIKELY( my_work_available.load( std::memory_order_relaxed ) ) )
+                            worker.event.wait( lock );
                         BOOST_ASSERT( brexit_ || my_work_available );
                     }
 				}
@@ -201,10 +207,11 @@ private:
             {
 				work( start_iteration, end_iteration );
             };
-            /// \note The std::condition_variable::notify_one() call below
-            /// should imply a release so we can get away with a relaxed store
-            /// here.
+            /// \note The mutex lock and std::condition_variable::notify_one()
+            /// call below should imply a release so we can get away with a
+            /// relaxed store here.
             ///                               (14.10.2016.) (Domagoj Saric)
+            std::unique_lock<std::mutex> lock( mutex_ );
             pool_[ thread_index ].have_work.store( true, std::memory_order_relaxed );
             pool_[ thread_index ].event.notify_one();
 			iteration = end_iteration;
@@ -233,12 +240,6 @@ private:
         functionoid::callable<void(), worker_traits> work  ;
         mutable std::condition_variable              event ;
         std::thread                                  thread;
-
-        void wait( std::mutex & mutex ) const noexcept
-        {
-            std::unique_lock<std::mutex> lock( mutex );
-            event.wait( lock );
-        }
 	}; // struct worker
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 	using pool_threads_t = container::static_vector<worker, BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1>; // also sweat on the calling thread
