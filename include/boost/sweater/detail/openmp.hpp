@@ -38,6 +38,8 @@ inline auto hardware_concurency() noexcept { return static_cast<std::uint16_t>( 
 
 struct impl
 {
+    // http://openmp.org/mp-documents/OpenMP_Examples_4.0.1.pdf
+
 	static auto number_of_workers() noexcept { return static_cast<std::uint16_t>( omp_get_max_threads() ); }
 
 	template <typename F>
