@@ -81,6 +81,8 @@ public:
                             if ( BOOST_LIKELY( my_work_available.load( std::memory_order_acquire ) ) )
                             {
                                 my_work();
+                                if ( spin_count > 1 ) // restart the spin-wait
+                                    try_count = 0;
                                 std::unique_lock<std::mutex> lock( mutex_ );
                                 my_work_available.store( false, std::memory_order_relaxed );
                                 my_event.notify_one();
@@ -92,7 +94,7 @@ public:
 
                         std::unique_lock<std::mutex> lock( mutex_ );
                         /// \note No need for a another loop here as a
-                        /// suprious-wakeup would be handled by the check in the
+                        /// spurious-wakeup would be handled by the check in the
                         /// loop above.
                         ///                   (08.11.2016.) (Domagoj Saric)
                         if ( !BOOST_LIKELY( my_work_available.load( std::memory_order_relaxed ) ) )
@@ -201,9 +203,9 @@ private:
 		auto iteration( begin_iteration );
 		for ( auto thread_index( begin_thread ); thread_index < end_thread; ++thread_index )
 		{
-			auto & delegate( pool_[ thread_index ].work );
+            BOOST_ASSERT( !pool_[ thread_index ].have_work );
             auto const end_iteration( iteration + iterations_per_worker );
-            delegate = [&work, start_iteration = iteration, end_iteration]() noexcept
+            pool_[ thread_index ].work = [&work, start_iteration = iteration, end_iteration]() noexcept
             {
 				work( start_iteration, end_iteration );
             };
