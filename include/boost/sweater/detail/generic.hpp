@@ -131,29 +131,35 @@ public:
 	{
 		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
-		auto const number_of_workers           ( this->number_of_workers() );
-		auto const iterations_per_worker       ( iterations / number_of_workers );
-		auto const threads_with_extra_iteration( iterations % number_of_workers );
-
 		std::uint16_t iteration( 0 );
-		iteration = spread_iterations
-		(
-			0, threads_with_extra_iteration,
-			iteration, iterations_per_worker + 1,
-			work
-		);
-		iteration = spread_iterations
-		(
-			threads_with_extra_iteration, pool_.size(),
-			iteration, iterations_per_worker,
-			work
-		);
+        if ( iterations > 1 )
+        {
+            auto const number_of_workers           ( this->number_of_workers() );
+		    auto const iterations_per_worker       ( iterations / number_of_workers );
+		    auto const threads_with_extra_iteration( iterations % number_of_workers );
+
+		    iteration = spread_iterations
+		    (
+			    0, threads_with_extra_iteration,
+			    iteration, iterations_per_worker + 1,
+			    work
+		    );
+		    iteration = spread_iterations
+		    (
+			    threads_with_extra_iteration, pool_.size(),
+			    iteration, iterations_per_worker,
+			    work
+		    );
+        }
 
 		auto const caller_thread_start_iteration( iteration );
 		BOOST_ASSERT( caller_thread_start_iteration <= iterations );
 		work( caller_thread_start_iteration, iterations );
 
-		join();
+        if ( iterations > 1 )
+        {
+            join();
+        }
 	}
 
 	template <typename F>
@@ -200,6 +206,12 @@ private:
 		F && work
 	) noexcept
 	{
+        /// \note Avoid waking a thread if there is nothing for it to do (e.g.
+        /// we have more worker threads than the number of work iterations).
+        ///                                   (12.01.2017.) (Domagoj Saric)
+        if ( BOOST_UNLIKELY( iterations_per_worker == 0 ) )
+            return begin_iteration;
+
 		auto iteration( begin_iteration );
 		for ( auto thread_index( begin_thread ); thread_index < end_thread; ++thread_index )
 		{

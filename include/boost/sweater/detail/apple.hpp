@@ -15,6 +15,7 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include <algorithm>
 #include <cstdint>
 #include <future>
 #include <thread>
@@ -45,14 +46,20 @@ struct impl
 	template <typename F>
 	static void spread_the_sweat( std::uint16_t const iterations, F && work ) noexcept
 	{
-		static_assert( noexcept( noexcept( work( iterations, iterations ) ) ), "F must be noexcept" );
+		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
         /// \note Stride the iteration count based on the number of workers
         /// (otherwise dispatch_apply will make an indirect function call for
         /// each iteration).
+        /// The iterations / number_of_workers is an integer division an can
+        /// thus be 'lossy'. We workaround this by adding one in case this
+        /// happens and then limiting the end iteration in the worker lambda
+        /// (with the effect that the last 'started'/woken thread does the least
+        /// work).
         ///                                   (04.10.2016.) (Domagoj Saric)
         auto const number_of_workers( impl::number_of_workers() );
-        auto const iterations_per_worker( iterations / number_of_workers + 1 );
+        auto const do_extra_iteration   ( ( iterations % number_of_workers ) != 0 );
+        auto const iterations_per_worker(   iterations / number_of_workers + do_extra_iteration );
         auto /*const*/ worker
         (
             [&work, iterations_per_worker, iterations]
@@ -69,9 +76,15 @@ struct impl
         /// small overhead of an extra jmp and block construction (as opposed to
         /// just a trivial lambda construction).
         ///                                   (04.10.2016.) (Domagoj Saric)
+        /// \note The iteration_per_worker logic above does not fully cover the
+        /// cases where the number of iterations is less than the number of
+        /// workers (resulting in work being called with start_iteration >
+        /// stop_iteration) so we have to additionally clamp the iterations
+        /// parameter passed to dispatch_apply).
+        ///                                   (12.01.2017.) (Domagoj Saric)
 		dispatch_apply_f
 		(
-			number_of_workers,
+			std::min<std::uint16_t>( number_of_workers, iterations ),
             dispatch_get_global_queue( QOS_CLASS_DEFAULT, 0 ),
             &worker,
             []( void * const p_context, std::size_t const worker_index ) noexcept
