@@ -125,7 +125,9 @@ public:
 
 	auto number_of_workers() const { return static_cast<std::uint16_t>( pool_.size() + 1 ); }
 
-    /// For GCD dispatch_apply/OMP-like parallel loops
+    /// For GCD dispatch_apply/OMP-like parallel loops.
+    /// \details Guarantees that <VAR>work</VAR> will not be called more than
+    /// <VAR>iterations</VAR> times (even if number_of_workers() > iterations).
 	template <typename F>
 	void spread_the_sweat( std::uint16_t const iterations, F && __restrict work ) noexcept
 	{
