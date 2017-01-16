@@ -15,6 +15,8 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include <boost/assert.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <future>
@@ -38,8 +40,9 @@ namespace sweater
 #endif
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
 
-struct impl
+class impl
 {
+public:
 	// http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
 	static auto number_of_workers() noexcept { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }
 
@@ -57,7 +60,7 @@ struct impl
         /// (with the effect that the last 'started'/woken thread does the least
         /// work).
         ///                                   (04.10.2016.) (Domagoj Saric)
-        auto const number_of_workers( impl::number_of_workers() );
+        auto const number_of_workers    ( impl::number_of_workers() );
         auto const do_extra_iteration   ( ( iterations % number_of_workers ) != 0 );
         auto const iterations_per_worker(   iterations / number_of_workers + do_extra_iteration );
         auto /*const*/ worker
@@ -67,7 +70,7 @@ struct impl
             {
                 auto const start_iteration( worker_index * iterations_per_worker );
                 auto const stop_iteration ( std::min<std::uint16_t>( start_iteration + iterations_per_worker, iterations ) );
-
+                BOOST_ASSERT_MSG( start_iteration < stop_iteration, "Sweater internal inconsistency: worker called with no work to do." );
                 work( start_iteration, stop_iteration );
             }
         );
@@ -85,7 +88,7 @@ struct impl
 		dispatch_apply_f
 		(
 			std::min<std::uint16_t>( number_of_workers, iterations ),
-            dispatch_get_global_queue( QOS_CLASS_DEFAULT, 0 ),
+            high_priority_queue,
             &worker,
             []( void * const p_context, std::size_t const worker_index ) noexcept
             {
@@ -102,11 +105,7 @@ struct impl
         /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
         ///                                   (14.01.2016.) (Domagoj Saric)
         __block auto moveable_work( std::forward<F>( work ) );
-        dispatch_async
-		(
-            dispatch_get_global_queue( QOS_CLASS_DEFAULT, 0 ),
-			^() { moveable_work(); }
-		);
+        dispatch_async( high_priority_queue, ^(){ moveable_work(); } );
 	}
 
     template <typename F>
@@ -122,7 +121,14 @@ struct impl
         );
         return future;
     }
+
+private:
+    static dispatch_queue_t const default_queue      ;
+    static dispatch_queue_t const high_priority_queue;
 }; // struct impl
+
+__attribute__(( weak )) dispatch_queue_t const impl::default_queue      ( dispatch_get_global_queue( QOS_CLASS_DEFAULT       , 0 ) );
+__attribute__(( weak )) dispatch_queue_t const impl::high_priority_queue( dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ) );
 
 //------------------------------------------------------------------------------
 } // namespace sweater
