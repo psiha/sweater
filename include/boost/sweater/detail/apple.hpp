@@ -54,22 +54,33 @@ public:
         /// \note Stride the iteration count based on the number of workers
         /// (otherwise dispatch_apply will make an indirect function call for
         /// each iteration).
-        /// The iterations / number_of_workers is an integer division an can
-        /// thus be 'lossy'. We workaround this by adding one in case this
-        /// happens and then limiting the end iteration in the worker lambda
-        /// (with the effect that the last 'started'/woken thread does the least
-        /// work).
+        /// The iterations / number_of_workers is an integer division and can
+        /// thus be 'lossy' so extra steps need to be taken to account for this.
         ///                                   (04.10.2016.) (Domagoj Saric)
-        auto const number_of_workers    ( impl::number_of_workers() );
-        auto const do_extra_iteration   ( ( iterations % number_of_workers ) != 0 );
-        auto const iterations_per_worker(   iterations / number_of_workers + do_extra_iteration );
+        auto          const number_of_workers    ( impl::number_of_workers() );
+        std::uint16_t const iterations_per_worker( iterations / number_of_workers );
+        std::uint8_t  const extra_iterations     ( iterations % number_of_workers );
         auto /*const*/ worker
         (
-            [&work, iterations_per_worker, iterations]
-            ( std::uint16_t const worker_index ) noexcept
+            [
+                &work, iterations_per_worker, extra_iterations
+            #ifndef NDEBUG
+                , iterations
+            #endif // !NDEBUG
+            ]
+            ( std::uint8_t const worker_index ) noexcept
             {
-                auto const start_iteration( worker_index * iterations_per_worker );
-                auto const stop_iteration ( std::min<std::uint16_t>( start_iteration + iterations_per_worker, iterations ) );
+                auto const extra_iters        ( std::min( worker_index, extra_iterations ) );
+                auto const plain_iters        ( worker_index - extra_iters                 );
+                auto const this_has_extra_iter( worker_index < extra_iterations            );
+                auto const start_iteration
+                (
+                    extra_iters * ( iterations_per_worker + 1 )
+                        +
+                    plain_iters *   iterations_per_worker
+                );
+                auto const stop_iteration( start_iteration + iterations_per_worker + this_has_extra_iter );
+                BOOST_ASSERT( stop_iteration <= iterations );
                 BOOST_ASSERT_MSG( start_iteration < stop_iteration, "Sweater internal inconsistency: worker called with no work to do." );
                 work( start_iteration, stop_iteration );
             }
@@ -93,7 +104,7 @@ public:
             []( void * const p_context, std::size_t const worker_index ) noexcept
             {
                 auto & __restrict the_worker( *static_cast<decltype( worker ) const *>( p_context ) );
-                the_worker( static_cast<std::uint16_t>( worker_index ) );
+                the_worker( static_cast<std::uint8_t>( worker_index ) );
             }
 		);
 	}
