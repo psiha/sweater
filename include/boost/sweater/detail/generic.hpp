@@ -133,12 +133,17 @@ public:
 	{
 		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
+        if ( BOOST_UNLIKELY( iterations == 0 ) )
+            return;
+
 		std::uint16_t iteration( 0 );
-        if ( iterations > 1 )
+        if ( BOOST_LIKELY( iterations > 1 ) )
         {
-            auto const number_of_workers           ( this->number_of_workers() );
-		    auto const iterations_per_worker       ( iterations / number_of_workers );
-		    auto const threads_with_extra_iteration( iterations % number_of_workers );
+            auto const number_of_workers               ( this->number_of_workers()      );
+		    auto const iterations_per_worker           ( iterations / number_of_workers );
+            auto const leave_one_for_the_calling_thread( iterations_per_worker == 0     ); // If iterations < workers prefer using the caller thread instead waking up a worker thread...
+		    auto const threads_with_extra_iteration    ( iterations % number_of_workers - leave_one_for_the_calling_thread );
+            BOOST_ASSERT( !leave_one_for_the_calling_thread || iterations < number_of_workers );
 
 		    iteration = spread_iterations
 		    (
@@ -155,10 +160,10 @@ public:
         }
 
 		auto const caller_thread_start_iteration( iteration );
-		BOOST_ASSERT( caller_thread_start_iteration <= iterations );
+		BOOST_ASSERT( caller_thread_start_iteration < iterations );
 		work( caller_thread_start_iteration, iterations );
 
-        if ( iterations > 1 )
+        if ( BOOST_LIKELY( iterations > 1 ) )
         {
             join();
         }
@@ -201,8 +206,8 @@ private:
     template <typename F>
 	std::uint16_t spread_iterations
 	(
-		std::uint8_t const begin_thread,
-		std::uint8_t const end_thread,
+		std::uint8_t  const begin_thread,
+		std::uint8_t  const end_thread,
 		std::uint16_t const begin_iteration,
 		std::uint16_t const iterations_per_worker,
 		F && work
