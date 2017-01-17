@@ -32,19 +32,28 @@ namespace sweater
 {
 //------------------------------------------------------------------------------
 
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 #if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 3 // iPad 2 Air
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
 #else
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
 #endif
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+
+BOOST_OVERRIDABLE_SYMBOL
+auto const hardware_concurrency( static_cast<std::uint8_t>( std::thread::hardware_concurrency() ) );
 
 class impl
 {
 public:
 	// http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
-	static auto number_of_workers() noexcept { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }
+	static auto number_of_workers() noexcept
+    {
+    #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+    #endif
+        return hardware_concurrency;
+    }
 
 	template <typename F>
 	static void spread_the_sweat( std::uint16_t const iterations, F && work ) noexcept

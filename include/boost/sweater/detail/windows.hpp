@@ -15,13 +15,13 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 #if defined(__WINDOWS_PHONE__)
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 2
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
 #else
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
 #endif
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
 #include "generic.hpp"
 //------------------------------------------------------------------------------

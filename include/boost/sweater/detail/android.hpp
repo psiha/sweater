@@ -15,9 +15,9 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 8 // SGS6 has 8 cores
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // SGS6 has 8 cores
+#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 #include "generic.hpp"
 //------------------------------------------------------------------------------
 namespace boost

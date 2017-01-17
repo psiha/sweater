@@ -17,6 +17,8 @@
 #define openmp_hpp__A03505C4_4323_437C_A38E_BF26BBCBD143
 #pragma once
 //------------------------------------------------------------------------------
+#include <boost/config_ex.hpp>
+
 #include <omp.h>
 
 #include <cstdint>
@@ -30,11 +32,12 @@ namespace sweater
 {
 //------------------------------------------------------------------------------
 
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
+#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
-inline auto hardware_concurency() noexcept { return static_cast<std::uint16_t>( omp_get_num_procs() ); }
+BOOST_OVERRIDABLE_SYMBOL
+auto const hardware_concurrency( static_cast<std::uint8_t>( std::thread::hardware_concurrency() ) );
 
 struct impl
 {

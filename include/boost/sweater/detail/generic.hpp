@@ -17,6 +17,9 @@
 #define generic_hpp__99FE2034_248F_4C7D_8CD2_EB2BB8247377
 #pragma once
 //------------------------------------------------------------------------------
+#include <boost/sweater/queues/mpmc_moodycamel.hpp>
+
+#include <boost/config_ex.hpp>
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 #include <boost/functionoid/functionoid.hpp>
@@ -37,11 +40,14 @@ namespace sweater
 {
 //------------------------------------------------------------------------------
 
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURENCY 0
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
+#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
-inline auto hardware_concurency() noexcept { return static_cast<std::uint8_t>( std::thread::hardware_concurrency() ); }
+namespace queues { template <typename Work> class mpmc_moodycamel; }
+
+BOOST_OVERRIDABLE_SYMBOL
+auto const hardware_concurrency( static_cast<std::uint8_t>( std::thread::hardware_concurrency() ) );
 
 class impl
 {
@@ -53,39 +59,100 @@ private:
     static auto constexpr spin_count =                1;
 #endif // __ANROID__
 
+    struct worker_traits : functionoid::std_traits
+    {
+        static constexpr auto copyable    = functionoid::support_level::nofail ;
+        static constexpr auto moveable    = functionoid::support_level::na     ;
+        static constexpr auto destructor  = functionoid::support_level::trivial;
+        static constexpr auto is_noexcept = true;
+        static constexpr auto rtti        = false;
+
+        using empty_handler = functionoid::assert_on_empty;
+    }; // struct worker_traits
+
+    using worker_counter = std::atomic<std::uint16_t>;
+
+    struct batch_semaphore
+    {
+                worker_counter          counter;
+        mutable std::condition_variable event;
+                std::mutex              mutex;
+
+        void release() noexcept
+        {
+            if ( counter.fetch_sub( 1, std::memory_order_acquire ) == 1 )
+                event.notify_one();
+        }
+
+        BOOST_NOINLINE
+        void wait() noexcept
+        {
+            for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
+            {
+                bool const all_workers_done( counter.load( std::memory_order_relaxed ) == 0 );
+                if ( BOOST_LIKELY( all_workers_done ) )
+                    return;
+            }
+            std::unique_lock<std::mutex> lock( mutex );
+            while ( BOOST_UNLIKELY( counter.load( std::memory_order_relaxed ) != 0 ) )
+                event.wait( lock );
+        }
+    }; // struct batch_semaphore
+
+    struct work_data
+    {
+        functionoid::callable<void(), worker_traits> callback;
+        batch_semaphore * __restrict                 p_semaphore = nullptr;
+    }; // struct work_data
+
+    using my_queue = queues::mpmc_moodycamel<work_data>;
+
+    static bool do_work
+    (
+        my_queue                   & __restrict queue,
+        my_queue::consumer_token_t & __restrict token
+    ) noexcept
+    {
+        work_data work;
+        if ( BOOST_LIKELY( queue.dequeue( work, token ) ) )
+        {
+            work.callback();
+            if ( work.p_semaphore )
+                work.p_semaphore->release();
+            return true;
+        }
+        return false;
+    }
+
 public:
 	impl()
-#if BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-    : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1 )
+#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
 #endif
 	{
-    #if !BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-        auto const number_of_worker_threads( hardware_concurency() - 1 );
-        auto p_workers( std::make_unique<worker[]>( number_of_worker_threads ) );
+    #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+    #else
+        auto const number_of_worker_threads( hardware_concurrency - 1 );
+        auto p_workers( std::make_unique<std::thread[]>( number_of_worker_threads ) );
         pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
-    #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+    #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 		for ( auto & worker : pool_ )
 		{
 			auto const worker_loop
 			(
-				[&worker, this]() noexcept
+				[this]() noexcept
 				{
-                    auto & __restrict my_work_available( worker.have_work );
-                    auto & __restrict my_work          ( worker.work  );
-                    auto & __restrict my_event         ( worker.event );
+                    auto token( queue_.consumer_token() );
 
                     for ( ; ; )
                     {
                         for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
                         {
-                            if ( BOOST_LIKELY( my_work_available.load( std::memory_order_acquire ) ) )
+                            if ( do_work( queue_, token ) )
                             {
-                                my_work();
                                 if ( spin_count > 1 ) // restart the spin-wait
                                     try_count = 0;
-                                std::unique_lock<std::mutex> lock( mutex_ );
-                                my_work_available.store( false, std::memory_order_relaxed );
-                                my_event.notify_one();
                             }
                         }
 
@@ -97,66 +164,85 @@ public:
                         /// spurious-wakeup would be handled by the check in the
                         /// loop above.
                         ///                   (08.11.2016.) (Domagoj Saric)
-                        if ( !BOOST_LIKELY( my_work_available.load( std::memory_order_relaxed ) ) )
-                            worker.event.wait( lock );
-                        BOOST_ASSERT( brexit_ || my_work_available );
+                        if ( !BOOST_LIKELY( do_work( queue_, token ) ) )
+                            work_event_.wait( lock );
                     }
 				}
 			); // worker_loop
-            worker.thread = std::thread( worker_loop );
+            worker = std::thread( worker_loop );
 		}
-    #if !BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+    #if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         p_workers.release();
-    #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+    #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 	}
 
 	~impl() noexcept
 	{
 		brexit_.store( true, std::memory_order_relaxed );
+        work_event_.notify_all();
 		for ( auto & worker : pool_ )
-        {
-            worker.event .notify_one();
-			worker.thread.join      ();
-        }
-    #if !BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+			worker.join();
+    #if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         delete[] pool_.begin();
-    #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
+    #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 	}
 
-	auto number_of_workers() const { return static_cast<std::uint16_t>( pool_.size() + 1 ); }
+	auto number_of_workers() const
+    {
+        auto const result( static_cast<std::uint16_t>( pool_.size() + 1 ) );
+    #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        BOOST_ASSUME( result <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+    #endif
+        return result;
+    }
 
     /// For GCD dispatch_apply/OMP-like parallel loops.
     /// \details Guarantees that <VAR>work</VAR> will not be called more than
     /// <VAR>iterations</VAR> times (even if number_of_workers() > iterations).
 	template <typename F>
-	void spread_the_sweat( std::uint16_t const iterations, F && __restrict work ) noexcept
+	bool spread_the_sweat( std::uint16_t const iterations, F && __restrict work ) noexcept
 	{
 		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
         if ( BOOST_UNLIKELY( iterations == 0 ) )
-            return;
+            return true;
 
-		std::uint16_t iteration( 0 );
+        auto const number_of_workers               ( this->number_of_workers()      );
+		auto const iterations_per_worker           ( iterations / number_of_workers );
+        auto const leave_one_for_the_calling_thread( iterations_per_worker == 0     ); // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
+		auto const threads_with_extra_iteration    ( iterations % number_of_workers - leave_one_for_the_calling_thread );
+        BOOST_ASSERT( !leave_one_for_the_calling_thread || iterations < number_of_workers );
+
+        auto const number_of_work_parts( std::min<std::uint16_t>( number_of_workers, iterations ) );
+        std::uint16_t const number_of_dispatched_work_parts( number_of_work_parts - 1 );
+
+        batch_semaphore semaphore{ number_of_dispatched_work_parts };
+
+#ifdef BOOST_MSVC
+        auto const dispatched_work_parts( static_cast<work_data *>( alloca( number_of_dispatched_work_parts * sizeof( work_data ) ) ) );
+#else
+        work_data dispatched_work_parts[ number_of_dispatched_work_parts ];
+#endif // BOOST_MSVC
+
+        std::uint16_t iteration( 0 );
         if ( BOOST_LIKELY( iterations > 1 ) )
         {
-            auto const number_of_workers               ( this->number_of_workers()      );
-		    auto const iterations_per_worker           ( iterations / number_of_workers );
-            auto const leave_one_for_the_calling_thread( iterations_per_worker == 0     ); // If iterations < workers prefer using the caller thread instead waking up a worker thread...
-		    auto const threads_with_extra_iteration    ( iterations % number_of_workers - leave_one_for_the_calling_thread );
-            BOOST_ASSERT( !leave_one_for_the_calling_thread || iterations < number_of_workers );
-
-		    iteration = spread_iterations
-		    (
-			    0, threads_with_extra_iteration,
-			    iteration, iterations_per_worker + 1,
-			    work
-		    );
-		    iteration = spread_iterations
-		    (
-			    threads_with_extra_iteration, pool_.size(),
-			    iteration, iterations_per_worker,
-			    work
-		    );
+            for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
+            {
+                auto const start_iteration( iteration );
+                auto const extra_iteration( work_part < threads_with_extra_iteration );
+                auto const end_iteration  ( start_iteration + iterations_per_worker + extra_iteration );
+                dispatched_work_parts[ work_part ].callback =
+                    [&work, start_iteration = iteration, end_iteration]() noexcept
+                    {
+                        work( start_iteration, end_iteration );
+                    };
+                dispatched_work_parts[ work_part ].p_semaphore = &semaphore;
+                iteration = end_iteration;
+            }
+            if ( !BOOST_UNLIKELY( queue_.enqueue_bulk( dispatched_work_parts, number_of_dispatched_work_parts ) ) )
+                return false;
+            work_event_.notify_all();
         }
 
 		auto const caller_thread_start_iteration( iteration );
@@ -165,111 +251,46 @@ public:
 
         if ( BOOST_LIKELY( iterations > 1 ) )
         {
-            join();
+            semaphore.wait();
         }
+
+        return true;
 	}
 
 	template <typename F>
 	static void fire_and_forget( F && work )
 	{
-		std::thread( std::forward<F>( work ) ).detach();
+        queue_.enqueue( work_data{ std::forward<F>( work ) } );
 	}
 
     template <typename F>
     static auto dispatch( F && work )
     {
         // http://scottmeyers.blogspot.hr/2013/03/stdfutures-from-stdasync-arent-special.html
-        return std::async( std::launch::async | std::launch::deferred, std::forward<F>( work ) );
+        using result_t = typename std::result_of<F()>::type;
+        std::promise<result_t> promise;
+        std::future<result_t> future( promise.get_future() );
+        fire_and_forget
+        (
+            [promise = std::move( promise ), work = std::forward<F>( work )]
+            () mutable { promise.set_value( work() ); }
+        );
+        return future;
     }
 
 private:
-    BOOST_NOINLINE
-	void join() noexcept
-	{
-        for ( auto const & worker : pool_ )
-        {
-            bool worker_done;
-            for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
-            {
-                worker_done = !worker.have_work.load( std::memory_order_relaxed );
-                if ( worker_done )
-                    break;
-            }
-            if ( worker_done )
-                continue;
-            std::unique_lock<std::mutex> lock( mutex_ );
-            while ( worker.have_work.load( std::memory_order_relaxed ) )
-                worker.event.wait( lock );
-        }
-	}
+            std::atomic<bool>       brexit_ = ATOMIC_FLAG_INIT;
+	        std::mutex              mutex_;
+    mutable std::condition_variable work_event_;
 
-    template <typename F>
-	std::uint16_t spread_iterations
-	(
-		std::uint8_t  const begin_thread,
-		std::uint8_t  const end_thread,
-		std::uint16_t const begin_iteration,
-		std::uint16_t const iterations_per_worker,
-		F && work
-	) noexcept
-	{
-        /// \note Avoid waking a thread if there is nothing for it to do (e.g.
-        /// we have more worker threads than the number of work iterations).
-        ///                                   (12.01.2017.) (Domagoj Saric)
-        if ( BOOST_UNLIKELY( iterations_per_worker == 0 ) )
-            return begin_iteration;
-
-		auto iteration( begin_iteration );
-		for ( auto thread_index( begin_thread ); thread_index < end_thread; ++thread_index )
-		{
-            BOOST_ASSERT( !pool_[ thread_index ].have_work );
-            auto const end_iteration( iteration + iterations_per_worker );
-            pool_[ thread_index ].work = [&work, start_iteration = iteration, end_iteration]() noexcept
-            {
-				work( start_iteration, end_iteration );
-            };
-            /// \note The mutex lock and std::condition_variable::notify_one()
-            /// call below should imply a release so we can get away with a
-            /// relaxed store here.
-            ///                               (14.10.2016.) (Domagoj Saric)
-            std::unique_lock<std::mutex> lock( mutex_ );
-            pool_[ thread_index ].have_work.store( true, std::memory_order_relaxed );
-            pool_[ thread_index ].event.notify_one();
-			iteration = end_iteration;
-		}
-		return iteration;
-	}
-
-private:
-    std::atomic<bool> brexit_ = ATOMIC_FLAG_INIT;
-	std::mutex        mutex_;
-
-    struct worker_traits : functionoid::std_traits
-    {
-        static constexpr auto copyable    = functionoid::support_level::na    ;
-        static constexpr auto moveable    = functionoid::support_level::nofail;
-        static constexpr auto destructor  = functionoid::support_level::nofail;
-        static constexpr auto is_noexcept = true;
-        static constexpr auto rtti        = false;
-
-        using empty_handler = functionoid::assert_on_empty;
-    }; // struct worker_traits
-
-    struct worker
-    {
-        std::atomic<bool>                            have_work = ATOMIC_FLAG_INIT;
-        functionoid::callable<void(), worker_traits> work  ;
-        mutable std::condition_variable              event ;
-        std::thread                                  thread;
-	}; // struct worker
-#if BOOST_SWEATER_MAX_HARDWARE_CONCURENCY
-	using pool_threads_t = container::static_vector<worker, BOOST_SWEATER_MAX_HARDWARE_CONCURENCY - 1>; // also sweat on the calling thread
+#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+	using pool_threads_t = container::static_vector<std::thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1>; // also sweat on the calling thread
 #else
-    using pool_threads_t = iterator_range<worker *>;
+    using pool_threads_t = iterator_range<std::thread *>;
 #endif
 	pool_threads_t pool_;
 
-    /// \todo Implement a work queue.
+    /// \todo Further queue refinements.
     /// https://en.wikipedia.org/wiki/Work_stealing
     /// http://www.drdobbs.com/parallel/writing-lock-free-code-a-corrected-queue/210604448
     /// https://github.com/cameron314/readerwriterqueue
@@ -280,6 +301,7 @@ private:
     /// http://landenlabs.com/code/ring/ring.html
     /// https://github.com/Qarterd/Honeycomb/blob/master/src/common/Honey/Thread/Pool.cpp
     ///                                       (12.10.2016.) (Domagoj Saric)
+    my_queue queue_;
 }; // class impl
 
 //------------------------------------------------------------------------------
