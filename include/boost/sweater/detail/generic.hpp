@@ -29,6 +29,11 @@
 #include <atomic>
 #include <cstdint>
 #include <future>
+#ifdef _MSC_VER
+#include <malloc.h>
+#else
+#include <alloca.h>
+#endif // _MSC_VER
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -72,11 +77,10 @@ private:
 
     using worker_counter = std::atomic<std::uint16_t>;
 
-    struct batch_semaphore
+    class batch_semaphore
     {
-                worker_counter          counter;
-        mutable std::condition_variable event;
-                std::mutex              mutex;
+    public:
+        batch_semaphore( std::uint16_t const initial_value ) : counter( initial_value ) {}
 
         void release() noexcept
         {
@@ -97,12 +101,17 @@ private:
             while ( BOOST_UNLIKELY( counter.load( std::memory_order_relaxed ) != 0 ) )
                 event.wait( lock );
         }
+
+    private:
+                worker_counter          counter;
+        mutable std::condition_variable event;
+                std::mutex              mutex;
     }; // struct batch_semaphore
 
     struct work_data
     {
         functionoid::callable<void(), worker_traits> callback;
-        batch_semaphore * __restrict                 p_semaphore = nullptr;
+        batch_semaphore * __restrict                 p_semaphore;
     }; // struct work_data
 
     using my_queue = queues::mpmc_moodycamel<work_data>;
@@ -216,13 +225,9 @@ public:
         auto const number_of_work_parts( std::min<std::uint16_t>( number_of_workers, iterations ) );
         std::uint16_t const number_of_dispatched_work_parts( number_of_work_parts - 1 );
 
-        batch_semaphore semaphore{ number_of_dispatched_work_parts };
+        batch_semaphore semaphore( number_of_dispatched_work_parts );
 
-#ifdef BOOST_MSVC
         auto const dispatched_work_parts( static_cast<work_data *>( alloca( number_of_dispatched_work_parts * sizeof( work_data ) ) ) );
-#else
-        work_data dispatched_work_parts[ number_of_dispatched_work_parts ];
-#endif // BOOST_MSVC
 
         std::uint16_t iteration( 0 );
         if ( BOOST_LIKELY( iterations > 1 ) )
@@ -232,15 +237,18 @@ public:
                 auto const start_iteration( iteration );
                 auto const extra_iteration( work_part < threads_with_extra_iteration );
                 auto const end_iteration  ( start_iteration + iterations_per_worker + extra_iteration );
-                dispatched_work_parts[ work_part ].callback =
+                new ( &dispatched_work_parts[ work_part ] ) work_data
+                {
                     [&work, start_iteration = iteration, end_iteration]() noexcept
-                    {
-                        work( start_iteration, end_iteration );
-                    };
-                dispatched_work_parts[ work_part ].p_semaphore = &semaphore;
+                    { work( start_iteration, end_iteration ); },
+                    &semaphore
+                };
                 iteration = end_iteration;
             }
-            if ( !BOOST_UNLIKELY( queue_.enqueue_bulk( dispatched_work_parts, number_of_dispatched_work_parts ) ) )
+            auto const enqueue_succeeded( queue_.enqueue_bulk( dispatched_work_parts, number_of_dispatched_work_parts ) );
+            for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
+                dispatched_work_parts[ work_part ].~work_data();
+            if ( !BOOST_LIKELY( enqueue_succeeded ) )
                 return false;
             work_event_.notify_all();
         }
@@ -258,13 +266,25 @@ public:
 	}
 
 	template <typename F>
-	static void fire_and_forget( F && work )
+	void fire_and_forget( F && work )
 	{
-        queue_.enqueue( work_data{ std::forward<F>( work ) } );
+        struct self_destructed_work
+        {
+            self_destructed_work( F       && work ) noexcept( std::is_nothrow_move_constructible<F>::value ) { new ( storage ) F( std::move( work ) ); }
+            self_destructed_work( F const &  work ) noexcept( std::is_nothrow_copy_constructible<F>::value ) { new ( storage ) F(            work   ); }
+            void operator()() noexcept
+            {
+                auto & work( reinterpret_cast<F &>( storage ) );
+                work();
+                work.~F();
+            }
+            alignas( work ) char storage[ sizeof( work ) ];
+        };
+        queue_.enqueue( work_data{ self_destructed_work( std::forward<F>( work ) ), nullptr } );
 	}
 
     template <typename F>
-    static auto dispatch( F && work )
+    auto dispatch( F && work )
     {
         // http://scottmeyers.blogspot.hr/2013/03/stdfutures-from-stdasync-arent-special.html
         using result_t = typename std::result_of<F()>::type;
