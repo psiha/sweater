@@ -180,7 +180,7 @@ public:
                                 work_event_.wait( lock );
                             }
                         }
-                        if ( BOOST_LIKELY( work.callback ) )
+                        if ( BOOST_LIKELY( static_cast<bool>( work.callback ) ) )
                             work.do_work();
                     }
 				}
