@@ -42,8 +42,8 @@ class mpmc_moodycamel
 private:
     struct queue_traits : moodycamel::ConcurrentQueueDefaultTraits
     {
-	    using size_t  = std::uint16_t;
-	    using index_t = std::uint16_t;
+	    using size_t  = std::uint32_t;
+	    using index_t = std::uint32_t;
 
 	    static constexpr size_t EXPLICIT_INITIAL_INDEX_SIZE = 4;
 	    static constexpr size_t IMPLICIT_INITIAL_INDEX_SIZE = 4;
