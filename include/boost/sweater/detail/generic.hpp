@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cstdint>
 #include <future>
+#include <iterator>
 #ifdef _MSC_VER
 #include <malloc.h>
 #else
@@ -66,8 +67,8 @@ private:
 
     struct worker_traits : functionoid::std_traits
     {
-        static constexpr auto copyable    = functionoid::support_level::nofail ;
-        static constexpr auto moveable    = functionoid::support_level::na     ;
+        static constexpr auto copyable    = functionoid::support_level::na     ;
+        static constexpr auto moveable    = functionoid::support_level::nofail ;
         static constexpr auto destructor  = functionoid::support_level::trivial;
         static constexpr auto is_noexcept = true;
         static constexpr auto rtti        = false;
@@ -84,6 +85,7 @@ private:
 
         void release() noexcept
         {
+            std::unique_lock<std::mutex> lock( mutex );
             if ( counter.fetch_sub( 1, std::memory_order_acquire ) == 1 )
                 event.notify_one();
         }
@@ -110,28 +112,23 @@ private:
 
     struct work_data
     {
+        work_data            (                    ) = default;
+        work_data            ( work_data const &  ) = default;
+        work_data            ( work_data       && ) = default;
+        work_data & operator=( work_data const &  ) = default;
+        work_data & operator=( work_data       && ) = default;
         functionoid::callable<void(), worker_traits> callback;
         batch_semaphore * __restrict                 p_semaphore;
+
+        void do_work()
+        {
+            callback();
+            if ( p_semaphore )
+                p_semaphore->release();
+        }
     }; // struct work_data
 
     using my_queue = queues::mpmc_moodycamel<work_data>;
-
-    static bool do_work
-    (
-        my_queue                   & __restrict queue,
-        my_queue::consumer_token_t & __restrict token
-    ) noexcept
-    {
-        work_data work;
-        if ( BOOST_LIKELY( queue.dequeue( work, token ) ) )
-        {
-            work.callback();
-            if ( work.p_semaphore )
-                work.p_semaphore->release();
-            return true;
-        }
-        return false;
-    }
 
 public:
 	impl()
@@ -154,12 +151,15 @@ public:
 				{
                     auto token( queue_.consumer_token() );
 
+                    work_data work;
+
                     for ( ; ; )
                     {
                         for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
                         {
-                            if ( do_work( queue_, token ) )
+                            if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
                             {
+                                work.do_work();
                                 if ( spin_count > 1 ) // restart the spin-wait
                                     try_count = 0;
                             }
@@ -168,13 +168,20 @@ public:
                         if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
 							return;
 
-                        std::unique_lock<std::mutex> lock( mutex_ );
-                        /// \note No need for a another loop here as a
-                        /// spurious-wakeup would be handled by the check in the
-                        /// loop above.
-                        ///                   (08.11.2016.) (Domagoj Saric)
-                        if ( !BOOST_LIKELY( do_work( queue_, token ) ) )
-                            work_event_.wait( lock );
+                        {
+                            std::unique_lock<std::mutex> lock( mutex_ );
+                            /// \note No need for a another loop here as a
+                            /// spurious-wakeup would be handled by the check in the
+                            /// loop above.
+                            ///                   (08.11.2016.) (Domagoj Saric)
+                            if ( !BOOST_LIKELY( queue_.dequeue( work, token ) ) )
+                            {
+                                work.callback.clear();
+                                work_event_.wait( lock );
+                            }
+                        }
+                        if ( BOOST_LIKELY( work.callback ) )
+                            work.do_work();
                     }
 				}
 			); // worker_loop
@@ -227,7 +234,12 @@ public:
 
         batch_semaphore semaphore( number_of_dispatched_work_parts );
 
-        auto const dispatched_work_parts( static_cast<work_data *>( alloca( number_of_dispatched_work_parts * sizeof( work_data ) ) ) );
+#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+#   else
+        BOOST_ASSUME( number_of_dispatched_work_parts < 512 );
+#   endif
+        auto const dispatched_work_parts( static_cast<work_data *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_data ) ) ) );
 
         std::uint16_t iteration( 0 );
         if ( BOOST_LIKELY( iterations > 1 ) )
@@ -245,11 +257,13 @@ public:
                 };
                 iteration = end_iteration;
             }
-            auto const enqueue_succeeded( queue_.enqueue_bulk( dispatched_work_parts, number_of_dispatched_work_parts ) );
+
+            auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
             for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
                 dispatched_work_parts[ work_part ].~work_data();
             if ( !BOOST_LIKELY( enqueue_succeeded ) )
                 return false;
+            std::unique_lock<std::mutex> lock( mutex_ );
             work_event_.notify_all();
         }
 
