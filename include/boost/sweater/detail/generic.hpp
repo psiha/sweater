@@ -82,13 +82,13 @@ private:
     class batch_semaphore
     {
     public:
-        batch_semaphore( std::uint16_t const initial_value ) : counter( initial_value ) {}
+        batch_semaphore( std::uint16_t const initial_value ) : counter_( initial_value ) {}
 
         void release() noexcept
         {
-            std::unique_lock<std::mutex> lock( mutex );
-            if ( counter.fetch_sub( 1, std::memory_order_acquire ) == 1 )
-                event.notify_one();
+            std::unique_lock<std::mutex> lock( mutex_ );
+            if ( counter_.fetch_sub( 1, std::memory_order_acquire ) == 1 )
+                event_.notify_one();
         }
 
         BOOST_NOINLINE
@@ -96,19 +96,21 @@ private:
         {
             for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
             {
-                bool const all_workers_done( counter.load( std::memory_order_relaxed ) == 0 );
+                bool const all_workers_done( counter_.load( std::memory_order_relaxed ) == 0 );
                 if ( BOOST_LIKELY( all_workers_done ) )
                     return;
             }
-            std::unique_lock<std::mutex> lock( mutex );
-            while ( BOOST_UNLIKELY( counter.load( std::memory_order_relaxed ) != 0 ) )
-                event.wait( lock );
+            std::unique_lock<std::mutex> lock( mutex_ );
+            while ( BOOST_UNLIKELY( counter_.load( std::memory_order_relaxed ) != 0 ) )
+                event_.wait( lock );
         }
 
+        void reset() noexcept { counter_ = 0; }
+
     private:
-                worker_counter          counter;
-        mutable std::condition_variable event;
-                std::mutex              mutex;
+                worker_counter          counter_;
+        mutable std::condition_variable event_  ;
+                std::mutex              mutex_  ;
     }; // struct batch_semaphore
 
     using work_t = functionoid::callable<void(), worker_traits>;
@@ -227,6 +229,8 @@ public:
         /// \note MSVC does not support VLAs but has an alloca that returns
         /// (16 byte) aligned memory. Clang's alloca is unaligned and it does
         /// not support VLAs of non-POD types.
+        /// The code below is safe with noexcept enqueue_bulk() and trivially
+        /// destructible and noexcept constructible work_ts.
         ///                                   (21.01.2017.) (Domagoj Saric)
 #   ifdef BOOST_MSVC
         auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
@@ -257,11 +261,19 @@ public:
             auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
             for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
                 dispatched_work_parts[ work_part ].~work_t();
-            /// No need for a branch here as the worker thread has to handle
-            /// spurious wakeups anyway.
-            std::unique_lock<std::mutex> lock( mutex_ );
-            work_event_.notify_all();
-            return BOOST_LIKELY( enqueue_succeeded );
+            if ( BOOST_LIKELY( enqueue_succeeded ) )
+            {
+                std::unique_lock<std::mutex> lock( mutex_ );
+                work_event_.notify_all();
+            }
+            else
+            {
+                /// \note If enqueue failed perform everything on the caller's
+                /// thread.
+                ///                           (21.01.2017.) (Domagoj Saric)
+                iteration = 0;
+                semaphore.reset();
+            }
         }
 
 		auto const caller_thread_start_iteration( iteration );
@@ -292,6 +304,8 @@ public:
             alignas( work ) char storage[ sizeof( work ) ];
         };
         auto const enqueue_succeeded( queue_.enqueue( self_destructed_work( std::forward<F>( work ) ) ) );
+        /// No need for a branch here as the worker thread has to handle
+        /// spurious wakeups anyway.
         std::unique_lock<std::mutex> lock( mutex_ );
         work_event_.notify_one();
         return BOOST_LIKELY( enqueue_succeeded );
