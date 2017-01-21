@@ -224,7 +224,16 @@ public:
 #   else
         BOOST_ASSUME( number_of_dispatched_work_parts < 512 );
 #   endif
+        /// \note MSVC does not support VLAs but has an alloca that returns
+        /// (16 byte) aligned memory. Clang's alloca is unaligned and it does
+        /// not support VLAs of non-POD types.
+        ///                                   (21.01.2017.) (Domagoj Saric)
+#   ifdef BOOST_MSVC
         auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
+#   else
+        alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
+        auto const dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
+#   endif // _MSC_VER
 
         std::uint16_t iteration( 0 );
         if ( BOOST_LIKELY( iterations > 1 ) )
