@@ -16,6 +16,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include <boost/assert.hpp>
+#include <boost/config_ex.hpp>
 
 #include <algorithm>
 #include <cstdint>
