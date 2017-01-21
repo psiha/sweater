@@ -25,10 +25,10 @@
 #include <boost/functionoid/functionoid.hpp>
 #include <boost/range/algorithm/count_if.hpp>
 #include <boost/range/iterator_range_core.hpp>
-#include <boost/throw_exception.hpp>
 
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <future>
 #include <iterator>
 #ifdef _MSC_VER
@@ -257,10 +257,11 @@ public:
             auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
             for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
                 dispatched_work_parts[ work_part ].~work_t();
-            if ( !BOOST_LIKELY( enqueue_succeeded ) )
-                return false;
+            /// No need for a branch here as the worker thread has to handle
+            /// spurious wakeups anyway.
             std::unique_lock<std::mutex> lock( mutex_ );
             work_event_.notify_all();
+            return BOOST_LIKELY( enqueue_succeeded );
         }
 
 		auto const caller_thread_start_iteration( iteration );
@@ -290,7 +291,10 @@ public:
             }
             alignas( work ) char storage[ sizeof( work ) ];
         };
-        return queue_.enqueue( self_destructed_work( std::forward<F>( work ) ) );
+        auto const enqueue_succeeded( queue_.enqueue( self_destructed_work( std::forward<F>( work ) ) ) );
+        std::unique_lock<std::mutex> lock( mutex_ );
+        work_event_.notify_one();
+        return BOOST_LIKELY( enqueue_succeeded );
 	}
 
     template <typename F>
@@ -300,16 +304,17 @@ public:
         using result_t = typename std::result_of<F()>::type;
         std::promise<result_t> promise;
         std::future<result_t> future( promise.get_future() );
-        if
+        auto const dispatch_succeeded
         (
             fire_and_forget
             (
                 [promise = std::move( promise ), work = std::forward<F>( work )]
                 () mutable { promise.set_value( work() ); }
             )
-        )
-            return future;
-        BOOST_THROW_EXCEPTION( std::bad_alloc() );
+        );
+        if ( BOOST_UNLIKELY( !dispatch_succeeded ) )
+            future.set_exception( std::make_exception_ptr( std::bad_alloc() ) );
+        return future;
     }
 
 private:
