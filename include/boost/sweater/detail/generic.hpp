@@ -87,7 +87,7 @@ private:
         void release() noexcept
         {
             std::unique_lock<std::mutex> lock( mutex_ );
-            if ( counter_.fetch_sub( 1, std::memory_order_acquire ) == 1 )
+            if ( counter_.fetch_sub( 1, std::memory_order_relaxed ) == 1 )
                 event_.notify_one();
         }
 
@@ -96,7 +96,7 @@ private:
         {
             for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
             {
-                bool const all_workers_done( counter_.load( std::memory_order_relaxed ) == 0 );
+                bool const all_workers_done( counter_.load( std::memory_order_acquire ) == 0 );
                 if ( BOOST_LIKELY( all_workers_done ) )
                     return;
             }
@@ -105,7 +105,7 @@ private:
                 event_.wait( lock );
         }
 
-        void reset() noexcept { counter_ = 0; }
+        void reset() noexcept { counter_.store( 0, std::memory_order_release ); }
 
     private:
                 worker_counter          counter_;
