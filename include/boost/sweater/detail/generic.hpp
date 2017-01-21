@@ -25,6 +25,7 @@
 #include <boost/functionoid/functionoid.hpp>
 #include <boost/range/algorithm/count_if.hpp>
 #include <boost/range/iterator_range_core.hpp>
+#include <boost/throw_exception.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -110,25 +111,9 @@ private:
                 std::mutex              mutex;
     }; // struct batch_semaphore
 
-    struct work_data
-    {
-        work_data            (                    ) = default;
-        work_data            ( work_data const &  ) = default;
-        work_data            ( work_data       && ) = default;
-        work_data & operator=( work_data const &  ) = default;
-        work_data & operator=( work_data       && ) = default;
-        functionoid::callable<void(), worker_traits> callback;
-        batch_semaphore * __restrict                 p_semaphore;
+    using work_t = functionoid::callable<void(), worker_traits>;
 
-        void do_work()
-        {
-            callback();
-            if ( p_semaphore )
-                p_semaphore->release();
-        }
-    }; // struct work_data
-
-    using my_queue = queues::mpmc_moodycamel<work_data>;
+    using my_queue = queues::mpmc_moodycamel<work_t>;
 
 public:
 	impl()
@@ -151,7 +136,7 @@ public:
 				{
                     auto token( queue_.consumer_token() );
 
-                    work_data work;
+                    work_t work;
 
                     for ( ; ; )
                     {
@@ -159,7 +144,7 @@ public:
                         {
                             if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
                             {
-                                work.do_work();
+                                work();
                                 if ( spin_count > 1 ) // restart the spin-wait
                                     try_count = 0;
                             }
@@ -171,17 +156,17 @@ public:
                         {
                             std::unique_lock<std::mutex> lock( mutex_ );
                             /// \note No need for a another loop here as a
-                            /// spurious-wakeup would be handled by the check in the
-                            /// loop above.
-                            ///                   (08.11.2016.) (Domagoj Saric)
+                            /// spurious-wakeup would be handled by the check in
+                            /// the loop above.
+                            ///               (08.11.2016.) (Domagoj Saric)
                             if ( !BOOST_LIKELY( queue_.dequeue( work, token ) ) )
                             {
-                                work.callback.clear();
+                                work.clear();
                                 work_event_.wait( lock );
                             }
                         }
-                        if ( BOOST_LIKELY( static_cast<bool>( work.callback ) ) )
-                            work.do_work();
+                        if ( BOOST_LIKELY( static_cast<bool>( work ) ) )
+                            work();
                     }
 				}
 			); // worker_loop
@@ -239,7 +224,7 @@ public:
 #   else
         BOOST_ASSUME( number_of_dispatched_work_parts < 512 );
 #   endif
-        auto const dispatched_work_parts( static_cast<work_data *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_data ) ) ) );
+        auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
 
         std::uint16_t iteration( 0 );
         if ( BOOST_LIKELY( iterations > 1 ) )
@@ -249,18 +234,20 @@ public:
                 auto const start_iteration( iteration );
                 auto const extra_iteration( work_part < threads_with_extra_iteration );
                 auto const end_iteration  ( start_iteration + iterations_per_worker + extra_iteration );
-                new ( &dispatched_work_parts[ work_part ] ) work_data
-                {
-                    [&work, start_iteration = iteration, end_iteration]() noexcept
-                    { work( start_iteration, end_iteration ); },
-                    &semaphore
-                };
+                new ( &dispatched_work_parts[ work_part ] ) work_t
+                (
+                    [&work, &semaphore, start_iteration = iteration, end_iteration]() noexcept
+                    {
+                        work( start_iteration, end_iteration );
+                        semaphore.release();
+                    }
+                );
                 iteration = end_iteration;
             }
 
             auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
             for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
-                dispatched_work_parts[ work_part ].~work_data();
+                dispatched_work_parts[ work_part ].~work_t();
             if ( !BOOST_LIKELY( enqueue_succeeded ) )
                 return false;
             std::unique_lock<std::mutex> lock( mutex_ );
@@ -280,7 +267,7 @@ public:
 	}
 
 	template <typename F>
-	void fire_and_forget( F && work )
+	bool fire_and_forget( F && work )
 	{
         struct self_destructed_work
         {
@@ -294,7 +281,7 @@ public:
             }
             alignas( work ) char storage[ sizeof( work ) ];
         };
-        queue_.enqueue( work_data{ self_destructed_work( std::forward<F>( work ) ), nullptr } );
+        return queue_.enqueue( self_destructed_work( std::forward<F>( work ) ) );
 	}
 
     template <typename F>
@@ -304,12 +291,16 @@ public:
         using result_t = typename std::result_of<F()>::type;
         std::promise<result_t> promise;
         std::future<result_t> future( promise.get_future() );
-        fire_and_forget
+        if
         (
-            [promise = std::move( promise ), work = std::forward<F>( work )]
-            () mutable { promise.set_value( work() ); }
-        );
-        return future;
+            fire_and_forget
+            (
+                [promise = std::move( promise ), work = std::forward<F>( work )]
+                () mutable { promise.set_value( work() ); }
+            )
+        )
+            return future;
+        BOOST_THROW_EXCEPTION( std::bad_alloc() );
     }
 
 private:
