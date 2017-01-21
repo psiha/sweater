@@ -62,7 +62,7 @@ public:
     bool enqueue_bulk( Arguments && ... arguments ) { return queue_.enqueue_bulk( std::forward<Arguments>( arguments )... ); }
 
     template <typename ... Token>
-    bool dequeue( Work & work, Token & ... token ) noexcept( std::is_nothrow_move_constructible<Work>::value ) { return queue_.try_dequeue( token..., work ); }
+    bool dequeue( Work & work, Token & ... token ) noexcept( std::is_nothrow_move_assignable<Work>::value ) { return queue_.try_dequeue( token..., work ); }
 
     consumer_token_t consumer_token() noexcept { return consumer_token_t( queue_ ); }
     producer_token_t producer_token() noexcept { return producer_token_t( queue_ ); }
