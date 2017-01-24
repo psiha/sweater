@@ -236,7 +236,7 @@ public:
         auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
 #   else
         alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
-        auto * BOOST_MAY_ALIAS const dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
+        auto * const BOOST_MAY_ALIAS dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
 #   endif // _MSC_VER
 
         std::uint16_t iteration( 0 );
