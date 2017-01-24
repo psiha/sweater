@@ -244,10 +244,15 @@ public:
         {
             for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
             {
-                auto const start_iteration( iteration );
-                auto const extra_iteration( work_part < threads_with_extra_iteration );
-                auto const end_iteration  ( start_iteration + iterations_per_worker + extra_iteration );
-                new ( &dispatched_work_parts[ work_part ] ) work_t
+                auto          const start_iteration( iteration );
+                auto          const extra_iteration( work_part < threads_with_extra_iteration );
+                std::uint16_t const end_iteration  ( start_iteration + iterations_per_worker + extra_iteration );
+                auto const placeholder( &dispatched_work_parts[ work_part ] );
+#          ifdef _MSC_VER
+                // MSVC14u3 still generates a branch w/o this (GCC issues a warning that it knows that placeholder cannot be null so we have to ifdef guard this).
+                BOOST_ASSUME( placeholder );
+#          endif // _MSC_VER
+                new ( placeholder ) work_t
                 (
                     [&work, &semaphore, start_iteration = iteration, end_iteration]() noexcept
                     {
