@@ -219,30 +219,30 @@ public:
 
         auto const number_of_work_parts( std::min<std::uint16_t>( number_of_workers, iterations ) );
         std::uint16_t const number_of_dispatched_work_parts( number_of_work_parts - 1 );
-
-        batch_semaphore semaphore( number_of_dispatched_work_parts );
-
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   else
         BOOST_ASSUME( number_of_dispatched_work_parts < 512 );
 #   endif
-        /// \note MSVC does not support VLAs but has an alloca that returns
-        /// (16 byte) aligned memory. Clang's alloca is unaligned and it does
-        /// not support VLAs of non-POD types.
-        /// The code below is safe with noexcept enqueue_bulk() and trivially
-        /// destructible and noexcept constructible work_ts.
-        ///                                   (21.01.2017.) (Domagoj Saric)
-#   ifdef BOOST_MSVC
-        auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
-#   else
-        alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
-        auto * const BOOST_MAY_ALIAS dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
-#   endif // _MSC_VER
+        batch_semaphore semaphore( number_of_dispatched_work_parts );
 
         std::uint16_t iteration( 0 );
         if ( BOOST_LIKELY( iterations > 1 ) )
         {
+            /// \note MSVC does not support VLAs but has an alloca that returns
+            /// (16 byte) aligned memory. Clang's alloca is unaligned and it
+            /// does not support VLAs of non-POD types. Regardless of any of
+            /// this a work_t VLA is not used to avoid needless default
+            /// construction of its members.
+            /// The code below is safe with noexcept enqueue_bulk() and
+            /// trivially destructible and noexcept constructible work_ts.
+            ///                               (21.01.2017.) (Domagoj Saric)
+#      ifdef BOOST_MSVC
+            auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
+#      else
+            alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
+            auto * const BOOST_MAY_ALIAS dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
+#      endif // _MSC_VER
             for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
             {
                 auto          const start_iteration( iteration );
