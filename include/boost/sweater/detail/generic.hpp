@@ -152,22 +152,20 @@ public:
                             }
                         }
 
-                        if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
-							return;
-
+                        bool have_work;
                         {
                             std::unique_lock<std::mutex> lock( mutex_ );
+                            if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
+                                return;
                             /// \note No need for a another loop here as a
                             /// spurious-wakeup would be handled by the check in
                             /// the loop above.
                             ///               (08.11.2016.) (Domagoj Saric)
-                            if ( !BOOST_LIKELY( queue_.dequeue( work, token ) ) )
-                            {
-                                work.clear();
+                            have_work = queue_.dequeue( work, token );
+                            if ( BOOST_UNLIKELY( !have_work ) )
                                 work_event_.wait( lock );
-                            }
                         }
-                        if ( BOOST_LIKELY( static_cast<bool>( work ) ) )
+                        if ( BOOST_LIKELY( have_work ) )
                             work();
                     }
 				}
@@ -181,8 +179,11 @@ public:
 
 	~impl() noexcept
 	{
-		brexit_.store( true, std::memory_order_relaxed );
-        work_event_.notify_all();
+        {
+            std::unique_lock<std::mutex> lock( mutex_ );
+            brexit_.store( true, std::memory_order_relaxed );
+            work_event_.notify_all();
+        }
 		for ( auto & worker : pool_ )
 			worker.join();
     #if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
