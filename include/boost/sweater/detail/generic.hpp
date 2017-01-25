@@ -39,6 +39,12 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+
+//...mrmlj...native threading implementation (in general to avoid the std::bloat and one of the attempts to workaround release build deadlocks with libstdc++)...to be cleaned up and moved to a separate lib...
+#include <cstddef>
+#ifdef __GLIBCXX__
+#include <pthread.h>
+#endif // __GLIBCXX__
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -79,14 +85,63 @@ private:
 
     using worker_counter = std::atomic<std::uint16_t>;
 
+#ifdef __GLIBCXX__
+    class pthread_condition_variable;
+    class pthread_mutex
+    {
+    public:
+        pthread_mutex() noexcept
+#   ifdef NDEBUG
+            : mutex_( PTHREAD_MUTEX_INITIALIZER ) {}
+#   else
+            : mutex_( PTHREAD_ERRORCHECK_MUTEX_INITIALIZER ) {}
+#   endif // NDEBUG
+        ~pthread_mutex() noexcept { BOOST_VERIFY( ::pthread_mutex_destroy( &mutex_ ) == 0 ); }
+
+        pthread_mutex( pthread_mutex && other ) : mutex_( other.mutex_ ) { other.mutex_ = PTHREAD_MUTEX_INITIALIZER; }
+        pthread_mutex( pthread_mutex const & ) = delete;
+
+        void   lock() noexcept { BOOST_VERIFY( ::pthread_mutex_lock  ( &mutex_ ) == 0 ); }
+        void unlock() noexcept { BOOST_VERIFY( ::pthread_mutex_unlock( &mutex_ ) == 0 ); }
+
+        bool try_lock() noexcept { return ::pthread_mutex_trylock( &mutex_ ) == 0; }
+
+    private: friend class pthread_condition_variable;
+        ::pthread_mutex_t mutex_;
+    }; // class pthread_mutex
+
+    class pthread_condition_variable
+    {
+    public:
+         pthread_condition_variable() noexcept : cv_( PTHREAD_COND_INITIALIZER ) {}
+        ~pthread_condition_variable() noexcept { BOOST_VERIFY( ::pthread_cond_destroy( &cv_ ) == 0 ); }
+
+        pthread_condition_variable( pthread_condition_variable && other ) noexcept : cv_( other.cv_ ) { other.cv_ = PTHREAD_COND_INITIALIZER; }
+        pthread_condition_variable( pthread_condition_variable const & ) = delete;
+
+        void notify_all() { BOOST_VERIFY( ::pthread_cond_broadcast( &cv_ ) == 0 ); }
+        void notify_one() { BOOST_VERIFY( ::pthread_cond_signal   ( &cv_ ) == 0 ); }
+        void wait( std::unique_lock<pthread_mutex> & lock ) { BOOST_VERIFY( ::pthread_cond_wait( &cv_, &lock.mutex()->mutex_ ) == 0 ); }
+
+    private:
+        ::pthread_cond_t cv_;
+    }; // class pthread_condition_variable
+
+    using mutex              = pthread_mutex;
+    using condition_variable = pthread_condition_variable;
+#else
+    using mutex              = std::mutex;
+    using condition_variable = std::condition_variable;
+#endif // __GLIBCXX__
+
     class batch_semaphore
     {
     public:
-        batch_semaphore( std::uint16_t const initial_value ) : counter_( initial_value ) {}
+        batch_semaphore( std::uint16_t const initial_value ) noexcept : counter_( initial_value ) {}
 
         void release() noexcept
         {
-            std::unique_lock<std::mutex> lock( mutex_ );
+            std::unique_lock<mutex> lock( mutex_ );
             if ( counter_.fetch_sub( 1, std::memory_order_relaxed ) == 1 )
                 event_.notify_one();
         }
@@ -100,7 +155,7 @@ private:
                 if ( BOOST_LIKELY( all_workers_done ) )
                     return;
             }
-            std::unique_lock<std::mutex> lock( mutex_ );
+            std::unique_lock<mutex> lock( mutex_ );
             while ( BOOST_UNLIKELY( counter_.load( std::memory_order_relaxed ) != 0 ) )
                 event_.wait( lock );
         }
@@ -108,9 +163,9 @@ private:
         void reset() noexcept { counter_.store( 0, std::memory_order_release ); }
 
     private:
-                worker_counter          counter_;
-                std::mutex              mutex_  ;
-        mutable std::condition_variable event_  ;
+        mutex              mutex_  ;
+        condition_variable event_  ;
+        worker_counter     counter_;
     }; // struct batch_semaphore
 
     using work_t = functionoid::callable<void(), worker_traits>;
@@ -118,11 +173,11 @@ private:
     using my_queue = queues::mpmc_moodycamel<work_t>;
 
 public:
-	impl()
+    impl()
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
 #endif
-	{
+    {
     #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
     #else
@@ -130,12 +185,12 @@ public:
         auto p_workers( std::make_unique<std::thread[]>( number_of_worker_threads ) );
         pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
     #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-		for ( auto & worker : pool_ )
-		{
-			auto const worker_loop
-			(
-				[this]() noexcept
-				{
+        for ( auto & worker : pool_ )
+        {
+            auto const worker_loop
+            (
+                [this]() noexcept
+                {
                     auto token( queue_.consumer_token() );
 
                     work_t work;
@@ -154,7 +209,7 @@ public:
 
                         bool have_work;
                         {
-                            std::unique_lock<std::mutex> lock( mutex_ );
+                            std::unique_lock<mutex> lock( mutex_ );
                             if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
                                 return;
                             /// \note No need for a another loop here as a
@@ -168,53 +223,59 @@ public:
                         if ( BOOST_LIKELY( have_work ) )
                             work();
                     }
-				}
-			); // worker_loop
+                }
+            ); // worker_loop
             worker = std::thread( worker_loop );
-		}
-    #if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        }
+#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         p_workers.release();
-    #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-	}
+#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    }
 
-	~impl() noexcept
-	{
+    ~impl() noexcept
+    {
         {
-            std::unique_lock<std::mutex> lock( mutex_ );
+            std::unique_lock<mutex> lock( mutex_ );
             brexit_.store( true, std::memory_order_relaxed );
             work_event_.notify_all();
         }
-		for ( auto & worker : pool_ )
-			worker.join();
-    #if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        for ( auto & worker : pool_ )
+            worker.join();
+#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         delete[] pool_.begin();
-    #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-	}
+#   endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    }
 
-	auto number_of_workers() const
+    auto number_of_workers() const
     {
         auto const result( static_cast<std::uint16_t>( pool_.size() + 1 ) );
-    #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( result <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
-    #endif
+#   endif
         return result;
     }
 
     /// For GCD dispatch_apply/OMP-like parallel loops.
     /// \details Guarantees that <VAR>work</VAR> will not be called more than
     /// <VAR>iterations</VAR> times (even if number_of_workers() > iterations).
-	template <typename F>
-	bool spread_the_sweat( std::uint16_t const iterations, F && __restrict work ) noexcept
-	{
-		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
+    template <typename F>
+    bool spread_the_sweat( std::uint16_t const iterations, F && __restrict work ) noexcept
+    {
+        static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
         if ( BOOST_UNLIKELY( iterations == 0 ) )
             return true;
 
+        if ( BOOST_UNLIKELY( iterations == 1 ) )
+        {
+            work( 0, 1 );
+            return true;
+        }
+
         auto const number_of_workers               ( this->number_of_workers()      );
-		auto const iterations_per_worker           ( iterations / number_of_workers );
+        auto const iterations_per_worker           ( iterations / number_of_workers );
         auto const leave_one_for_the_calling_thread( iterations_per_worker == 0     ); // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
-		auto const threads_with_extra_iteration    ( iterations % number_of_workers - leave_one_for_the_calling_thread );
+        auto const threads_with_extra_iteration    ( iterations % number_of_workers - leave_one_for_the_calling_thread );
         BOOST_ASSERT( !leave_one_for_the_calling_thread || iterations < number_of_workers );
 
         auto const number_of_work_parts( std::min<std::uint16_t>( number_of_workers, iterations ) );
@@ -224,79 +285,74 @@ public:
 #   else
         BOOST_ASSUME( number_of_dispatched_work_parts < 512 );
 #   endif
+
+        /// \note MSVC does not support VLAs but has an alloca that returns (16
+        /// byte) aligned memory. Clang's alloca is unaligned and it does not
+        /// support VLAs of non-POD types. Regardless of any of this a work_t
+        /// VLA is not used to avoid needless default construction of its
+        /// members.
+        /// The code below is safe with noexcept enqueue_bulk() and trivially
+        /// destructible and noexcept constructible work_ts.
+        ///                                   (21.01.2017.) (Domagoj Saric)
+#   ifdef BOOST_MSVC
+        auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
+#   else
+        alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
+        auto * const BOOST_MAY_ALIAS dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
+#   endif // BOOST_MSVC
         batch_semaphore semaphore( number_of_dispatched_work_parts );
 
         std::uint16_t iteration( 0 );
-        if ( BOOST_LIKELY( iterations > 1 ) )
+        for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
         {
-            /// \note MSVC does not support VLAs but has an alloca that returns
-            /// (16 byte) aligned memory. Clang's alloca is unaligned and it
-            /// does not support VLAs of non-POD types. Regardless of any of
-            /// this a work_t VLA is not used to avoid needless default
-            /// construction of its members.
-            /// The code below is safe with noexcept enqueue_bulk() and
-            /// trivially destructible and noexcept constructible work_ts.
+            auto          const start_iteration( iteration );
+            auto          const extra_iteration( work_part < threads_with_extra_iteration );
+            std::uint16_t const end_iteration  ( start_iteration + iterations_per_worker + extra_iteration );
+            auto const placeholder( &dispatched_work_parts[ work_part ] );
+#       ifdef BOOST_MSVC
+            // MSVC14u3 still generates a branch w/o this (GCC issues a warning that it knows that placeholder cannot be null so we have to ifdef guard this).
+            BOOST_ASSUME( placeholder );
+#       endif // BOOST_MSVC
+            new ( placeholder ) work_t
+            (
+                [&work, &semaphore, start_iteration = iteration, end_iteration]() noexcept
+                {
+                    work( start_iteration, end_iteration );
+                    semaphore.release();
+                }
+            );
+            iteration = end_iteration;
+        }
+
+        auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
+        for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
+            dispatched_work_parts[ work_part ].~work_t();
+        if ( BOOST_LIKELY( enqueue_succeeded ) )
+        {
+            std::unique_lock<mutex> lock( mutex_ );
+            work_event_.notify_all();
+        }
+        else
+        {
+            /// \note If enqueue failed perform everything on the caller's
+            /// thread.
             ///                               (21.01.2017.) (Domagoj Saric)
-#      ifdef BOOST_MSVC
-            auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
-#      else
-            alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
-            auto * const BOOST_MAY_ALIAS dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
-#      endif // _MSC_VER
-            for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
-            {
-                auto          const start_iteration( iteration );
-                auto          const extra_iteration( work_part < threads_with_extra_iteration );
-                std::uint16_t const end_iteration  ( start_iteration + iterations_per_worker + extra_iteration );
-                auto const placeholder( &dispatched_work_parts[ work_part ] );
-#          ifdef _MSC_VER
-                // MSVC14u3 still generates a branch w/o this (GCC issues a warning that it knows that placeholder cannot be null so we have to ifdef guard this).
-                BOOST_ASSUME( placeholder );
-#          endif // _MSC_VER
-                new ( placeholder ) work_t
-                (
-                    [&work, &semaphore, start_iteration = iteration, end_iteration]() noexcept
-                    {
-                        work( start_iteration, end_iteration );
-                        semaphore.release();
-                    }
-                );
-                iteration = end_iteration;
-            }
-
-            auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
-            for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
-                dispatched_work_parts[ work_part ].~work_t();
-            if ( BOOST_LIKELY( enqueue_succeeded ) )
-            {
-                std::unique_lock<std::mutex> lock( mutex_ );
-                work_event_.notify_all();
-            }
-            else
-            {
-                /// \note If enqueue failed perform everything on the caller's
-                /// thread.
-                ///                           (21.01.2017.) (Domagoj Saric)
-                iteration = 0;
-                semaphore.reset();
-            }
+            iteration = 0;
+            semaphore.reset();
         }
 
-		auto const caller_thread_start_iteration( iteration );
-		BOOST_ASSERT( caller_thread_start_iteration < iterations );
-		work( caller_thread_start_iteration, iterations );
+        auto const caller_thread_start_iteration( iteration );
+        BOOST_ASSERT( caller_thread_start_iteration < iterations );
+        work( caller_thread_start_iteration, iterations );
 
-        if ( BOOST_LIKELY( iterations > 1 ) )
-        {
-            semaphore.wait();
-        }
+        semaphore.wait();
 
         return true;
-	}
+    }
 
-	template <typename F>
-	bool fire_and_forget( F && work )
-	{
+    template <typename F>
+    bool fire_and_forget( F && work )
+    {
         struct self_destructed_work
         {
             self_destructed_work( F       && work ) noexcept( std::is_nothrow_move_constructible<F>::value ) { new ( storage ) F( std::move( work ) ); }
@@ -312,10 +368,10 @@ public:
         auto const enqueue_succeeded( queue_.enqueue( self_destructed_work( std::forward<F>( work ) ) ) );
         /// No need for a branch here as the worker thread has to handle
         /// spurious wakeups anyway.
-        std::unique_lock<std::mutex> lock( mutex_ );
+        std::unique_lock<mutex> lock( mutex_ );
         work_event_.notify_one();
         return BOOST_LIKELY( enqueue_succeeded );
-	}
+    }
 
     template <typename F>
     auto dispatch( F && work )
@@ -338,16 +394,16 @@ public:
     }
 
 private:
-            std::atomic<bool>       brexit_ = ATOMIC_FLAG_INIT;
-	        std::mutex              mutex_;
-    mutable std::condition_variable work_event_;
+    std::atomic<bool>  brexit_ = ATOMIC_FLAG_INIT;
+    mutex              mutex_;
+    condition_variable work_event_;
 
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-	using pool_threads_t = container::static_vector<std::thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1>; // also sweat on the calling thread
+    using pool_threads_t = container::static_vector<std::thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1>; // also sweat on the calling thread
 #else
     using pool_threads_t = iterator_range<std::thread *>;
 #endif
-	pool_threads_t pool_;
+    pool_threads_t pool_;
 
     /// \todo Further queue refinements.
     /// https://en.wikipedia.org/wiki/Work_stealing
