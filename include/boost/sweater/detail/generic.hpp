@@ -109,8 +109,8 @@ private:
 
     private:
                 worker_counter          counter_;
-        mutable std::condition_variable event_  ;
                 std::mutex              mutex_  ;
+        mutable std::condition_variable event_  ;
     }; // struct batch_semaphore
 
     using work_t = functionoid::callable<void(), worker_traits>;
