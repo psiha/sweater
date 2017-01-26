@@ -74,6 +74,8 @@ private:
         static constexpr auto is_noexcept = true;
         static constexpr auto rtti        = false;
 
+        static constexpr std::uint8_t sbo_alignment = 16;
+
         using empty_handler = functionoid::assert_on_empty;
     }; // struct worker_traits
 
@@ -202,7 +204,8 @@ public:
 
                     for ( ; ; )
                     {
-                        for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
+                        auto const dequeue_cost( 10000 );
+                        for ( auto try_count( 0 ); try_count < spin_count / dequeue_cost; ++try_count )
                         {
                             if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
                             {
@@ -404,13 +407,6 @@ private:
     mutex              mutex_;
     condition_variable work_event_;
 
-#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-    using pool_threads_t = container::static_vector<std::thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1>; // also sweat on the calling thread
-#else
-    using pool_threads_t = iterator_range<std::thread *>;
-#endif
-    pool_threads_t pool_;
-
     /// \todo Further queue refinements.
     /// https://en.wikipedia.org/wiki/Work_stealing
     /// http://www.drdobbs.com/parallel/writing-lock-free-code-a-corrected-queue/210604448
@@ -423,6 +419,13 @@ private:
     /// https://github.com/Qarterd/Honeycomb/blob/master/src/common/Honey/Thread/Pool.cpp
     ///                                       (12.10.2016.) (Domagoj Saric)
     my_queue queue_;
+
+#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    using pool_threads_t = container::static_vector<std::thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1>; // also sweat on the calling thread
+#else
+    using pool_threads_t = iterator_range<std::thread *>;
+#endif
+    pool_threads_t pool_;
 }; // class impl
 
 //------------------------------------------------------------------------------
