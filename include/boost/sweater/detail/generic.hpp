@@ -153,7 +153,17 @@ private:
             {
                 bool const all_workers_done( counter_.load( std::memory_order_acquire ) == 0 );
                 if ( BOOST_LIKELY( all_workers_done ) )
+                {
+                    /// \note Lock/wait on the mutex to make sure another thread
+                    /// is not right in release() between the counter decrement
+                    /// and event_.notify() before we exit this function (after
+                    /// which the batch_semaphore destructor is possibly called
+                    /// causing the event_.notify() call on the other thread to
+                    /// be called on a dead object).
+                    ///                       (26.01.2017.) (Domagoj Saric)
+                    std::unique_lock<mutex>{ mutex_ };
                     return;
+                }
             }
             std::unique_lock<mutex> lock( mutex_ );
             while ( BOOST_UNLIKELY( counter_.load( std::memory_order_relaxed ) != 0 ) )
