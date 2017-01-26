@@ -63,12 +63,8 @@ auto const hardware_concurrency( static_cast<std::uint8_t>( std::thread::hardwar
 class impl
 {
 private:
-#ifdef __ANROID__
     // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
     static auto constexpr spin_count = 30 * 1000 * 1000;
-#else
-    static auto constexpr spin_count =                0;
-#endif // __ANROID__
 
     struct worker_traits : functionoid::std_traits
     {
@@ -150,7 +146,7 @@ private:
         {
             for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
             {
-                bool const all_workers_done( counter_.load( std::memory_order_acquire ) == 0 );
+                bool const all_workers_done( counter_.load( std::memory_order_relaxed ) == 0 );
                 if ( BOOST_LIKELY( all_workers_done ) )
                 {
                     /// \note Lock/wait on the mutex to make sure another thread
@@ -164,7 +160,7 @@ private:
                     return;
                 }
             }
-            std::unique_lock<mutex> lock( mutex_ );
+            std::unique_lock<mutex> lock{ mutex_ };
             while ( BOOST_UNLIKELY( counter_.load( std::memory_order_relaxed ) != 0 ) )
                 event_.wait( lock );
         }
