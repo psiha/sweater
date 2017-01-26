@@ -40,11 +40,9 @@
 #include <mutex>
 #include <thread>
 
-//...mrmlj...native threading implementation (in general to avoid the std::bloat and one of the attempts to workaround release build deadlocks with libstdc++)...to be cleaned up and moved to a separate lib...
-#include <cstddef>
-#ifdef __GLIBCXX__
+#ifdef BOOST_HAS_PTHREADS
 #include <pthread.h>
-#endif // __GLIBCXX__
+#endif // BOOST_HAS_PTHREADS
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -85,20 +83,21 @@ private:
 
     using worker_counter = std::atomic<std::uint16_t>;
 
-#ifdef __GLIBCXX__
+#ifdef BOOST_HAS_PTHREADS
+    //...mrmlj...native threading implementation (avoid the std::bloat)...to be cleaned up and moved to a separate lib...
     class pthread_condition_variable;
     class pthread_mutex
     {
     public:
         pthread_mutex() noexcept
-#   ifdef NDEBUG
-            : mutex_( PTHREAD_MUTEX_INITIALIZER ) {}
-#   else
+#       if !defined( NDEBUG ) && defined( PTHREAD_ERRORCHECK_MUTEX_INITIALIZER )
             : mutex_( PTHREAD_ERRORCHECK_MUTEX_INITIALIZER ) {}
-#   endif // NDEBUG
+#       else
+            : mutex_( PTHREAD_MUTEX_INITIALIZER ) {}
+#       endif // NDEBUG
         ~pthread_mutex() noexcept { BOOST_VERIFY( ::pthread_mutex_destroy( &mutex_ ) == 0 ); }
 
-        pthread_mutex( pthread_mutex && other ) : mutex_( other.mutex_ ) { other.mutex_ = PTHREAD_MUTEX_INITIALIZER; }
+        pthread_mutex( pthread_mutex && other ) noexcept : mutex_( other.mutex_ ) { other.mutex_ = PTHREAD_MUTEX_INITIALIZER; }
         pthread_mutex( pthread_mutex const & ) = delete;
 
         void   lock() noexcept { BOOST_VERIFY( ::pthread_mutex_lock  ( &mutex_ ) == 0 ); }
@@ -132,7 +131,7 @@ private:
 #else
     using mutex              = std::mutex;
     using condition_variable = std::condition_variable;
-#endif // __GLIBCXX__
+#endif // BOOST_HAS_PTHREADS
 
     class batch_semaphore
     {
