@@ -296,9 +296,11 @@ public:
 
         /// \note MSVC does not support VLAs but has an alloca that returns (16
         /// byte) aligned memory. Clang's alloca is unaligned and it does not
-        /// support VLAs of non-POD types. Regardless of any of this a work_t
-        /// VLA is not used to avoid needless default construction of its
-        /// members.
+        /// support VLAs of non-POD types. GCC has a (16 byte) aligned alloca
+        /// and supports VLAs of non-POD types
+        /// (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=19131).
+        /// Regardless of any of this a work_t VLA is not used to avoid needless
+        /// default construction of its members.
         /// The code below is safe with noexcept enqueue_bulk() and trivially
         /// destructible and noexcept constructible work_ts.
         ///                                   (21.01.2017.) (Domagoj Saric)
