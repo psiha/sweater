@@ -67,7 +67,7 @@ private:
     // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
     static auto constexpr spin_count = 30 * 1000 * 1000;
 #else
-    static auto constexpr spin_count =                1;
+    static auto constexpr spin_count =                0;
 #endif // __ANROID__
 
     struct worker_traits : functionoid::std_traits
@@ -211,8 +211,7 @@ public:
                             if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
                             {
                                 work();
-                                if ( spin_count > 1 ) // restart the spin-wait
-                                    try_count = 0;
+                                try_count = 0; // restart the spin-wait
                             }
                         }
 
