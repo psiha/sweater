@@ -21,7 +21,14 @@
 #define mpmc_moodycamel_hpp__2418E6BF_4795_42B2_8FE8_4733F52FFC89
 #pragma once
 //------------------------------------------------------------------------------
+#ifdef _MSC_VER
+#    pragma warning( push )
+#    pragma warning( disable : 4127 ) // Conditional expression is constant @ concurrentqueue.h 775
+#endif // _MSC_VER
 #include <concurrentqueue/concurrentqueue.h>
+#ifdef MSC_VER
+#   pragma warning( pop )
+#endif // MSC_VER
 
 #include <cstdint>
 #include <type_traits>
