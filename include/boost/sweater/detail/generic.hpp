@@ -23,7 +23,6 @@
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 #include <boost/functionoid/functionoid.hpp>
-#include <boost/range/algorithm/count_if.hpp>
 #include <boost/range/iterator_range_core.hpp>
 
 #include <atomic>
