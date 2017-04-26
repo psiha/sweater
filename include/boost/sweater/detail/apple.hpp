@@ -52,6 +52,8 @@ auto const hardware_concurrency( static_cast<std::uint8_t>( std::thread::hardwar
 class impl
 {
 public:
+    using iterations_t = std::uint32_t;
+
 	// http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
 	static auto number_of_workers() noexcept
     {
@@ -63,7 +65,7 @@ public:
     }
 
 	template <typename F>
-	static void spread_the_sweat( std::uint16_t const iterations, F && work ) noexcept
+	static void spread_the_sweat( iterations_t const iterations, F && work ) noexcept
 	{
 		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
@@ -73,9 +75,9 @@ public:
         /// The iterations / number_of_workers is an integer division and can
         /// thus be 'lossy' so extra steps need to be taken to account for this.
         ///                                   (04.10.2016.) (Domagoj Saric)
-        auto          const number_of_workers    ( impl::number_of_workers() );
-        std::uint16_t const iterations_per_worker( iterations / number_of_workers );
-        std::uint8_t  const extra_iterations     ( iterations % number_of_workers );
+        auto         const number_of_workers    ( impl::number_of_workers() );
+        iterations_t const iterations_per_worker( iterations / number_of_workers );
+        std::uint8_t const extra_iterations     ( iterations % number_of_workers );
         auto /*const*/ worker
         (
             [
@@ -114,7 +116,7 @@ public:
         ///                                   (12.01.2017.) (Domagoj Saric)
 		dispatch_apply_f
 		(
-			std::min<std::uint16_t>( number_of_workers, iterations ),
+			std::min<iterations_t>( number_of_workers, iterations ),
             high_priority_queue,
             &worker,
             []( void * const p_context, std::size_t const worker_index ) noexcept

@@ -3,7 +3,7 @@
 /// \file openmp.hpp
 /// ----------------
 ///
-/// (c) Copyright Domagoj Saric 2016.
+/// (c) Copyright Domagoj Saric 2016 - 2017.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <future>
 #include <thread>
+#include <type_traits>
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -36,28 +37,36 @@ namespace sweater
 #	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
+#if defined( __ANDROID__ ) || defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ )
+using hardware_concurrency_t = std::uint_fast8_t;
+#else
+using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
+#endif
+
 BOOST_OVERRIDABLE_SYMBOL
-auto const hardware_concurrency( static_cast<std::uint8_t>( std::thread::hardware_concurrency() ) );
+auto const hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
 
 struct impl
 {
+    using iterations_t = std::uint32_t;
+
     // http://openmp.org/mp-documents/OpenMP_Examples_4.0.1.pdf
 
-	static auto number_of_workers() noexcept { return static_cast<std::uint16_t>( omp_get_max_threads() ); }
+	static auto number_of_workers() noexcept { return static_cast<hardware_concurrency_t>( omp_get_max_threads() ); }
 
 	template <typename F>
-	static void spread_the_sweat( std::uint16_t const iterations, F & work ) noexcept
+	static void spread_the_sweat( iterations_t const iterations, F & work ) noexcept
 	{
 		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 		#pragma omp parallel
 		{
-			auto const number_of_workers( static_cast<std::uint8_t>( omp_get_num_threads() ) );
+			auto const number_of_workers( static_cast<hardware_concurrency_t>( omp_get_num_threads() ) );
 			auto const iterations_per_worker( iterations / number_of_workers + 1 );
 
 			#pragma omp for
-			for ( std::int16_t iteration( 0 ); iteration < iterations; iteration += iterations_per_worker )
+			for ( std::make_signed_t<iterations_t> iteration( 0 ); iteration < iterations; iteration += iterations_per_worker )
 			{
-				work( iteration, std::min<std::uint16_t>( iterations, iteration + iterations_per_worker ) );
+				work( iteration, std::min<iterations_t>( iterations, iteration + iterations_per_worker ) );
 			}
 		}
 	}

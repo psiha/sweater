@@ -3,7 +3,7 @@
 /// \file generic.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016.
+/// (c) Copyright Domagoj Saric 2016 - 2017.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -56,8 +56,14 @@ namespace sweater
 
 namespace queues { template <typename Work> class mpmc_moodycamel; }
 
+#if defined( __ANDROID__ ) || defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ )
+using hardware_concurrency_t = std::uint_fast8_t;
+#else
+using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
+#endif
+
 BOOST_OVERRIDABLE_SYMBOL
-auto const hardware_concurrency( static_cast<std::uint8_t>( std::thread::hardware_concurrency() ) );
+auto const hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
 
 class impl
 {
@@ -78,7 +84,7 @@ private:
         using empty_handler = functionoid::assert_on_empty;
     }; // struct worker_traits
 
-    using worker_counter = std::atomic<std::uint16_t>;
+    using worker_counter = std::atomic<hardware_concurrency_t>;
 
 #ifdef BOOST_HAS_PTHREADS
     //...mrmlj...native threading implementation (avoid the std::bloat)...to be cleaned up and moved to a separate lib...
@@ -133,7 +139,7 @@ private:
     class batch_semaphore
     {
     public:
-        batch_semaphore( std::uint16_t const initial_value ) noexcept : counter_( initial_value ) {}
+        batch_semaphore( hardware_concurrency_t const initial_value ) noexcept : counter_( initial_value ) {}
 
         void release() noexcept
         {
@@ -179,6 +185,8 @@ private:
     using my_queue = queues::mpmc_moodycamel<work_t>;
 
 public:
+    using iterations_t = std::uint32_t;
+
     impl()
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
@@ -254,7 +262,7 @@ public:
 
     auto number_of_workers() const
     {
-        auto const result( static_cast<std::uint16_t>( pool_.size() + 1 ) );
+        auto const result( static_cast<hardware_concurrency_t>( pool_.size() + 1 ) );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( result <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   endif
@@ -265,7 +273,7 @@ public:
     /// \details Guarantees that <VAR>work</VAR> will not be called more than
     /// <VAR>iterations</VAR> times (even if number_of_workers() > iterations).
     template <typename F>
-    bool spread_the_sweat( std::uint16_t const iterations, F && __restrict work ) noexcept
+    bool spread_the_sweat( iterations_t const iterations, F && __restrict work ) noexcept
     {
         static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
@@ -284,12 +292,10 @@ public:
         auto const threads_with_extra_iteration    ( iterations % number_of_workers - leave_one_for_the_calling_thread );
         BOOST_ASSERT( !leave_one_for_the_calling_thread || iterations < number_of_workers );
 
-        auto const number_of_work_parts( std::min<std::uint16_t>( number_of_workers, iterations ) );
-        std::uint16_t const number_of_dispatched_work_parts( number_of_work_parts - 1 );
+        auto const number_of_work_parts( static_cast<hardware_concurrency_t>( std::min<iterations_t>( number_of_workers, iterations ) ) );
+        hardware_concurrency_t const number_of_dispatched_work_parts( number_of_work_parts - 1 );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
-#   else
-        BOOST_ASSUME( number_of_dispatched_work_parts < 512 );
 #   endif
 
         /// \note MSVC does not support VLAs but has an alloca that returns (16
@@ -310,12 +316,12 @@ public:
 #   endif // BOOST_MSVC
         batch_semaphore semaphore( number_of_dispatched_work_parts );
 
-        std::uint16_t iteration( 0 );
-        for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
+        iterations_t iteration( 0 );
+        for ( hardware_concurrency_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
         {
             auto const start_iteration( iteration );
             auto const extra_iteration( work_part < threads_with_extra_iteration );
-            auto const end_iteration  ( static_cast<std::uint16_t>( start_iteration + iterations_per_worker + extra_iteration ) );
+            auto const end_iteration  ( static_cast<iterations_t>( start_iteration + iterations_per_worker + extra_iteration ) );
             auto const placeholder( &dispatched_work_parts[ work_part ] );
 #       ifdef BOOST_MSVC
             // MSVC14u3 still generates a branch w/o this (GCC issues a warning that it knows that placeholder cannot be null so we have to ifdef guard this).
@@ -333,7 +339,7 @@ public:
         }
 
         auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
-        for ( std::uint8_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
+        for ( hardware_concurrency_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
             dispatched_work_parts[ work_part ].~work_t();
         if ( BOOST_LIKELY( enqueue_succeeded ) )
         {
