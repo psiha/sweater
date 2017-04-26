@@ -3,7 +3,7 @@
 /// \file apple.hpp
 /// ---------------
 ///
-/// (c) Copyright Domagoj Saric 2016.
+/// (c) Copyright Domagoj Saric 2016 - 2017.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -25,6 +25,7 @@
 #include <type_traits>
 
 #include <dispatch/dispatch.h>
+#include <TargetConditionals.h>
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -34,8 +35,12 @@ namespace sweater
 //------------------------------------------------------------------------------
 
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
+#if TARGET_OS_IOS
+#   ifdef __aarch64__
+#	    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
+#   else
+#       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
+#   endif
 #else
 #	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
 #endif
@@ -50,6 +55,7 @@ public:
 	// http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
 	static auto number_of_workers() noexcept
     {
+        BOOST_ASSERT_MSG( hardware_concurrency == std::thread::hardware_concurrency(), "Hardware concurrency changed at runtime!?" );
     #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
     #endif
