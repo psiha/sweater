@@ -67,6 +67,9 @@ auto const hardware_concurrency( static_cast<hardware_concurrency_t>( std::threa
 
 class impl
 {
+public:
+    using iterations_t = std::uint32_t;
+
 private:
     // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
     static auto constexpr spin_count = 30 * 1000 * 1000;
@@ -92,21 +95,21 @@ private:
     class pthread_mutex
     {
     public:
-        pthread_mutex() noexcept
+        pthread_mutex() noexcept BOOST_NOTHROW_LITE
 #       if !defined( NDEBUG ) && defined( PTHREAD_ERRORCHECK_MUTEX_INITIALIZER )
             : mutex_( PTHREAD_ERRORCHECK_MUTEX_INITIALIZER ) {}
 #       else
             : mutex_( PTHREAD_MUTEX_INITIALIZER ) {}
 #       endif // NDEBUG
-        ~pthread_mutex() noexcept { BOOST_VERIFY( ::pthread_mutex_destroy( &mutex_ ) == 0 ); }
+        ~pthread_mutex() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_mutex_destroy( &mutex_ ) == 0 ); }
 
         pthread_mutex( pthread_mutex && other ) noexcept : mutex_( other.mutex_ ) { other.mutex_ = PTHREAD_MUTEX_INITIALIZER; }
         pthread_mutex( pthread_mutex const & ) = delete;
 
-        void   lock() noexcept { BOOST_VERIFY( ::pthread_mutex_lock  ( &mutex_ ) == 0 ); }
-        void unlock() noexcept { BOOST_VERIFY( ::pthread_mutex_unlock( &mutex_ ) == 0 ); }
+        void   lock() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_mutex_lock  ( &mutex_ ) == 0 ); }
+        void unlock() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_mutex_unlock( &mutex_ ) == 0 ); }
 
-        bool try_lock() noexcept { return ::pthread_mutex_trylock( &mutex_ ) == 0; }
+        bool try_lock() noexcept BOOST_NOTHROW_LITE { return ::pthread_mutex_trylock( &mutex_ ) == 0; }
 
     private: friend class pthread_condition_variable;
         ::pthread_mutex_t mutex_;
@@ -115,15 +118,15 @@ private:
     class pthread_condition_variable
     {
     public:
-         pthread_condition_variable() noexcept : cv_( PTHREAD_COND_INITIALIZER ) {}
-        ~pthread_condition_variable() noexcept { BOOST_VERIFY( ::pthread_cond_destroy( &cv_ ) == 0 ); }
+         pthread_condition_variable() noexcept BOOST_NOTHROW_LITE : cv_( PTHREAD_COND_INITIALIZER ) {}
+        ~pthread_condition_variable() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_cond_destroy( &cv_ ) == 0 ); }
 
         pthread_condition_variable( pthread_condition_variable && other ) noexcept : cv_( other.cv_ ) { other.cv_ = PTHREAD_COND_INITIALIZER; }
         pthread_condition_variable( pthread_condition_variable const & ) = delete;
 
-        void notify_all() { BOOST_VERIFY( ::pthread_cond_broadcast( &cv_ ) == 0 ); }
-        void notify_one() { BOOST_VERIFY( ::pthread_cond_signal   ( &cv_ ) == 0 ); }
-        void wait( std::unique_lock<pthread_mutex> & lock ) { BOOST_VERIFY( ::pthread_cond_wait( &cv_, &lock.mutex()->mutex_ ) == 0 ); }
+        void notify_all() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_cond_broadcast( &cv_ ) == 0 ); }
+        void notify_one() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_cond_signal   ( &cv_ ) == 0 ); }
+        void wait( std::unique_lock<pthread_mutex> & lock ) noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_cond_wait( &cv_, &lock.mutex()->mutex_ ) == 0 ); }
 
     private:
         ::pthread_cond_t cv_;
@@ -141,6 +144,7 @@ private:
     public:
         batch_semaphore( hardware_concurrency_t const initial_value ) noexcept : counter_( initial_value ) {}
 
+        BOOST_NOINLINE
         void release() noexcept
         {
             std::unique_lock<mutex> lock( mutex_ );
@@ -180,13 +184,41 @@ private:
         worker_counter     counter_;
     }; // struct batch_semaphore
 
+    class spread_setup
+    {
+    public:
+        spread_setup( iterations_t const iterations ) noexcept
+            :
+            iterations_per_worker          ( iterations / impl::number_of_workers() ),
+            threads_with_extra_iteration   ( iterations % impl::number_of_workers() - leave_one_for_the_calling_thread() ),
+            number_of_dispatched_work_parts( number_of_work_parts( iterations ) - 1 ),
+            semaphore                      ( number_of_dispatched_work_parts )
+        {
+            BOOST_ASSERT( leave_one_for_the_calling_thread() == false || iterations < iterations_t( impl::number_of_workers() ) );
+        #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+            BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+        #   endif
+        }
+
+        iterations_t           const iterations_per_worker;
+        hardware_concurrency_t const threads_with_extra_iteration;
+        hardware_concurrency_t const number_of_dispatched_work_parts;
+        batch_semaphore              semaphore;
+
+    private:
+        // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
+        bool leave_one_for_the_calling_thread() const noexcept { return iterations_per_worker == 0; }
+        static hardware_concurrency_t number_of_work_parts( iterations_t const iterations ) noexcept
+        {
+            return static_cast<hardware_concurrency_t>( std::min<iterations_t>( impl::number_of_workers(), iterations ) );
+        }
+    }; // class spread_setup
+
     using work_t = functionoid::callable<void(), worker_traits>;
 
     using my_queue = queues::mpmc_moodycamel<work_t>;
 
 public:
-    using iterations_t = std::uint32_t;
-
     impl()
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
@@ -260,13 +292,12 @@ public:
 #   endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     }
 
-    auto number_of_workers() const
+    static hardware_concurrency_t number_of_workers() noexcept
     {
-        auto const result( static_cast<hardware_concurrency_t>( pool_.size() + 1 ) );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( result <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+        BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   endif
-        return result;
+        return hardware_concurrency;
     }
 
     /// For GCD dispatch_apply/OMP-like parallel loops.
@@ -286,17 +317,7 @@ public:
             return true;
         }
 
-        auto const number_of_workers               ( this->number_of_workers()      );
-        auto const iterations_per_worker           ( iterations / number_of_workers );
-        auto const leave_one_for_the_calling_thread( iterations_per_worker == 0     ); // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
-        auto const threads_with_extra_iteration    ( iterations % number_of_workers - leave_one_for_the_calling_thread );
-        BOOST_ASSERT( !leave_one_for_the_calling_thread || iterations < number_of_workers );
-
-        auto const number_of_work_parts( static_cast<hardware_concurrency_t>( std::min<iterations_t>( number_of_workers, iterations ) ) );
-        hardware_concurrency_t const number_of_dispatched_work_parts( number_of_work_parts - 1 );
-#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
-#   endif
+        spread_setup setup( iterations );
 
         /// \note MSVC does not support VLAs but has an alloca that returns (16
         /// byte) aligned memory. Clang's alloca is unaligned and it does not
@@ -305,31 +326,31 @@ public:
         /// (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=19131).
         /// Regardless of any of this a work_t VLA is not used to avoid needless
         /// default construction of its members.
-        /// The code below is safe with noexcept enqueue_bulk() and trivially
-        /// destructible and noexcept constructible work_ts.
+        /// The code below is safe with noexcept enqueue and noexcept
+        /// destructible and constructible work_ts.
         ///                                   (21.01.2017.) (Domagoj Saric)
 #   ifdef BOOST_MSVC
-        auto const dispatched_work_parts( static_cast<work_t *>( alloca( ( number_of_dispatched_work_parts ) * sizeof( work_t ) ) ) );
+        auto const dispatched_work_parts( static_cast<work_t *>( alloca( setup.number_of_dispatched_work_parts * sizeof( work_t ) ) ) );
 #   else
-        alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
+        alignas( work_t ) char dispatched_work_parts_storage[ setup.number_of_dispatched_work_parts * sizeof( work_t ) ];
         auto * const BOOST_MAY_ALIAS dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
 #   endif // BOOST_MSVC
-        batch_semaphore semaphore( number_of_dispatched_work_parts );
 
         iterations_t iteration( 0 );
-        for ( hardware_concurrency_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
+        for ( hardware_concurrency_t work_part( 0 ); work_part < setup.number_of_dispatched_work_parts; ++work_part )
         {
             auto const start_iteration( iteration );
-            auto const extra_iteration( work_part < threads_with_extra_iteration );
-            auto const end_iteration  ( static_cast<iterations_t>( start_iteration + iterations_per_worker + extra_iteration ) );
+            auto const extra_iteration( work_part < setup.threads_with_extra_iteration );
+            auto const end_iteration  ( static_cast<iterations_t>( start_iteration + setup.iterations_per_worker + extra_iteration ) );
             auto const placeholder( &dispatched_work_parts[ work_part ] );
 #       ifdef BOOST_MSVC
-            // MSVC14u3 still generates a branch w/o this (GCC issues a warning that it knows that placeholder cannot be null so we have to ifdef guard this).
+            // MSVC14.1 still generates a branch w/o this (GCC issues a warning that it knows that placeholder cannot be null so we have to ifdef guard this).
             BOOST_ASSUME( placeholder );
 #       endif // BOOST_MSVC
+            auto & semaphore( setup.semaphore );
             new ( placeholder ) work_t
             (
-                [&work, &semaphore, start_iteration = iteration, end_iteration]() noexcept
+                [&work, start_iteration = iteration, end_iteration, &semaphore]() noexcept
                 {
                     work( start_iteration, end_iteration );
                     semaphore.release();
@@ -338,34 +359,23 @@ public:
             iteration = end_iteration;
         }
 
-        auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
-        for ( hardware_concurrency_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
-            dispatched_work_parts[ work_part ].~work_t();
-        if ( BOOST_LIKELY( enqueue_succeeded ) )
-        {
-            std::unique_lock<mutex> lock( mutex_ );
-            work_event_.notify_all();
-        }
-        else
-        {
-            /// \note If enqueue failed perform everything on the caller's
-            /// thread.
-            ///                               (21.01.2017.) (Domagoj Saric)
-            iteration = 0;
-            semaphore.reset();
-        }
+        auto const enqueue_failure_iteration_mask
+        (
+            enqueue( dispatched_work_parts, setup.number_of_dispatched_work_parts, setup.semaphore )
+        );
+        iteration &= enqueue_failure_iteration_mask;
 
         auto const caller_thread_start_iteration( iteration );
         BOOST_ASSERT( caller_thread_start_iteration < iterations );
         work( caller_thread_start_iteration, iterations );
 
-        semaphore.wait();
+        setup.semaphore.wait();
 
-        return true;
+        return enqueue_failure_iteration_mask != 0;
     }
 
     template <typename F>
-    bool fire_and_forget( F && work )
+    bool fire_and_forget( F && work ) noexcept( noexcept( std::is_nothrow_constructible<std::remove_reference_t<F>, F &&>::value ) )
     {
         struct self_destructed_work
         {
@@ -374,6 +384,7 @@ public:
             void operator()() noexcept
             {
                 auto & work( reinterpret_cast<F &>( storage ) );
+                static_assert( noexcept( work() ), "Work must provide the no-fail exception guarantee" );
                 work();
                 work.~F();
             }
@@ -405,6 +416,30 @@ public:
         if ( BOOST_UNLIKELY( !dispatch_succeeded ) )
             future.set_exception( std::make_exception_ptr( std::bad_alloc() ) );
         return future;
+    }
+
+private:
+    BOOST_NOINLINE
+    iterations_t // mask for the current iteration count (for branchless setting to zero)
+    BOOST_CC_REG enqueue( work_t * __restrict const dispatched_work_parts, hardware_concurrency_t const number_of_dispatched_work_parts, batch_semaphore & __restrict semaphore ) noexcept
+    {
+        auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
+        for ( hardware_concurrency_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
+            dispatched_work_parts[ work_part ].~work_t();
+        if ( BOOST_LIKELY( enqueue_succeeded ) )
+        {
+            std::unique_lock<mutex> lock( mutex_ );
+            work_event_.notify_all();
+            return static_cast<iterations_t>( -1 );
+        }
+        else
+        {
+            /// \note If enqueue failed perform everything on the caller's
+            /// thread.
+            ///                               (21.01.2017.) (Domagoj Saric)
+            semaphore.reset();
+            return static_cast<iterations_t>( 0 );
+        }
     }
 
 private:
