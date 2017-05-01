@@ -37,12 +37,12 @@ namespace sweater
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 #if TARGET_OS_IOS
 #   ifdef __aarch64__
-#	    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
+#       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
 #   else
 #       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
 #   endif
 #else
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
+#   define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
 #endif
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
@@ -54,8 +54,8 @@ class impl
 public:
     using iterations_t = std::uint32_t;
 
-	// http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
-	static auto number_of_workers() noexcept
+    // http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
+    static auto number_of_workers() noexcept
     {
         BOOST_ASSERT_MSG( hardware_concurrency == std::thread::hardware_concurrency(), "Hardware concurrency changed at runtime!?" );
     #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
@@ -64,10 +64,10 @@ public:
         return hardware_concurrency;
     }
 
-	template <typename F>
-	static void spread_the_sweat( iterations_t const iterations, F && work ) noexcept
-	{
-		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
+    template <typename F>
+    static void spread_the_sweat( iterations_t const iterations, F && work ) noexcept
+    {
+        static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
         /// \note Stride the iteration count based on the number of workers
         /// (otherwise dispatch_apply will make an indirect function call for
@@ -114,9 +114,9 @@ public:
         /// stop_iteration) so we have to additionally clamp the iterations
         /// parameter passed to dispatch_apply).
         ///                                   (12.01.2017.) (Domagoj Saric)
-		dispatch_apply_f
-		(
-			std::min<iterations_t>( number_of_workers, iterations ),
+        dispatch_apply_f
+        (
+            std::min<iterations_t>( number_of_workers, iterations ),
             high_priority_queue,
             &worker,
             []( void * const p_context, std::size_t const worker_index ) noexcept
@@ -124,18 +124,18 @@ public:
                 auto & __restrict the_worker( *static_cast<decltype( worker ) const *>( p_context ) );
                 the_worker( static_cast<std::uint8_t>( worker_index ) );
             }
-		);
-	}
+        );
+    }
 
-	template <typename F>
-	static void fire_and_forget( F && work ) noexcept
-	{
+    template <typename F>
+    static void fire_and_forget( F && work ) noexcept
+    {
         /// \note "ObjC++ attempts to copy lambdas, preventing capture of
         /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
         ///                                   (14.01.2016.) (Domagoj Saric)
         __block auto moveable_work( std::forward<F>( work ) );
         dispatch_async( high_priority_queue, ^(){ moveable_work(); } );
-	}
+    }
 
     template <typename F>
     static auto dispatch( F && work )

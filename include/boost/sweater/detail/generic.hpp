@@ -51,7 +51,7 @@ namespace sweater
 //------------------------------------------------------------------------------
 
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
+#   define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
 namespace queues { template <typename Work> class mpmc_moodycamel; }
