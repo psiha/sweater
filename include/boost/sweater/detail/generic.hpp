@@ -195,9 +195,9 @@ private:
             semaphore                      ( number_of_dispatched_work_parts )
         {
             BOOST_ASSERT( leave_one_for_the_calling_thread() == false || iterations < iterations_t( impl::number_of_workers() ) );
-        #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#      if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
             BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
-        #   endif
+#      endif
         }
 
         iterations_t           const iterations_per_worker;
@@ -224,10 +224,15 @@ public:
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
 #endif
     {
+        /// \note Avoid the static-initialization-order-fiasco by not using the
+        /// global hardware_concurrency variable (i.e. allow users to safely
+        /// create plain global-variable sweat_shop singletons).
+        ///                                   (01.05.2017.) (Domagoj Saric)
+        auto const local_hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
     #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+        BOOST_ASSUME( local_hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
     #else
-        auto const number_of_worker_threads( hardware_concurrency - 1 );
+        auto const number_of_worker_threads( local_hardware_concurrency - 1 );
         auto p_workers( std::make_unique<std::thread[]>( number_of_worker_threads ) );
         pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
     #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
