@@ -195,9 +195,9 @@ private:
             semaphore                      ( number_of_dispatched_work_parts )
         {
             BOOST_ASSERT( leave_one_for_the_calling_thread() == false || iterations < iterations_t( impl::number_of_workers() ) );
-#      if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
             BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
-#      endif
+#       endif
         }
 
         iterations_t           const iterations_per_worker;
@@ -263,7 +263,7 @@ public:
                             std::unique_lock<mutex> lock( mutex_ );
                             if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
                                 return;
-                            /// \note No need for a another loop here as a
+                            /// \note No need for another loop here as a
                             /// spurious-wakeup would be handled by the check in
                             /// the loop above.
                             ///               (08.11.2016.) (Domagoj Saric)
@@ -302,7 +302,7 @@ public:
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   endif
-        return hardware_concurrency;
+        return hardware_concurrency - unused_cores;
     }
 
     /// For GCD dispatch_apply/OMP-like parallel loops.
@@ -423,6 +423,12 @@ public:
         return future;
     }
 
+    static void set_number_of_unused_cores( hardware_concurrency_t const number_of_unused_cores ) noexcept
+    {
+        BOOST_ASSERT_MSG( number_of_unused_cores < hardware_concurrency, "No one left to sweat?" );
+        unused_cores = number_of_unused_cores;
+    }
+
 private:
     BOOST_NOINLINE
     iterations_t // mask for the current iteration count (for branchless setting to zero)
@@ -471,7 +477,12 @@ private:
     using pool_threads_t = iterator_range<std::thread *>;
 #endif
     pool_threads_t pool_;
+
+    static hardware_concurrency_t unused_cores;
 }; // class impl
+
+BOOST_OVERRIDABLE_MEMBER_SYMBOL
+hardware_concurrency_t impl::unused_cores( 0 );
 
 //------------------------------------------------------------------------------
 } // namespace sweater
