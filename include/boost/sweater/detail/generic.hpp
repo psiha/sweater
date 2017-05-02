@@ -72,7 +72,7 @@ public:
 
 private:
     // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
-    static auto constexpr spin_count = 30 * 1000 * 1000;
+    static auto constexpr spin_count = 10 * 1000 * 1000;
 
     struct worker_traits : functionoid::std_traits
     {
