@@ -42,6 +42,11 @@
 #ifdef BOOST_HAS_PTHREADS
 #include <pthread.h>
 #endif // BOOST_HAS_PTHREADS
+
+#ifdef __ANDROID__
+#include <sys/time.h>
+#include <sys/resource.h>
+#endif // __ANDROID__
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -69,6 +74,27 @@ class impl
 {
 public:
     using iterations_t = std::uint32_t;
+
+    enum struct priority : int
+    {
+    #ifdef BOOST_HAS_PTHREADS
+        idle          =  19,
+        background    =  10,
+        low           =  5,
+        normal        =  0,
+        high          = -5,
+        foreground    = -10,
+        time_critical = -20
+    #else
+        idle          = THREAD_PRIORITY_LOWEST, // TODO THREAD_MODE_BACKGROUND_BEGIN
+        background    = THREAD_PRIORITY_LOWEST,
+        low           = THREAD_PRIORITY_BELOW_NORMAL,
+        normal        = THREAD_PRIORITY_NORMAL,
+        high          = THREAD_PRIORITY_ABOVE_NORMAL,
+        foreground    = THREAD_PRIORITY_HIGHEST,
+        time_critical = THREAD_PRIORITY_TIME_CRITICAL
+    #endif // thread backend
+    };
 
 private:
     // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
@@ -429,6 +455,60 @@ public:
     {
         BOOST_ASSERT_MSG( number_of_unused_cores < hardware_concurrency, "No one left to sweat?" );
         unused_cores = number_of_unused_cores;
+    }
+
+    BOOST_ATTRIBUTES( BOOST_MINSIZE )
+    bool set_priority( priority const new_priority ) noexcept
+    {
+    #ifdef __ANDROID__
+        /// \note Android's pthread_setschedparam() does not actually work so we
+        /// have to abuse the general Linux' setpriority() non-POSIX compliance
+        /// (i.e. that it sets the calling thread's priority).
+        /// http://stackoverflow.com/questions/17398075/change-native-thread-priority-on-android-in-c-c
+        /// https://android.googlesource.com/platform/dalvik/+/gingerbread/vm/alloc/Heap.c
+        /// https://developer.android.com/topic/performance/threads.html
+        /// _or_
+        /// try the undocumented things the Java Process.setThreadPriority()
+        /// function seems to be doing:
+        /// https://github.com/android/platform_frameworks_base/blob/master/core/java/android/os/Process.java#L634
+        /// https://github.com/android/platform_frameworks_base/blob/master/core/jni/android_util_Process.cpp#L475
+        /// https://android.googlesource.com/platform/frameworks/native/+/jb-dev/libs/utils/Threads.cpp#329
+        ///                                   (03.05.2017.) (Domagoj Saric)
+    #endif
+        auto const new_priority_value( static_cast<int>( new_priority ) );
+        bool success( true );
+        for ( auto & thread : pool_ )
+        {
+        #ifdef BOOST_HAS_PTHREADS
+            #if defined( __ANDROID__ )
+                success &= ( ::setprority( PRIO_PROCESS, thread.get_id(), new_priority_value ) == 0 );
+            #elif !( defined( __ANDROID__ ) || defined( __APPLE__ ) )
+                success &= ( pthread_setschedprio( thread.native_handle(), new_priority_value ) == 0 );
+            #else
+                ::sched_param scheduling_parameters;
+                int           policy;
+                auto const handle( thread.native_handle() );
+                BOOST_VERIFY( pthread_getschedparam( handle, &policy, &scheduling_parameters ) == 0 );
+                scheduling_parameters.sched_priority = new_priority_value;
+                success &= ( pthread_setschedparam( handle, policy, &scheduling_parameters ) == 0 );
+            #endif // __ANDROID__
+        #else
+            success &= ( ::SetThreadPriority( thread.native_handle(), new_priority_value ) != false );
+        #endif // thread backend
+        }
+
+    #ifdef __ANDROID__
+        if ( !success )
+        {
+            success = true;
+            spread_the_sweat
+            (
+                static_cast<iterations_t>( pool_.size() ),
+                [ &success, new_priority_value ]( iterations_t, iterations_t ) noexcept { success &= ( ::setprority( PRIO_PROCESS, 0, new_priority_value ) == 0 ); }
+            );
+        }
+    #endif // __ANDROID__
+        return success;
     }
 
 private:
