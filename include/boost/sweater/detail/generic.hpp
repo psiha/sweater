@@ -98,7 +98,7 @@ public:
 
 private:
     // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
-    static auto constexpr spin_count = 10 * 1000 * 1000;
+    static std::uint32_t spin_count;
 
     struct worker_traits : functionoid::std_traits
     {
@@ -181,7 +181,7 @@ private:
         BOOST_NOINLINE
         void wait() noexcept
         {
-            for ( auto try_count( 0 ); try_count < spin_count; ++try_count )
+            for ( auto try_count( 0U ); try_count < spin_count; ++try_count )
             {
                 bool const all_workers_done( counter_.load( std::memory_order_relaxed ) == 0 );
                 if ( BOOST_LIKELY( all_workers_done ) )
@@ -275,8 +275,8 @@ public:
 
                     for ( ; ; )
                     {
-                        auto const dequeue_cost( 10000 );
-                        for ( auto try_count( 0 ); try_count < spin_count / dequeue_cost; ++try_count )
+                        auto const dequeue_cost( 16384 );
+                        for ( auto try_count( 0U ); try_count < spin_count / dequeue_cost; ++try_count )
                         {
                             if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
                             {
@@ -457,6 +457,11 @@ public:
         unused_cores = number_of_unused_cores;
     }
 
+    static void set_idle_suspend_spin_count( std::uint32_t const new_spin_count ) noexcept
+    {
+        spin_count = new_spin_count;
+    }
+
     BOOST_ATTRIBUTES( BOOST_MINSIZE )
     bool set_priority( priority const new_priority ) noexcept
     {
@@ -562,6 +567,9 @@ private:
 
     static hardware_concurrency_t unused_cores;
 }; // class impl
+
+BOOST_OVERRIDABLE_MEMBER_SYMBOL
+std::uint32_t impl::spin_count = 10 * 1000 * 1000;
 
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
 hardware_concurrency_t impl::unused_cores( 0 );
