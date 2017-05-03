@@ -486,7 +486,7 @@ public:
         {
         #ifdef BOOST_HAS_PTHREADS
             #if defined( __ANDROID__ )
-                success &= ( ::setprority( PRIO_PROCESS, thread.get_id(), new_priority_value ) == 0 );
+                success &= ( ::setpriority( PRIO_PROCESS, thread.native_handle(), new_priority_value ) == 0 );
             #elif !( defined( __ANDROID__ ) || defined( __APPLE__ ) )
                 success &= ( pthread_setschedprio( thread.native_handle(), new_priority_value ) == 0 );
             #else
@@ -509,7 +509,7 @@ public:
             spread_the_sweat
             (
                 static_cast<iterations_t>( pool_.size() ),
-                [ &success, new_priority_value ]( iterations_t, iterations_t ) noexcept { success &= ( ::setprority( PRIO_PROCESS, 0, new_priority_value ) == 0 ); }
+                [ &success, new_priority_value ]( iterations_t, iterations_t ) noexcept { success &= ( ::setpriority( PRIO_PROCESS, 0, new_priority_value ) == 0 ); }
             );
         }
     #endif // __ANDROID__
