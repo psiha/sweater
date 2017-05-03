@@ -219,6 +219,7 @@ private:
     using my_queue = queues::mpmc_moodycamel<work_t>;
 
 public:
+    BOOST_ATTRIBUTES( BOOST_COLD )
     impl()
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
@@ -283,6 +284,7 @@ public:
 #   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     }
 
+    BOOST_ATTRIBUTES( BOOST_COLD )
     ~impl() noexcept
     {
         {

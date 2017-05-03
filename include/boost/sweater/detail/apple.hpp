@@ -47,13 +47,14 @@ namespace sweater
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
 BOOST_OVERRIDABLE_SYMBOL
-auto const hardware_concurrency( static_cast<std::uint8_t>( std::thread::hardware_concurrency() ) );
+auto const hardware_concurrency( static_cast<std::uint_fast8_t>( std::thread::hardware_concurrency() ) );
 
 class impl
 {
 public:
     using iterations_t = std::uint32_t;
 
+    // http://newosxbook.com/articles/GCD.html
     // http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
     static auto number_of_workers() noexcept
     {
@@ -75,9 +76,9 @@ public:
         /// The iterations / number_of_workers is an integer division and can
         /// thus be 'lossy' so extra steps need to be taken to account for this.
         ///                                   (04.10.2016.) (Domagoj Saric)
-        auto         const number_of_workers    ( impl::number_of_workers() );
-        iterations_t const iterations_per_worker( iterations / number_of_workers );
-        std::uint8_t const extra_iterations     ( iterations % number_of_workers );
+        auto              const number_of_workers    ( impl::number_of_workers() );
+        iterations_t      const iterations_per_worker( iterations / number_of_workers );
+        std::uint_fast8_t const extra_iterations     ( iterations % number_of_workers );
         auto /*const*/ worker
         (
             [
@@ -86,7 +87,7 @@ public:
                 , iterations
             #endif // !NDEBUG
             ]
-            ( std::uint8_t const worker_index ) noexcept
+            ( std::uint_fast8_t const worker_index ) noexcept
             {
                 auto const extra_iters        ( std::min( worker_index, extra_iterations ) );
                 auto const plain_iters        ( worker_index - extra_iters                 );
@@ -122,7 +123,7 @@ public:
             []( void * const p_context, std::size_t const worker_index ) noexcept
             {
                 auto & __restrict the_worker( *static_cast<decltype( worker ) const *>( p_context ) );
-                the_worker( static_cast<std::uint8_t>( worker_index ) );
+                the_worker( static_cast<std::uint_fast8_t>( worker_index ) );
             }
         );
     }
