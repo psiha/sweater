@@ -275,8 +275,8 @@ public:
 
                     for ( ; ; )
                     {
-                        auto const dequeue_cost( 16384 );
-                        for ( auto try_count( 0U ); try_count < spin_count / dequeue_cost; ++try_count )
+                        auto const dequeue_cost( 2048 );
+                        for ( auto try_count( 0U ); try_count < ( spin_count / dequeue_cost ); ++try_count )
                         {
                             if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
                             {
@@ -569,7 +569,7 @@ private:
 }; // class impl
 
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
-std::uint32_t impl::spin_count = 10 * 1000 * 1000;
+std::uint32_t impl::spin_count = 1 * 1000 * 1000;
 
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
 hardware_concurrency_t impl::unused_cores( 0 );
