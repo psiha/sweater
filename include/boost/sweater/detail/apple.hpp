@@ -131,11 +131,33 @@ public:
     template <typename F>
     static void fire_and_forget( F && work ) noexcept
     {
-        /// \note "ObjC++ attempts to copy lambdas, preventing capture of
-        /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
-        ///                                   (14.01.2016.) (Domagoj Saric)
-        __block auto moveable_work( std::forward<F>( work ) );
-        dispatch_async( high_priority_queue, ^(){ moveable_work(); } );
+#       if defined( __GLIBCXX__ )
+            /// \note GCC on Mac does not support blocks, so we need to emulate
+            /// the support. We must ensure work lives at the moment the lambda
+            /// starts processing it, so we copy/move the work to heap and
+            /// clean the memory after the work is done.
+            ///                                   (30.05.2017.) (Nenad Miksa)
+            /// \todo Avoid the copy/move to heap if F can be reduced to simple
+            /// function pointer.
+            auto heap_work = new decltype( work ){ std::forward< F >( work ) };
+            dispatch_async_f
+            (
+                high_priority_queue,
+                heap_work,
+                []( void * const p_context ) noexcept
+                {
+                    auto & __restrict the_work( *static_cast<decltype( work ) const *>( p_context ) );
+                    the_work();
+                    delete &the_work;
+                }
+            );
+#       else
+            /// \note "ObjC++ attempts to copy lambdas, preventing capture of
+            /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
+            ///                                   (14.01.2016.) (Domagoj Saric)
+            __block auto moveable_work( std::forward<F>( work ) );
+            dispatch_async( high_priority_queue, ^(){ moveable_work(); } );
+#       endif
     }
 
     template <typename F>
