@@ -131,7 +131,7 @@ public:
     template <typename F>
     static void fire_and_forget( F && work ) noexcept
     {
-#       if defined( __GLIBCXX__ )
+#       if !defined( __clang__ )
             /// \note GCC on Mac does not support blocks, so we need to emulate
             /// the support. We must ensure work lives at the moment the lambda
             /// starts processing it, so we copy/move the work to heap and
