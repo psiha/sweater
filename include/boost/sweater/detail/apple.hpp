@@ -35,15 +35,13 @@ namespace sweater
 //------------------------------------------------------------------------------
 
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#if TARGET_OS_IOS
-#   ifdef __aarch64__
-#       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
-#   else
-#       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
-#   endif
+#if defined( __aarch64__ )
+#    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
+#elif defined( __arm__ )
+#    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
 #else
-#   define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
-#endif
+#   define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0 // desktop or simulator
+#endif // arch
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
 BOOST_OVERRIDABLE_SYMBOL
@@ -131,33 +129,52 @@ public:
     template <typename F>
     static void fire_and_forget( F && work ) noexcept
     {
-#       if !defined( __clang__ )
-            /// \note GCC on Mac does not support blocks, so we need to emulate
-            /// the support. We must ensure work lives at the moment the lambda
-            /// starts processing it, so we copy/move the work to heap and
-            /// clean the memory after the work is done.
-            ///                                   (30.05.2017.) (Nenad Miksa)
-            /// \todo Avoid the copy/move to heap if F can be reduced to simple
-            /// function pointer.
-            auto heap_work = new decltype( work ){ std::forward< F >( work ) };
+        if constexpr
+        (
+            ( sizeof ( work ) <= sizeof ( void * ) ) &&
+            ( alignof( F    ) <= alignof( void * ) ) &&
+            std::is_trivially_copyable    <F>::value &&
+            std::is_trivially_destructible<F>::value
+        )
+        {
+            void * context;
+            new ( &context ) F( std::forward<F>( work ) );
             dispatch_async_f
             (
                 high_priority_queue,
-                heap_work,
+                context,
+                []( void * const context ) noexcept
+                {
+                    auto & __restrict the_work( reinterpret_cast<F &>( context ) );
+                    the_work();
+                }
+            );
+        }
+        else
+        {
+#       if defined( __clang__ )
+            /// \note "ObjC++ attempts to copy lambdas, preventing capture of
+            /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
+            ///                               (14.01.2016.) (Domagoj Saric)
+            __block auto moveable_work( std::forward<F>( work ) );
+            dispatch_async( high_priority_queue, ^(){ moveable_work(); } );
+#       else
+            /// \note Still no block support in GCC.
+            ///                               (10.06.2017.) (Domagoj Saric)
+            auto const p_heap_work( new F( std::forward<F>( work ) ) );
+            dispatch_async_f
+            (
+                high_priority_queue,
+                p_heap_work,
                 []( void * const p_context ) noexcept
                 {
-                    auto & __restrict the_work( *static_cast<decltype( work ) const *>( p_context ) );
+                    auto & __restrict the_work( *static_cast<F const *>( p_context ) );
                     the_work();
                     delete &the_work;
                 }
             );
-#       else
-            /// \note "ObjC++ attempts to copy lambdas, preventing capture of
-            /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
-            ///                                   (14.01.2016.) (Domagoj Saric)
-            __block auto moveable_work( std::forward<F>( work ) );
-            dispatch_async( high_priority_queue, ^(){ moveable_work(); } );
-#       endif
+#       endif // compiler
+        }
     }
 
     template <typename F>
