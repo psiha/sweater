@@ -3,7 +3,7 @@
 /// \file sweater.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016.
+/// (c) Copyright Domagoj Saric 2016 - 2017.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -17,14 +17,17 @@
 #define sweater_hpp__83B147A4_8450_4A6D_8FC1_72EA64FACABF
 #pragma once
 //------------------------------------------------------------------------------
-#if defined( __ANDROID__ )
+#if defined( __ANDROID__ ) && !defined( BOOST_SWEATER_IMPL )
 #	include "detail/android.hpp"
-#elif defined( __APPLE__ )
+#elif defined( __APPLE__ ) && !defined( BOOST_SWEATER_IMPL )
 #	include "detail/apple.hpp"
-#elif defined( _WIN32 )
+#elif defined( _WIN32 ) && !defined( BOOST_SWEATER_IMPL )
 #	include "detail/windows.hpp"
-#elif defined( _OPENMP )
+#elif defined( _OPENMP ) && !defined( BOOST_SWEATER_IMPL )
 #	include "detail/openmp.hpp"
+#elif defined( BOOST_SWEATER_IMPL )
+#include "boost/preprocessor/stringize.hpp"
+#	include BOOST_PP_STRINGIZE( detail/BOOST_SWEATER_IMPL.hpp )
 #else
 #	include "detail/generic.hpp"
 #endif
