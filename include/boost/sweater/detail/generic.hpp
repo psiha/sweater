@@ -41,12 +41,14 @@
 
 #ifdef BOOST_HAS_PTHREADS
 #include <pthread.h>
+#else
+#include <windows.h> // for SetThreadPriority
 #endif // BOOST_HAS_PTHREADS
 
-#ifdef __ANDROID__
+#if defined( __linux )
 #include <sys/time.h>
 #include <sys/resource.h>
-#endif // __ANDROID__
+#endif // __linux
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -69,6 +71,24 @@ using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
 
 BOOST_OVERRIDABLE_SYMBOL
 auto const hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
+
+#if defined( __linux ) && !defined( __ANDROID__ ) || defined( __APPLE__ )
+namespace detail
+{
+    BOOST_OVERRIDABLE_SYMBOL auto const default_policy_priority_min        ( ::sched_get_priority_min( SCHED_OTHER ) );
+    BOOST_OVERRIDABLE_SYMBOL auto const default_policy_priority_max        ( ::sched_get_priority_max( SCHED_OTHER ) );
+    BOOST_OVERRIDABLE_SYMBOL auto const default_policy_priority_range      ( static_cast<std::uint8_t>( default_policy_priority_max - default_policy_priority_min ) );
+    BOOST_OVERRIDABLE_SYMBOL auto const default_policy_priority_unchangable( default_policy_priority_range == 0 );
+
+    inline
+    std::uint8_t round_divide( std::uint16_t const numerator, std::uint8_t const denominator ) noexcept
+    {
+        auto const integral_division     ( numerator / denominator );
+        auto const atleast_half_remainder( ( numerator % denominator ) >= ( denominator / 2 ) );
+        return integral_division + atleast_half_remainder;
+    }
+} // namespace detail
+#endif // __linux && !__ANDROID__ || __APPLE__
 
 class impl
 {
@@ -97,8 +117,10 @@ public:
     };
 
 private:
+#ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
     // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
     static std::uint32_t spin_count;
+#endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
     struct worker_traits : functionoid::std_traits
     {
@@ -181,6 +203,7 @@ private:
         BOOST_NOINLINE
         void wait() noexcept
         {
+#       ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
             for ( auto try_count( 0U ); try_count < spin_count; ++try_count )
             {
                 bool const all_workers_done( counter_.load( std::memory_order_relaxed ) == 0 );
@@ -197,6 +220,7 @@ private:
                     return;
                 }
             }
+#       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
             std::unique_lock<mutex> lock{ mutex_ };
             while ( BOOST_UNLIKELY( counter_.load( std::memory_order_relaxed ) != 0 ) )
                 event_.wait( lock );
@@ -256,13 +280,13 @@ public:
         /// create plain global-variable sweat_shop singletons).
         ///                                   (01.05.2017.) (Domagoj Saric)
         auto const local_hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
-    #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( local_hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
-    #else
+#   else
         auto const number_of_worker_threads( local_hardware_concurrency - 1 );
         auto p_workers( std::make_unique<std::thread[]>( number_of_worker_threads ) );
         pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
-    #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         for ( auto & worker : pool_ )
         {
             auto const worker_loop
@@ -275,6 +299,7 @@ public:
 
                     for ( ; ; )
                     {
+#                   ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
                         auto const dequeue_cost( 2048 );
                         for ( auto try_count( 0U ); try_count < ( spin_count / dequeue_cost ); ++try_count )
                         {
@@ -284,6 +309,7 @@ public:
                                 try_count = 0; // restart the spin-wait
                             }
                         }
+#                   endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
                         bool have_work;
                         {
@@ -303,6 +329,7 @@ public:
                     }
                 }
             ); // worker_loop
+
             worker = std::thread( worker_loop );
         }
 #   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
@@ -377,7 +404,7 @@ public:
             auto const end_iteration  ( static_cast<iterations_t>( start_iteration + setup.iterations_per_worker + extra_iteration ) );
             auto const placeholder( &dispatched_work_parts[ work_part ] );
 #       ifdef BOOST_MSVC
-            // MSVC14.1 still generates a branch w/o this (GCC issues a warning that it knows that placeholder cannot be null so we have to ifdef guard this).
+            // MSVC14.1 still generates a branch w/o this (GCC issues a warning that it knows that &placeholder cannot be null so this has to be ifdef-guarded).
             BOOST_ASSUME( placeholder );
 #       endif // BOOST_MSVC
             auto & semaphore( setup.semaphore );
@@ -451,16 +478,20 @@ public:
         return future;
     }
 
+#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
     static void set_number_of_unused_cores( hardware_concurrency_t const number_of_unused_cores ) noexcept
     {
         BOOST_ASSERT_MSG( number_of_unused_cores < hardware_concurrency, "No one left to sweat?" );
         unused_cores = number_of_unused_cores;
     }
+#endif // BOOST_SWEATER_ADJUSTABLE_PARALLELISM
 
+#ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
     static void set_idle_suspend_spin_count( std::uint32_t const new_spin_count ) noexcept
     {
         spin_count = new_spin_count;
     }
+#endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
     BOOST_ATTRIBUTES( BOOST_MINSIZE )
     bool set_priority( priority const new_priority ) noexcept
@@ -480,39 +511,52 @@ public:
         /// https://android.googlesource.com/platform/frameworks/native/+/jb-dev/libs/utils/Threads.cpp#329
         ///                                   (03.05.2017.) (Domagoj Saric)
     #endif
-        auto const new_priority_value( static_cast<int>( new_priority ) );
+        auto const nice_value( static_cast<int>( new_priority ) );
         bool success( true );
         for ( auto & thread : pool_ )
         {
         #ifdef BOOST_HAS_PTHREADS
             #if defined( __ANDROID__ )
-                success &= ( ::setpriority( PRIO_PROCESS, thread.native_handle(), new_priority_value ) == 0 );
-            #elif !( defined( __ANDROID__ ) || defined( __APPLE__ ) )
-                success &= ( pthread_setschedprio( thread.native_handle(), new_priority_value ) == 0 );
+                success &= ( ::setpriority( PRIO_PROCESS, thread.native_handle(), nice_value ) == 0 );
             #else
-                ::sched_param scheduling_parameters;
-                int           policy;
-                auto const handle( thread.native_handle() );
-                BOOST_VERIFY( pthread_getschedparam( handle, &policy, &scheduling_parameters ) == 0 );
-                scheduling_parameters.sched_priority = new_priority_value;
-                success &= ( pthread_setschedparam( handle, policy, &scheduling_parameters ) == 0 );
+                std::uint8_t const api_range            ( static_cast<std::int8_t >( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) );
+                auto         const platform_range       ( detail::default_policy_priority_range );
+                auto         const uninverted_nice_value( static_cast<std::uint8_t>( - ( nice_value - static_cast<std::int8_t>( priority::idle ) ) ) );
+                int          const priority_value       ( detail::default_policy_priority_min + detail::round_divide( uninverted_nice_value * platform_range, api_range ) ); // surely it will be hoisted
+                #if defined( __APPLE__ )
+                    BOOST_ASSERT( !detail::default_policy_priority_unchangable );
+                    ::sched_param scheduling_parameters;
+                    int           policy;
+                    auto const handle( thread.native_handle() );
+                    BOOST_VERIFY( pthread_getschedparam( handle, &policy, &scheduling_parameters ) == 0 );
+                    scheduling_parameters.sched_priority = priority_value;
+                    success &= ( pthread_setschedparam( handle, policy, &scheduling_parameters ) == 0 );
+                #else
+                    success &= !detail::default_policy_priority_unchangable && ( pthread_setschedprio( thread.native_handle(), adjusted_priority_value ) == 0 );
+                #endif
             #endif // __ANDROID__
         #else
-            success &= ( ::SetThreadPriority( thread.native_handle(), new_priority_value ) != false );
+            success &= ( ::SetThreadPriority( thread.native_handle(), nice_value ) != false );
         #endif // thread backend
         }
 
-    #ifdef __ANDROID__
+    #if defined( __linux ) && !defined( __ANDROID__ )
         if ( !success )
         {
             success = true;
             spread_the_sweat
             (
-                static_cast<iterations_t>( pool_.size() ),
-                [ &success, new_priority_value ]( iterations_t, iterations_t ) noexcept { success &= ( ::setpriority( PRIO_PROCESS, 0, new_priority_value ) == 0 ); }
+                hardware_concurrency,
+                [ &success, nice_value ]( iterations_t, iterations_t const thread_index ) noexcept
+                {
+                    /// \note Do not change the caller thread's priority.
+                    ///                       (05.05.2017.) (Domagoj Saric)
+                    if ( thread_index != hardware_concurrency )
+                        success &= ( ::setpriority( PRIO_PROCESS, 0, nice_value ) == 0 );
+                }
             );
         }
-    #endif // __ANDROID__
+    #endif // __linux && !__ANDROID__
         return success;
     }
 
@@ -565,14 +609,22 @@ private:
 #endif
     pool_threads_t pool_;
 
+#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
     static hardware_concurrency_t unused_cores;
+#else
+    static hardware_concurrency_t constexpr unused_cores = 0;
+#endif // BOOST_SWEATER_ADJUSTIBLE_PARALLELISM
 }; // class impl
 
+#ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
 std::uint32_t impl::spin_count = 1 * 1000 * 1000;
+#endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
+#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
 hardware_concurrency_t impl::unused_cores( 0 );
+#endif // BOOST_SWEATER_ADJUSTABLE_PARALLELISM
 
 //------------------------------------------------------------------------------
 } // namespace sweater
