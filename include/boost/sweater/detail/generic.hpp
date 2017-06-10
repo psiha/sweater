@@ -540,7 +540,7 @@ public:
         #endif // thread backend
         }
 
-    #if defined( __linux ) && !defined( __ANDROID__ )
+    #if defined( __linux ) // also on Android
         if ( !success )
         {
             success = true;
@@ -556,7 +556,7 @@ public:
                 }
             );
         }
-    #endif // __linux && !__ANDROID__
+    #endif // __linux
         return success;
     }
 
