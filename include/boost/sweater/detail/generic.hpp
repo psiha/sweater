@@ -532,7 +532,7 @@ public:
                     scheduling_parameters.sched_priority = priority_value;
                     success &= ( pthread_setschedparam( handle, policy, &scheduling_parameters ) == 0 );
                 #else
-                    success &= !detail::default_policy_priority_unchangable && ( pthread_setschedprio( thread.native_handle(), adjusted_priority_value ) == 0 );
+                    success &= !detail::default_policy_priority_unchangable && ( pthread_setschedprio( thread.native_handle(), priority_value ) == 0 );
                 #endif
             #endif // __ANDROID__
         #else
