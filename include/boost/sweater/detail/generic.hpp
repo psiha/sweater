@@ -552,7 +552,11 @@ public:
                     /// \note Do not change the caller thread's priority.
                     ///                       (05.05.2017.) (Domagoj Saric)
                     if ( thread_index != hardware_concurrency )
-                        success &= ( ::setpriority( PRIO_PROCESS, 0, nice_value ) == 0 );
+                    {
+                        auto const result( ::setpriority( PRIO_PROCESS, 0, nice_value ) );
+                        BOOST_ASSERT( ( result == 0 ) || ( errno == EACCES ) );
+                        success &= ( result == 0 );
+                    }
                 }
             );
         }
