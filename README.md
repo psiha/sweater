@@ -1,7 +1,7 @@
 # sweater
 #### Humble Outer Dispatch
 
-In 2016 cpp still does not have a standard 'parallel work dispatching' solution, AKA a thread pool. I dislike that name however, since unless the API provides access to the underlying threads, a thread pool is but one possible implementation (detail) of a 'parallel work dispatching' library.
+In 2017 cpp still does not have a standard 'parallel work dispatching' solution, AKA a thread pool. I dislike that name however, since unless the API provides access to the underlying threads, a thread pool is but one possible implementation (detail) of a 'parallel work dispatching' library.
 
 Since any name involving 'parallel' is a tongue breaker and 'worker' sounds too 'red', I went with sweater as it sweats for you. A legal, portable, machine sweat shop (and it might make you sweat too if you have too many cores and not enough ventilation).
 
