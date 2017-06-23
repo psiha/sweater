@@ -34,19 +34,6 @@ namespace sweater
 {
 //------------------------------------------------------------------------------
 
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#if defined( __aarch64__ )
-#    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
-#elif defined( __arm__ )
-#    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
-#else
-#   define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0 // desktop or simulator
-#endif // arch
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-
-BOOST_OVERRIDABLE_SYMBOL
-auto const hardware_concurrency( static_cast<std::uint_fast8_t>( std::thread::hardware_concurrency() ) );
-
 class impl
 {
 public:

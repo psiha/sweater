@@ -17,6 +17,8 @@
 #define openmp_hpp__A03505C4_4323_437C_A38E_BF26BBCBD143
 #pragma once
 //------------------------------------------------------------------------------
+#include "../hardware_concurrency.hpp"
+
 #include <boost/config_ex.hpp>
 
 #include <omp.h>
@@ -32,19 +34,6 @@ namespace boost
 namespace sweater
 {
 //------------------------------------------------------------------------------
-
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-
-#if defined( __ANDROID__ ) || defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ )
-using hardware_concurrency_t = std::uint_fast8_t;
-#else
-using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
-#endif
-
-BOOST_OVERRIDABLE_SYMBOL
-auto const hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
 
 struct impl
 {

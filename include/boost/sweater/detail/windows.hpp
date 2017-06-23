@@ -3,7 +3,7 @@
 /// \file windows.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016.
+/// (c) Copyright Domagoj Saric 2016 - 2017.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -15,15 +15,7 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#if defined(__WINDOWS_PHONE__)
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
-#else
-#	define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
-#endif
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-
-#include "generic.hpp"
+#include "../hardware_concurrency.hpp"
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -31,6 +23,9 @@ namespace boost
 namespace sweater
 {
 //------------------------------------------------------------------------------
+
+#error Unimplemented
+// TODO https://msdn.microsoft.com/en-us/library/windows/desktop/ms686766(v=vs.85).aspx
 
 //------------------------------------------------------------------------------
 } // namespace sweater

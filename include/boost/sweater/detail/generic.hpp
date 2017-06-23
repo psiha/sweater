@@ -17,7 +17,8 @@
 #define generic_hpp__99FE2034_248F_4C7D_8CD2_EB2BB8247377
 #pragma once
 //------------------------------------------------------------------------------
-#include <boost/sweater/queues/mpmc_moodycamel.hpp>
+#include "../hardware_concurrency.hpp"
+#include "../queues/mpmc_moodycamel.hpp"
 
 #include <boost/config_ex.hpp>
 #include <boost/container/small_vector.hpp>
@@ -34,7 +35,7 @@
 #include <malloc.h>
 #else
 #include <alloca.h>
-#endif // _MSC_VER
+#endif // BOOST_MSVC
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -57,20 +58,7 @@ namespace sweater
 {
 //------------------------------------------------------------------------------
 
-#ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#   define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-
 namespace queues { template <typename Work> class mpmc_moodycamel; }
-
-#if defined( __ANDROID__ ) || defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ )
-using hardware_concurrency_t = std::uint_fast8_t;
-#else
-using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
-#endif
-
-BOOST_OVERRIDABLE_SYMBOL
-auto const hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
 
 #if defined( __linux ) && !defined( __ANDROID__ ) || defined( __APPLE__ )
 namespace detail
@@ -83,9 +71,9 @@ namespace detail
     inline
     std::uint8_t round_divide( std::uint16_t const numerator, std::uint8_t const denominator ) noexcept
     {
-        auto const integral_division     ( numerator / denominator );
-        auto const atleast_half_remainder( ( numerator % denominator ) >= ( denominator / 2 ) );
-        return integral_division + atleast_half_remainder;
+        auto const integral_division      (   numerator / denominator                          );
+        auto const at_least_half_remainder( ( numerator % denominator ) >= ( denominator / 2 ) );
+        return integral_division + at_least_half_remainder;
     }
 } // namespace detail
 #endif // __linux && !__ANDROID__ || __APPLE__
@@ -536,7 +524,12 @@ public:
                 #endif
             #endif // __ANDROID__
         #else
-            success &= ( ::SetThreadPriority( thread.native_handle(), nice_value ) != false );
+            /// \note SetThreadPriority() silently falls back to the highest
+            /// priority level available to the caller based on its privileges
+            /// (instead of failing).
+            ///                               (23.06.2017.) (Domagoj Saric)
+            BOOST_VERIFY( ::SetThreadPriority( thread.native_handle(), nice_value ) != false );
+            success &= true;
         #endif // thread backend
         }
 
