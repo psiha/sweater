@@ -19,10 +19,14 @@
 //------------------------------------------------------------------------------
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 #   if defined( __ANDROID__ )
-#	    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // SGS6 has 8 cores
+#       if defined( __aarch64__ )
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 32 // SGS6 8, Meizu PRO 6 10 cores
+#       elif defined( __arm__ )
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8
+#       endif // arch
 #   elif defined( __APPLE__ )
 #       if defined( __aarch64__ )
-#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 3 // iPad 2 Air
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // iPad 2 Air 3, iPhone 8 6 cores
 #       elif defined( __arm__ )
 #           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
 #       else
