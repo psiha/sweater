@@ -129,8 +129,8 @@ private:
 
     using worker_counter = std::atomic<hardware_concurrency_t>;
 
+    //...mrmlj...lighterweight alternatives to std::thread...to be moved to a separate lib...
 #ifdef BOOST_HAS_PTHREADS
-    //...mrmlj...native threading implementation (avoid the std::bloat)...to be cleaned up and moved to a separate lib...
     class pthread_condition_variable;
     class pthread_mutex
     {
@@ -178,11 +178,11 @@ private:
         using native_handle_type = pthread_t;
         using id                 = pthread_t;
 
-        void join  () noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_join  ( thread_, nullptr ) == 0 ); thread_ = {}; }
-        void detach() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_detach( thread_          ) == 0 ); thread_ = {}; }
-        auto get_id() const noexcept { return thread_; }
+        void join  () noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_join  ( handle_, nullptr ) == 0 ); handle_ = {}; }
+        void detach() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_detach( handle_          ) == 0 ); handle_ = {}; }
+        auto get_id() const noexcept { return handle_; }
 
-        static auto get_active_thread_id() const noexcept BOOST_NOTHROW_LITE { return pthread_self(); }
+        static auto get_active_thread_id() noexcept BOOST_NOTHROW_LITE { return pthread_self(); }
 
     protected:
         thread_impl() = default;
@@ -192,24 +192,70 @@ private:
 
         auto create( thread_procedure const start_routine, void * const arg ) noexcept BOOST_NOTHROW_LITE
         {
-            auto const error( pthread_create( &thread_, nullptr, start_routine, arg ) );
+            auto const error( pthread_create( &handle_, nullptr, start_routine, arg ) );
             if ( BOOST_UNLIKELY( error ) )
             {
                 BOOST_ASSUME( error == EAGAIN ); // any other error indicates a programmer error
-                thread_ = {};
+                handle_ = {};
             }
             return error;
         }
 
     protected:
-        native_handle_type thread_{};
+        native_handle_type handle_{};
     }; // class thread_impl
 
     using condition_variable = pthread_condition_variable;
     using mutex              = pthread_mutex;
 #else // Win32
-    using mutex              = std::mutex;
-    using condition_variable = std::condition_variable;
+    // Strategies for Implementing POSIX Condition Variables on Win32 http://www.cs.wustl.edu/~schmidt/win32-cv-1.html
+    // http://developers.slashdot.org/story/07/02/26/1211220/pthreads-vs-win32-threads
+    // http://nasutechtips.blogspot.com/2010/11/slim-read-write-srw-locks.html
+    // https://mhesham.wordpress.com/tag/slim-read-write-lock
+    // http://msdn.microsoft.com/en-us/magazine/cc163405.aspx
+
+    class condition_variable;
+    class mutex
+    {
+    public:
+        mutex(                ) noexcept : lock_{ SRWLOCK_INIT } {}
+        mutex( mutex && other ) noexcept : lock_( other.lock_ ) { other.lock_ = { SRWLOCK_INIT }; }
+        mutex( mutex const &  ) = delete ;
+       ~mutex(                ) = default;
+
+        void   lock() { ::AcquireSRWLockExclusive( &lock_ ); }
+        void unlock() { ::ReleaseSRWLockExclusive( &lock_ ); }
+
+        bool try_lock() noexcept { return ::TryAcquireSRWLockExclusive( &lock_ ) != false; }
+
+    private: friend class condition_variable;
+        ::SRWLOCK lock_;
+    }; // class mutex
+
+    class condition_variable
+    {
+    public:
+        using lock_t = std::unique_lock<mutex>;
+
+        condition_variable(                             ) noexcept : cv_{ CONDITION_VARIABLE_INIT } {}
+        condition_variable( condition_variable && other ) noexcept : cv_( other.cv_ ) { other.cv_ = { CONDITION_VARIABLE_INIT }; }
+        condition_variable( condition_variable const &  ) = delete ;
+       ~condition_variable(                             ) = default;
+
+        void notify_all(               ) noexcept { ::WakeAllConditionVariable( &cv_ ); }
+        void notify_one(               ) noexcept { ::WakeConditionVariable   ( &cv_ ); }
+        void wait      ( lock_t & lock ) noexcept { BOOST_VERIFY( wait( lock, INFINITE ) ); }
+
+        bool wait( lock_t & lock, std::uint32_t const milliseconds ) noexcept
+        {
+            auto const result( ::SleepConditionVariableSRW( &cv_, &lock.mutex()->lock_, milliseconds, 0/*CONDITION_VARIABLE_LOCKMODE_SHARED*/ ) );
+            BOOST_ASSERT( result || ::GetLastError() == ERROR_TIMEOUT );
+            return result != false;
+        }
+
+    private:
+        ::CONDITION_VARIABLE cv_;
+    }; // class condition_variable
 
     class thread_impl
     {
