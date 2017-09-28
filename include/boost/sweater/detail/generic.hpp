@@ -551,51 +551,57 @@ public:
         auto p_workers( std::make_unique<thread[]>( number_of_worker_threads ) );
         pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
 #   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        for ( auto & worker : pool_ )
+
+        /// \note Even a trivial only-this-capturing lambda fails the
+        /// std::is_trivially_copyable test with MSVC14.1u3 which makes the
+        /// thread startup logic go into the synchronized path which in turn
+        /// causes deadlocks on DLL startup when global static sweat_shops are
+        /// used
+        /// (https://blogs.msdn.microsoft.com/oldnewthing/20070904-00/?p=25283).
+        ///                                   (28.09.2017.) (Domagoj Saric)
+        struct worker_loop : impl
         {
-            auto const worker_loop
-            (
-                [this]() noexcept
+            //[this]() noexcept
+            void operator()() noexcept
+            {
+                auto token( queue_.consumer_token() );
+
+                work_t work;
+
+                for ( ; ; )
                 {
-                    auto token( queue_.consumer_token() );
-
-                    work_t work;
-
-                    for ( ; ; )
+#               ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
+                    auto const dequeue_cost( 2048 );
+                    for ( auto try_count( 0U ); try_count < (spin_count / dequeue_cost); ++try_count )
                     {
-#                   ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-                        auto const dequeue_cost( 2048 );
-                        for ( auto try_count( 0U ); try_count < ( spin_count / dequeue_cost ); ++try_count )
+                        if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
                         {
-                            if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
-                            {
-                                work();
-                                try_count = 0; // restart the spin-wait
-                            }
-                        }
-#                   endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-
-                        bool have_work;
-                        {
-                            std::unique_lock<mutex> lock( mutex_ );
-                            if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
-                                return;
-                            /// \note No need for another loop here as a
-                            /// spurious-wakeup would be handled by the check in
-                            /// the loop above.
-                            ///               (08.11.2016.) (Domagoj Saric)
-                            have_work = queue_.dequeue( work, token );
-                            if ( BOOST_UNLIKELY( !have_work ) )
-                                work_event_.wait( lock );
-                        }
-                        if ( BOOST_LIKELY( have_work ) )
                             work();
+                            try_count = 0; // restart the spin-wait
+                        }
                     }
-                }
-            ); // worker_loop
+#               endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
-            worker = worker_loop;
-        }
+                    bool have_work;
+                    {
+                        std::unique_lock<mutex> lock( mutex_ );
+                        if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
+                            return;
+                        /// \note No need for another loop here as a
+                        /// spurious-wakeup would be handled by the check in
+                        /// the loop above.
+                        ///               (08.11.2016.) (Domagoj Saric)
+                        have_work = queue_.dequeue( work, token );
+                        if ( BOOST_UNLIKELY( !have_work ) )
+                            work_event_.wait( lock );
+                    }
+                    if ( BOOST_LIKELY( have_work ) )
+                        work();
+                }
+            }
+        }; // worker_loop
+        for ( auto & worker : pool_ )
+            worker = std::ref( static_cast<worker_loop &>( *this ) );
 #   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         p_workers.release();
 #   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
