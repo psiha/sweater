@@ -195,7 +195,13 @@ private:
             auto const error( pthread_create( &handle_, nullptr, start_routine, arg ) );
             if ( BOOST_UNLIKELY( error ) )
             {
+            #ifndef __ANDROID__
+                /// \note NDK 15c Clang miscompiles this function to
+                /// allways assume that error == EAGAIN (even if it is 0) if the
+                /// line below is included.
+                ///                           (29.09.2017.) (Domagoj Saric)
                 BOOST_ASSUME( error == EAGAIN ); // any other error indicates a programmer error
+            #endif // !__ANDROID__
                 handle_ = {};
             }
             return error;
@@ -211,8 +217,6 @@ private:
     // Strategies for Implementing POSIX Condition Variables on Win32 http://www.cs.wustl.edu/~schmidt/win32-cv-1.html
     // http://developers.slashdot.org/story/07/02/26/1211220/pthreads-vs-win32-threads
     // http://nasutechtips.blogspot.com/2010/11/slim-read-write-srw-locks.html
-    // https://mhesham.wordpress.com/tag/slim-read-write-lock
-    // http://msdn.microsoft.com/en-us/magazine/cc163405.aspx
 
     class condition_variable;
     class mutex
@@ -288,7 +292,7 @@ private:
         thread_impl() = default;
        ~thread_impl() = default;
 
-        using thread_procedure = DWORD (*) ( void * );
+        using thread_procedure = PTHREAD_START_ROUTINE;
 
         BOOST_NOTHROW_LITE auto create( thread_procedure const start_routine, void * const arg ) noexcept
         {
