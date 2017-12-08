@@ -35,8 +35,11 @@ namespace boost
 namespace sweater
 {
 //------------------------------------------------------------------------------
+namespace apple
+{
+//------------------------------------------------------------------------------
 
-class impl
+class shop
 {
 public:
     using iterations_t = std::uint32_t;
@@ -63,7 +66,7 @@ public:
         /// The iterations / number_of_workers is an integer division and can
         /// thus be 'lossy' so extra steps need to be taken to account for this.
         ///                                   (04.10.2016.) (Domagoj Saric)
-        auto              const number_of_workers    ( impl::number_of_workers() );
+        auto              const number_of_workers    ( shop::number_of_workers() );
         iterations_t      const iterations_per_worker( iterations / number_of_workers );
         std::uint_fast8_t const extra_iterations     ( iterations % number_of_workers );
         auto /*const*/ worker
@@ -183,11 +186,13 @@ public:
 private:
     static dispatch_queue_t const default_queue      ;
     static dispatch_queue_t const high_priority_queue;
-}; // struct impl
+}; // class shop
 
-__attribute__(( weak )) dispatch_queue_t const impl::default_queue      ( dispatch_get_global_queue( QOS_CLASS_DEFAULT       , 0 ) );
-__attribute__(( weak )) dispatch_queue_t const impl::high_priority_queue( dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ) );
+__attribute__(( weak )) dispatch_queue_t const shop::default_queue      ( dispatch_get_global_queue( QOS_CLASS_DEFAULT       , 0 ) );
+__attribute__(( weak )) dispatch_queue_t const shop::high_priority_queue( dispatch_get_global_queue( QOS_CLASS_USER_INITIATED, 0 ) );
 
+//------------------------------------------------------------------------------
+} // namespace apple
 //------------------------------------------------------------------------------
 } // namespace sweater
 //------------------------------------------------------------------------------

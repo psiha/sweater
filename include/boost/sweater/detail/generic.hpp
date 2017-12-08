@@ -61,8 +61,11 @@ namespace boost
 namespace sweater
 {
 //------------------------------------------------------------------------------
-
 namespace queues { template <typename Work> class mpmc_moodycamel; }
+//------------------------------------------------------------------------------
+namespace generic
+{
+//------------------------------------------------------------------------------
 
 #if defined( __linux ) && !defined( __ANDROID__ ) || defined( __APPLE__ )
 namespace detail
@@ -82,7 +85,7 @@ namespace detail
 } // namespace detail
 #endif // __linux && !__ANDROID__ || __APPLE__
 
-class impl
+class shop
 {
 public:
     using iterations_t = std::uint32_t;
@@ -507,12 +510,12 @@ private:
     public:
         spread_setup( iterations_t const iterations ) noexcept
             :
-            iterations_per_worker          ( iterations / impl::number_of_workers() ),
-            threads_with_extra_iteration   ( iterations % impl::number_of_workers() - leave_one_for_the_calling_thread() ),
+            iterations_per_worker          ( iterations / shop::number_of_workers() ),
+            threads_with_extra_iteration   ( iterations % shop::number_of_workers() - leave_one_for_the_calling_thread() ),
             number_of_dispatched_work_parts( number_of_work_parts( iterations ) - 1 ),
             semaphore                      ( number_of_dispatched_work_parts )
         {
-            BOOST_ASSERT( leave_one_for_the_calling_thread() == false || iterations < iterations_t( impl::number_of_workers() ) );
+            BOOST_ASSERT( leave_one_for_the_calling_thread() == false || iterations < iterations_t( shop::number_of_workers() ) );
 #       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
             BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #       endif
@@ -528,7 +531,7 @@ private:
         bool leave_one_for_the_calling_thread() const noexcept { return iterations_per_worker == 0; }
         static hardware_concurrency_t number_of_work_parts( iterations_t const iterations ) noexcept
         {
-            return static_cast<hardware_concurrency_t>( std::min<iterations_t>( impl::number_of_workers(), iterations ) );
+            return static_cast<hardware_concurrency_t>( std::min<iterations_t>( shop::number_of_workers(), iterations ) );
         }
     }; // class spread_setup
 
@@ -538,7 +541,7 @@ private:
 
 public:
     BOOST_ATTRIBUTES( BOOST_COLD )
-    impl()
+    shop()
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
 #endif
@@ -563,7 +566,7 @@ public:
         /// used
         /// (https://blogs.msdn.microsoft.com/oldnewthing/20070904-00/?p=25283).
         ///                                   (28.09.2017.) (Domagoj Saric)
-        struct worker_loop : impl
+        struct worker_loop : shop
         {
             //[this]() noexcept
             void operator()() noexcept
@@ -612,7 +615,7 @@ public:
     }
 
     BOOST_ATTRIBUTES( BOOST_COLD )
-    ~impl() noexcept
+    ~shop() noexcept
     {
         {
             std::unique_lock<mutex> lock( mutex_ );
@@ -897,18 +900,20 @@ private:
 #else
     static hardware_concurrency_t constexpr unused_cores = 0;
 #endif // BOOST_SWEATER_ADJUSTIBLE_PARALLELISM
-}; // class impl
+}; // class shop
 
 #ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
-std::uint32_t impl::spin_count = 1 * 1000 * 1000;
+std::uint32_t shop::spin_count = 1 * 1000 * 1000;
 #endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
 #ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
-hardware_concurrency_t impl::unused_cores( 0 );
+hardware_concurrency_t shop::unused_cores( 0 );
 #endif // BOOST_SWEATER_ADJUSTABLE_PARALLELISM
 
+//------------------------------------------------------------------------------
+} // namespace generic
 //------------------------------------------------------------------------------
 } // namespace sweater
 //------------------------------------------------------------------------------

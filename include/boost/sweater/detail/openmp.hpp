@@ -34,8 +34,11 @@ namespace boost
 namespace sweater
 {
 //------------------------------------------------------------------------------
+namespace openmp
+{
+//------------------------------------------------------------------------------
 
-struct impl
+struct openmp
 {
     using iterations_t = std::uint32_t;
 
@@ -71,8 +74,10 @@ struct impl
     {
         return std::async( std::launch::async | std::launch::deferred, std::forward<F>( work ) );
     }
-}; // struct impl
+}; // struct openmp
 
+//------------------------------------------------------------------------------
+} // namespace openmp
 //------------------------------------------------------------------------------
 } // namespace sweater
 //------------------------------------------------------------------------------
