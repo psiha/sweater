@@ -712,46 +712,47 @@ public:
     }
 
     template <typename F>
-    bool fire_and_forget( F && work ) noexcept( noexcept( std::is_nothrow_constructible<std::remove_reference_t<F>, F &&>::value ) )
+    bool fire_and_forget( F && work ) noexcept( noexcept( std::is_nothrow_constructible_v<std::remove_reference_t<F>, F &&> ) )
     {
-        struct self_destructed_work
-        {
-            self_destructed_work( F       && work ) noexcept( std::is_nothrow_move_constructible<F>::value ) { new ( storage ) F( std::move( work ) ); }
-            self_destructed_work( F const &  work ) noexcept( std::is_nothrow_copy_constructible<F>::value ) { new ( storage ) F(            work   ); }
-            void operator()() noexcept
-            {
-                auto & work( reinterpret_cast<F &>( storage ) );
-                static_assert( noexcept( work() ), "Work must provide the no-fail exception guarantee" );
-                work();
-                work.~F();
-            }
-            alignas( work ) char storage[ sizeof( work ) ];
-        };
-        auto const enqueue_succeeded( queue_.enqueue( self_destructed_work( std::forward<F>( work ) ) ) );
-        /// No need for a branch here as the worker thread has to handle
-        /// spurious wakeups anyway.
-        std::unique_lock<mutex> lock( mutex_ );
-        work_event_.notify_one();
-        return BOOST_LIKELY( enqueue_succeeded );
+        using Functor = std::remove_reference_t<F>;
+        return create_fire_and_destroy<Functor>( std::forward<F>( work ) );
     }
 
     template <typename F>
     auto dispatch( F && work )
     {
         // http://scottmeyers.blogspot.hr/2013/03/stdfutures-from-stdasync-arent-special.html
-        using result_t = typename std::result_of<F()>::type;
-        std::promise<result_t> promise;
-        std::future<result_t> future( promise.get_future() );
-        auto const dispatch_succeeded
-        (
-            fire_and_forget
-            (
-                [promise = std::move( promise ), work = std::forward<F>( work )]
-                () mutable { promise.set_value( work() ); }
-            )
-        );
+        using Functor = std::remove_reference_t<F>;
+        struct future_wrapper
+        {
+            using result_t  = decltype( std::declval<Functor &>()() );
+            using promise_t = std::promise<result_t>;
+            using future_t  = std::future <result_t>;
+
+            future_wrapper( F && work_source, future_t & future )
+                :
+                work( std::forward<F>( work_source ) )
+            {
+                future = promise.get_future();
+            }
+
+            void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
+            {
+                promise.set_value( work() );
+            }
+
+            Functor   work   ;
+            promise_t promise;
+        }; // struct future_wrapper
+        
+        typename future_wrapper::future_t future;
+        auto const dispatch_succeeded( this->create_fire_and_destroy<future_wrapper>( std::forward<F>( work ), future ) );
         if ( BOOST_UNLIKELY( !dispatch_succeeded ) )
-            future.set_exception( std::make_exception_ptr( std::bad_alloc() ) );
+        {
+            typename future_wrapper::promise_t failed_promise;
+            failed_promise.set_exception( std::make_exception_ptr( std::bad_alloc() ) );
+            future = failed_promise.get_future();
+        }
         return future;
     }
 
@@ -868,6 +869,47 @@ private:
             semaphore.reset();
             return static_cast<iterations_t>( 0 );
         }
+    }
+
+    template <typename Functor, typename ... Args>
+    bool create_fire_and_destroy( Args && ... args ) noexcept
+    (
+        noexcept( std::is_nothrow_constructible_v<Functor, Args && ...> ) &&
+        noexcept( std::declval<Functor &>()() )
+    )
+    {
+        struct self_destructed_work
+        {
+            self_destructed_work( Args && ... args ) { new ( storage ) Functor{ std::forward<Args>( args )... }; }
+            self_destructed_work( self_destructed_work && other ) noexcept( std::is_nothrow_move_constructible_v<Functor> )
+            {
+                new ( storage ) Functor( std::move( reinterpret_cast<Functor &>( other.storage ) ) );
+            }
+            self_destructed_work( self_destructed_work const & ) = delete;
+            void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
+            {
+                auto & work( reinterpret_cast<Functor &>( storage ) );
+                struct destructor
+                {
+                    Functor & work;
+                    ~destructor() noexcept { work.~Functor(); }
+                } eh_safe_destructor{ work };
+                work();
+            } // void operator()
+            alignas( alignof( Functor ) ) char storage[ sizeof( Functor ) ];
+        };
+        auto const enqueue_succeeded( this->queue_.enqueue( self_destructed_work( std::forward<Args>( args )... ) ) );
+        this->wake_one_worker();
+        return BOOST_LIKELY( enqueue_succeeded );
+    }
+
+    BOOST_NOINLINE
+    void wake_one_worker() noexcept
+    {
+        /// No need for a branch here as the worker thread has to handle
+        /// spurious wakeups anyway.
+        std::unique_lock<mutex> lock( mutex_ );
+        work_event_.notify_one();
     }
 
 private:
