@@ -121,23 +121,24 @@ public:
     template <typename F>
     static void fire_and_forget( F && work ) noexcept
     {
+        using Functor = std::remove_reference_t<F>;
         if constexpr
         (
-            ( sizeof ( work ) <= sizeof ( void * ) ) &&
-            ( alignof( F    ) <= alignof( void * ) ) &&
-            std::is_trivially_copyable    <F>::value &&
-            std::is_trivially_destructible<F>::value
+            ( sizeof ( work    ) <= sizeof ( void * ) ) &&
+            ( alignof( Functor ) <= alignof( void * ) ) &&
+            std::is_trivially_copyable    <Functor>::value &&
+            std::is_trivially_destructible<Functor>::value
         )
         {
             void * context;
-            new ( &context ) F( std::forward<F>( work ) );
+            new ( &context ) Functor( std::forward<F>( work ) );
             dispatch_async_f
             (
                 high_priority_queue,
                 context,
-                []( void * const context ) noexcept
+                []( void * context ) noexcept
                 {
-                    auto & __restrict the_work( reinterpret_cast<F &>( context ) );
+                    auto & __restrict the_work( reinterpret_cast<Functor &>( context ) );
                     the_work();
                 }
             );
@@ -153,14 +154,14 @@ public:
 #       else
             /// \note Still no block support in GCC.
             ///                               (10.06.2017.) (Domagoj Saric)
-            auto const p_heap_work( new F( std::forward<F>( work ) ) );
+            auto const p_heap_work( new Functor( std::forward<F>( work ) ) );
             dispatch_async_f
             (
                 high_priority_queue,
                 p_heap_work,
                 []( void * const p_context ) noexcept
                 {
-                    auto & __restrict the_work( *static_cast<F const *>( p_context ) );
+                    auto & __restrict the_work( *static_cast<Functor const *>( p_context ) );
                     the_work();
                     delete &the_work;
                 }
@@ -178,7 +179,7 @@ public:
         fire_and_forget
         (
             [promise = std::move( promise ), work = std::forward<F>( work )]
-            () mutable { promise.set_value( work() ); }
+            () mutable noexcept( noexcept( work() ) ) { promise.set_value( work() ); }
         );
         return future;
     }
