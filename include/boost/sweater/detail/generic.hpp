@@ -70,10 +70,10 @@ namespace generic
 #if defined( __linux ) && !defined( __ANDROID__ ) || defined( __APPLE__ )
 namespace detail
 {
-    BOOST_OVERRIDABLE_SYMBOL auto const default_policy_priority_min        ( ::sched_get_priority_min( SCHED_OTHER ) );
-    BOOST_OVERRIDABLE_SYMBOL auto const default_policy_priority_max        ( ::sched_get_priority_max( SCHED_OTHER ) );
-    BOOST_OVERRIDABLE_SYMBOL auto const default_policy_priority_range      ( static_cast<std::uint8_t>( default_policy_priority_max - default_policy_priority_min ) );
-    BOOST_OVERRIDABLE_SYMBOL auto const default_policy_priority_unchangable( default_policy_priority_range == 0 );
+    inline auto const default_policy_priority_min        ( ::sched_get_priority_min( SCHED_OTHER ) );
+    inline auto const default_policy_priority_max        ( ::sched_get_priority_max( SCHED_OTHER ) );
+    inline auto const default_policy_priority_range      ( static_cast<std::uint8_t>( default_policy_priority_max - default_policy_priority_min ) );
+    inline auto const default_policy_priority_unchangable( default_policy_priority_range == 0 );
 
     inline
     std::uint8_t round_divide( std::uint16_t const numerator, std::uint8_t const denominator ) noexcept
@@ -144,35 +144,35 @@ private:
 #       else
             : mutex_( PTHREAD_MUTEX_INITIALIZER ) {}
 #       endif // NDEBUG
-        ~pthread_mutex() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_mutex_destroy( &mutex_ ) == 0 ); }
+        ~pthread_mutex() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_mutex_destroy( &mutex_ ) == 0 ); }
 
         pthread_mutex( pthread_mutex && other ) noexcept : mutex_( other.mutex_ ) { other.mutex_ = PTHREAD_MUTEX_INITIALIZER; }
         pthread_mutex( pthread_mutex const & ) = delete;
 
-        void   lock() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_mutex_lock  ( &mutex_ ) == 0 ); }
-        void unlock() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_mutex_unlock( &mutex_ ) == 0 ); }
+        void   lock() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_mutex_lock  ( &mutex_ ) == 0 ); }
+        void unlock() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_mutex_unlock( &mutex_ ) == 0 ); }
 
-        bool try_lock() noexcept BOOST_NOTHROW_LITE { return ::pthread_mutex_trylock( &mutex_ ) == 0; }
+        bool try_lock() noexcept BOOST_NOTHROW_LITE { return pthread_mutex_trylock( &mutex_ ) == 0; }
 
     private: friend class pthread_condition_variable;
-        ::pthread_mutex_t mutex_;
+        pthread_mutex_t mutex_;
     }; // class pthread_mutex
 
     class pthread_condition_variable
     {
     public:
-         pthread_condition_variable() noexcept BOOST_NOTHROW_LITE : cv_( PTHREAD_COND_INITIALIZER ) {}
-        ~pthread_condition_variable() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_cond_destroy( &cv_ ) == 0 ); }
+        pthread_condition_variable() noexcept BOOST_NOTHROW_LITE : cv_( PTHREAD_COND_INITIALIZER ) {}
+       ~pthread_condition_variable() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_cond_destroy( &cv_ ) == 0 ); }
 
         pthread_condition_variable( pthread_condition_variable && other ) noexcept : cv_( other.cv_ ) { other.cv_ = PTHREAD_COND_INITIALIZER; }
         pthread_condition_variable( pthread_condition_variable const & ) = delete;
 
-        void notify_all() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_cond_broadcast( &cv_ ) == 0 ); }
-        void notify_one() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_cond_signal   ( &cv_ ) == 0 ); }
-        void wait( std::unique_lock<pthread_mutex> & lock ) noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( ::pthread_cond_wait( &cv_, &lock.mutex()->mutex_ ) == 0 ); }
+        void notify_all() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_cond_broadcast( &cv_ ) == 0 ); }
+        void notify_one() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_cond_signal   ( &cv_ ) == 0 ); }
+        void wait( std::unique_lock<pthread_mutex> & lock ) noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_cond_wait( &cv_, &lock.mutex()->mutex_ ) == 0 ); }
 
     private:
-        ::pthread_cond_t cv_;
+        pthread_cond_t cv_;
     }; // class pthread_condition_variable
 
     class thread_impl
