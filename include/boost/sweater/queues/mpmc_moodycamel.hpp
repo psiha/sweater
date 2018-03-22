@@ -21,6 +21,15 @@
 #define mpmc_moodycamel_hpp__2418E6BF_4795_42B2_8FE8_4733F52FFC89
 #pragma once
 //------------------------------------------------------------------------------
+// https://svn.boost.org/trac/boost/ticket/12880
+#if defined( _WIN64 ) || defined( __APPLE__ ) || defined( __aarch64__ ) || defined( LP64 )
+#   define BOOST_SWEATER_AUX_ALIGNED_MALLOC
+#endif
+
+#ifndef BOOST_SWEATER_AUX_ALIGNED_MALLOC
+#   include <boost/align/aligned_alloc.hpp>
+#endif // BOOST_SWEATER_AUX_ALIGNED_MALLOC
+
 #ifdef _MSC_VER
 #    pragma warning( push )
 #    pragma warning( disable : 4127 ) // Conditional expression is constant @ concurrentqueue.h 775
@@ -54,7 +63,12 @@ private:
 
 	    static constexpr size_t EXPLICIT_INITIAL_INDEX_SIZE = 4;
 	    static constexpr size_t IMPLICIT_INITIAL_INDEX_SIZE = 4;
-    };
+
+#   ifndef BOOST_SWEATER_AUX_ALIGNED_MALLOC
+        static void * malloc( std::size_t   const size ) noexcept { return boost::alignment::aligned_alloc( 16, size ); }
+        static void   free  ( void        * const ptr  ) noexcept { return boost::alignment::aligned_free ( ptr      ); }
+#   endif // BOOST_SWEATER_AUX_ALIGNED_MALLOC
+    }; // struct queue_traits
 
     using work_queue = moodycamel::ConcurrentQueue<Work, queue_traits>;
 
@@ -78,11 +92,14 @@ private:
     work_queue queue_;
 }; // class mpmc_moodycamel
 
-   //------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
 } // namespace queues
 //------------------------------------------------------------------------------
 } // namespace sweater
 //------------------------------------------------------------------------------
 } // namespace boost
 //------------------------------------------------------------------------------
+
+#undef BOOST_SWEATER_AUX_ALIGNED_MALLOC
+
 #endif // mpmc_moodycamel_hpp
