@@ -3,7 +3,7 @@
 /// \file generic.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2017.
+/// (c) Copyright Domagoj Saric 2016 - 2018.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -736,9 +736,28 @@ public:
                 future = promise.get_future();
             }
 
-            void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
+            void operator()() noexcept
             {
-                promise.set_value( work() );
+                try
+                {
+                #if BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1903 ) )
+                    set_promise( promise, work );
+                #else
+                    if constexpr ( std::is_same_v<result_t, void> )
+                    {
+                        work();
+                        promise.set_value();
+                    }
+                    else
+                    {
+                        promise.set_value( work() );
+                    }
+                #endif // MSVC constexpr compilation failure workaround
+                }
+                catch ( ... )
+                {
+                    promise.set_exception( std::current_exception() );
+                }
             }
 
             Functor   work   ;
@@ -872,12 +891,9 @@ private:
     }
 
     template <typename Functor, typename ... Args>
-    bool create_fire_and_destroy( Args && ... args ) noexcept
-    (
-        noexcept( std::is_nothrow_constructible_v<Functor, Args && ...> ) &&
-        noexcept( std::declval<Functor &>()() )
-    )
+    bool create_fire_and_destroy( Args && ... args ) noexcept( noexcept( std::is_nothrow_constructible_v<Functor, Args && ...> ) )
     {
+        static_assert( noexcept( std::declval<Functor &>()() ), "Fire and forget work has to be noexcept" );
         struct self_destructed_work
         {
             self_destructed_work( Args && ... args ) { new ( storage ) Functor{ std::forward<Args>( args )... }; }
@@ -911,6 +927,11 @@ private:
         std::unique_lock<mutex> lock( mutex_ );
         work_event_.notify_one();
     }
+
+#if BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1903 ) )
+    template <typename Promise, typename Work> static void set_promise( Promise            & promise, Work & work ) { promise.set_value( work() ); }
+    template <                  typename Work> static void set_promise( std::promise<void> & promise, Work & work ) { work(); promise.set_value(); }
+#endif // MSVC constexpr compilation failure workaround
 
 private:
     std::atomic<bool>  brexit_ = ATOMIC_FLAG_INIT;
