@@ -3,7 +3,7 @@
 /// \file apple.hpp
 /// ---------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2017.
+/// (c) Copyright Domagoj Saric 2016 - 2018.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -121,6 +121,8 @@ public:
     template <typename F>
     static void fire_and_forget( F && work ) noexcept
     {
+        static_assert( noexcept( work() ), "Fire and forget work has to be noexcept" );
+
         using Functor = std::remove_reference_t<F>;
         if constexpr
         (
@@ -179,7 +181,25 @@ public:
         fire_and_forget
         (
             [promise = std::move( promise ), work = std::forward<F>( work )]
-            () mutable noexcept( noexcept( work() ) ) { promise.set_value( work() ); }
+            () mutable noexcept
+            {
+                try
+                {
+                    if constexpr ( std::is_same_v<result_t, void> )
+                    {
+                        work();
+                        promise.set_value();
+                    }
+                    else
+                    {
+                        promise.set_value( work() );
+                    }
+                }
+                catch ( ... )
+                {
+                    promise.set_exception( std::current_exception() );
+                }
+            }
         );
         return future;
     }
