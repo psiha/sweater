@@ -891,30 +891,67 @@ private:
     }
 
     template <typename Functor, typename ... Args>
-    bool create_fire_and_destroy( Args && ... args ) noexcept( noexcept( std::is_nothrow_constructible_v<Functor, Args && ...> ) )
+    bool create_fire_and_destroy( Args && ... args ) noexcept
+    (
+        std::is_nothrow_constructible_v<Functor, Args && ...> &&
+        !work_t::requiresAllocation<Functor>
+    )
     {
         static_assert( noexcept( std::declval<Functor &>()() ), "Fire and forget work has to be noexcept" );
-        struct self_destructed_work
+
+        bool enqueue_succeeded;
+        auto const requiresAllocation( work_t::requiresAllocation<Functor> );
+        if constexpr( requiresAllocation )
         {
-            self_destructed_work( Args && ... args ) { new ( storage ) Functor{ std::forward<Args>( args )... }; }
-            self_destructed_work( self_destructed_work && other ) noexcept( std::is_nothrow_move_constructible_v<Functor> )
+            struct self_destructed_work
             {
-                new ( storage ) Functor( std::move( reinterpret_cast<Functor &>( other.storage ) ) );
-            }
-            self_destructed_work( self_destructed_work const & ) = delete;
-            void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
-            {
-                auto & work( reinterpret_cast<Functor &>( storage ) );
-                struct destructor
+                self_destructed_work( Args && ... args ) : p_functor( new Functor{ std::forward<Args>( args )... } ) {}
+                self_destructed_work( self_destructed_work && other ) noexcept : p_functor( other.p_functor ) { other.p_functor = nullptr; BOOST_ASSERT( p_functor ); }
+                self_destructed_work( self_destructed_work const & ) = delete;
+                void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
                 {
-                    Functor & work;
-                    ~destructor() noexcept { work.~Functor(); }
-                } eh_safe_destructor{ work };
-                work();
-            } // void operator()
-            alignas( alignof( Functor ) ) char storage[ sizeof( Functor ) ];
-        };
-        auto const enqueue_succeeded( this->queue_.enqueue( self_destructed_work( std::forward<Args>( args )... ) ) );
+                    BOOST_ASSERT( p_functor );
+                    struct destructor
+                    {
+                        Functor * const p_work;
+                        ~destructor() noexcept { delete p_work; }
+                    } const eh_safe_destructor{ p_functor };
+                    (*p_functor)();
+                #ifndef NDEBUG
+                    p_functor = nullptr;
+                #endif // NDEBUG
+                } // void operator()
+                Functor * __restrict p_functor = nullptr;
+            }; // struct self_destructed_work
+            static_assert( std::is_trivially_destructible_v<self_destructed_work> );
+            enqueue_succeeded = this->queue_.enqueue( self_destructed_work( std::forward<Args>( args )... ) );
+        }
+        else
+        {
+            struct self_destructed_work
+            {
+                self_destructed_work( Args && ... args ) { new ( storage ) Functor{ std::forward<Args>( args )... }; }
+                self_destructed_work( self_destructed_work && other ) noexcept( std::is_nothrow_move_constructible_v<Functor> )
+                {
+                    auto & source( reinterpret_cast<Functor &>( other.storage ) );
+                    new ( storage ) Functor( std::move( source ) );
+                    source.~Functor();
+                }
+                self_destructed_work( self_destructed_work const & ) = delete;
+                void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
+                {
+                    auto & work( reinterpret_cast<Functor &>( storage ) );
+                    struct destructor
+                    {
+                        Functor & work;
+                        ~destructor() noexcept { work.~Functor(); }
+                    } eh_safe_destructor{ work };
+                    work();
+                } // void operator()
+                alignas( alignof( Functor ) ) char storage[ sizeof( Functor ) ];
+            }; // struct self_destructed_work
+            enqueue_succeeded = this->queue_.enqueue( self_destructed_work( std::forward<Args>( args )... ) );
+        }
         this->wake_one_worker();
         return BOOST_LIKELY( enqueue_succeeded );
     }
