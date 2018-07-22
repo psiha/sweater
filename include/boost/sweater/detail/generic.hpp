@@ -68,7 +68,7 @@ namespace generic
 {
 //------------------------------------------------------------------------------
 
-#if defined( __linux ) && !defined( __ANDROID__ ) || defined( __APPLE__ )
+#if defined( BOOST_HAS_PTHREADS ) && !defined( __ANDROID__ )
 namespace detail
 {
     inline auto const default_policy_priority_min        ( ::sched_get_priority_min( SCHED_OTHER ) );
