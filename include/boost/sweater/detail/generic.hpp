@@ -71,8 +71,13 @@ namespace generic
 #if defined( BOOST_HAS_PTHREADS ) && !defined( __ANDROID__ )
 namespace detail
 {
+#ifdef __EMSCRIPTEN__
+    inline auto const default_policy_priority_min        ( 0 );
+    inline auto const default_policy_priority_max        ( 0 );
+#else
     inline auto const default_policy_priority_min        ( ::sched_get_priority_min( SCHED_OTHER ) );
     inline auto const default_policy_priority_max        ( ::sched_get_priority_max( SCHED_OTHER ) );
+#endif
     inline auto const default_policy_priority_range      ( static_cast<std::uint8_t>( default_policy_priority_max - default_policy_priority_min ) );
     inline auto const default_policy_priority_unchangable( default_policy_priority_range == 0 );
 
@@ -811,6 +816,10 @@ public:
     BOOST_ATTRIBUTES( BOOST_MINSIZE )
     bool set_priority( priority const new_priority ) noexcept
     {
+#ifdef __EMSCRIPTEN__
+        (void) new_priority;
+        return true;
+#else
     #ifdef __ANDROID__
         /// \note Android's pthread_setschedparam() does not actually work so we
         /// have to abuse the general Linux' setpriority() non-POSIX compliance
@@ -882,6 +891,7 @@ public:
         }
     #endif // __linux
         return success;
+#endif
     }
 
 private:
