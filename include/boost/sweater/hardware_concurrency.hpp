@@ -3,7 +3,7 @@
 /// \file hardware_concurrency.hpp
 /// ------------------------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2017.
+/// (c) Copyright Domagoj Saric 2016 - 2018.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -39,15 +39,27 @@
 #   endif // platform
 #endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
+#ifdef __ANDROID__
+#    include <unistd.h>
+#endif // __ANDROID__
+#ifdef __linux__
+#   include <sys/sysinfo.h>
+#endif // __linux__
+
 #ifdef _MSC_VER
 #   include <yvals.h>
 #   pragma detect_mismatch( "BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY", _STRINGIZE( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY ) )
 #endif // _MSC_VER
 
-#include <boost/config_ex.hpp>
 
 #include <cstdint>
 #include <thread>
+//------------------------------------------------------------------------------
+#ifdef __ANDROID__
+// https://android.googlesource.com/platform/bionic/+/HEAD/docs/status.md
+__attribute__(( weak )) int get_nprocs     () { return static_cast< int >( ::sysconf( _SC_NPROCESSORS_ONLN ) ); }
+__attribute__(( weak )) int get_nprocs_conf() { return static_cast< int >( ::sysconf( _SC_NPROCESSORS_CONF ) ); }
+#endif // __ANDROID__
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -62,12 +74,46 @@ using hardware_concurrency_t = std::uint_fast8_t;
 using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
 #endif
 
-#ifdef BOOST_MSVC // no inline variables even in VS 15.3
-BOOST_OVERRIDABLE_SYMBOL
+namespace detail
+{
+    inline auto get_hardware_concurrency_max() noexcept
+    {
+        return static_cast<hardware_concurrency_t>
+        (
+    #      ifdef __linux__
+            // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
+            get_nprocs()
+    #       else
+            std::thread::hardware_concurrency()
+    #       endif
+        );
+    }
+} // namespace detail
+
+#ifdef __GNUC__
+// http://clang-developers.42468.n3.nabble.com/Clang-equivalent-to-attribute-init-priority-td4034229.html
+// https://gcc.gnu.org/ml/gcc-help/2011-05/msg00221.html
+// "can only use 'init_priority' attribute on file-scope definitions of objects of class type"
+struct hardware_concurrency_max_t
+{
+    hardware_concurrency_t const value = detail::get_hardware_concurrency_max();
+    operator hardware_concurrency_t() const noexcept { return value; }
+} const hardware_concurrency_max __attribute__(( init_priority( 101 ) ));
 #else
-inline
-#endif // BOOST_MSVC
-auto const hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
+inline auto const hardware_concurrency_max( detail::get_hardware_concurrency_max() );
+#endif // compiler
+
+inline auto hardware_concurrency_current() noexcept
+{
+    return static_cast<hardware_concurrency_t>
+    (
+#   ifdef __linux__
+        get_nprocs()
+#   else
+        std::thread::hardware_concurrency()
+#   endif
+    );
+}
 
 //------------------------------------------------------------------------------
 } // namespace sweater

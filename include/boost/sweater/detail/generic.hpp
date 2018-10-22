@@ -191,7 +191,7 @@ private:
         thread_impl() = default;
        ~thread_impl() = default;
 
-       using thread_procedure = void * (*) ( void * );
+        using thread_procedure = void * (*) ( void * );
 
         auto create( thread_procedure const start_routine, void * const arg ) noexcept BOOST_NOTHROW_LITE
         {
@@ -230,8 +230,8 @@ private:
         mutex( mutex const &  ) = delete ;
        ~mutex(                ) = default;
 
-        void   lock() { ::AcquireSRWLockExclusive( &lock_ ); }
-        void unlock() { ::ReleaseSRWLockExclusive( &lock_ ); }
+        void   lock() noexcept { ::AcquireSRWLockExclusive( &lock_ ); }
+        void unlock() noexcept { ::ReleaseSRWLockExclusive( &lock_ ); }
 
         bool try_lock() noexcept { return ::TryAcquireSRWLockExclusive( &lock_ ) != false; }
 
@@ -440,7 +440,7 @@ private:
 
         void swap( thread & other ) noexcept { std::swap( this->handle_, other.handle_ ); }
 
-        static auto hardware_concurrency() noexcept { return std::thread::hardware_concurrency(); }
+        static auto hardware_concurrency() noexcept { return hardware_concurrency_max; }
 
     private:
         void create( thread_procedure const start_routine, void * const arg )
@@ -546,11 +546,16 @@ public:
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
 #endif
     {
-        /// \note Avoid the static-initialization-order-fiasco by not using the
+#   ifndef __GNUC__
+        auto const local_hardware_concurrency( hardware_concurrency_max );
+#   else
+        /// \note Avoid the static-initialization-order-fiasco (for compilers
+        /// not supporting the init_priority attribute) by not using the
         /// global hardware_concurrency variable (i.e. allow users to safely
         /// create plain global-variable sweat_shop singletons).
         ///                                   (01.05.2017.) (Domagoj Saric)
-        auto const local_hardware_concurrency( static_cast<hardware_concurrency_t>( thread::hardware_concurrency() ) );
+        auto const local_hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
+#    endif // __GNUC__
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( local_hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   else
@@ -632,9 +637,9 @@ public:
     static hardware_concurrency_t number_of_workers() noexcept
     {
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+        BOOST_ASSUME( hardware_concurrency_max <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   endif
-        return hardware_concurrency - unused_cores;
+        return hardware_concurrency_max - unused_cores;
     }
 
     /// For GCD dispatch_apply/OMP-like parallel loops.
@@ -848,12 +853,12 @@ public:
             success = true;
             spread_the_sweat
             (
-                hardware_concurrency,
+                hardware_concurrency_max,
                 [ &success, nice_value ]( iterations_t, iterations_t const thread_index ) noexcept
                 {
                     /// \note Do not change the caller thread's priority.
                     ///                       (05.05.2017.) (Domagoj Saric)
-                    if ( thread_index != hardware_concurrency )
+                    if ( thread_index != hardware_concurrency_max )
                     {
                         auto const result( ::setpriority( PRIO_PROCESS, 0, nice_value ) );
                         BOOST_ASSERT( ( result == 0 ) || ( errno == EACCES ) );
