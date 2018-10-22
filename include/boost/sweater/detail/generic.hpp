@@ -20,6 +20,7 @@
 #include "../hardware_concurrency.hpp"
 #include "../queues/mpmc_moodycamel.hpp"
 
+#include <boost/core/no_exceptions_support.hpp>
 #include <boost/config_ex.hpp>
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
@@ -743,7 +744,7 @@ public:
 
             void operator()() noexcept
             {
-                try
+                BOOST_TRY
                 {
                 #if BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1903 ) )
                     set_promise( promise, work );
@@ -759,10 +760,11 @@ public:
                     }
                 #endif // MSVC constexpr compilation failure workaround
                 }
-                catch ( ... )
+                BOOST_CATCH( ... )
                 {
                     promise.set_exception( std::current_exception() );
                 }
+                BOOST_CATCH_END
             }
 
             Functor   work   ;
