@@ -82,7 +82,7 @@ namespace detail
         (
     #      ifdef __linux__
             // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
-            get_nprocs()
+            get_nprocs_conf()
     #       else
             std::thread::hardware_concurrency()
     #       endif
