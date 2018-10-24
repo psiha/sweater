@@ -49,11 +49,11 @@ public:
     // http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
     static auto number_of_workers() noexcept
     {
-        BOOST_ASSERT_MSG( hardware_concurrency == std::thread::hardware_concurrency(), "Hardware concurrency changed at runtime!?" );
+        BOOST_ASSERT_MSG( hardware_concurrency_max == std::thread::hardware_concurrency(), "Hardware concurrency changed at runtime!?" );
     #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+        BOOST_ASSUME( hardware_concurrency_max <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
     #endif
-        return hardware_concurrency;
+        return hardware_concurrency_max;
     }
 
     template <typename F>
