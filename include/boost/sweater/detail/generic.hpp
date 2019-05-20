@@ -3,7 +3,7 @@
 /// \file generic.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2018.
+/// (c) Copyright Domagoj Saric 2016 - 2019.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -85,6 +85,12 @@ namespace detail
     }
 } // namespace detail
 #endif // __linux && !__ANDROID__ || __APPLE__
+
+// Useful resource saving if jobs are always dispatched from a single thread
+// (i.e. there is no fear of overcommiting the CPU)
+#ifndef BOOST_SWEATER_USE_CALLER_THREAD
+#   define BOOST_SWEATER_USE_CALLER_THREAD false
+#endif
 
 class shop
 {
@@ -513,12 +519,12 @@ private:
             :
             iterations_per_worker          ( iterations / shop::number_of_workers() ),
             threads_with_extra_iteration   ( iterations % shop::number_of_workers() - leave_one_for_the_calling_thread() ),
-            number_of_dispatched_work_parts( number_of_work_parts( iterations ) - 1 ),
+            number_of_dispatched_work_parts( number_of_work_parts( iterations ) - BOOST_SWEATER_USE_CALLER_THREAD ),
             semaphore                      ( number_of_dispatched_work_parts )
         {
-            BOOST_ASSERT( leave_one_for_the_calling_thread() == false || iterations < iterations_t( shop::number_of_workers() ) );
+            BOOST_ASSERT( ( leave_one_for_the_calling_thread() == false ) || ( iterations < iterations_t( shop::number_of_workers() ) ) );
 #       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-            BOOST_ASSUME( number_of_dispatched_work_parts < BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+            BOOST_ASSUME( number_of_dispatched_work_parts <= ( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD ) );
 #       endif
         }
 
@@ -529,7 +535,7 @@ private:
 
     private:
         // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
-        bool leave_one_for_the_calling_thread() const noexcept { return iterations_per_worker == 0; }
+        bool leave_one_for_the_calling_thread() const noexcept { return ( iterations_per_worker == 0 ) && BOOST_SWEATER_USE_CALLER_THREAD; }
         static hardware_concurrency_t number_of_work_parts( iterations_t const iterations ) noexcept
         {
             return static_cast<hardware_concurrency_t>( std::min<iterations_t>( shop::number_of_workers(), iterations ) );
@@ -544,7 +550,7 @@ public:
     BOOST_ATTRIBUTES( BOOST_COLD )
     shop()
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-    : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1 )
+    : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD )
 #endif
     {
 #   ifndef __GNUC__
@@ -560,7 +566,7 @@ public:
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( local_hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   else
-        auto const number_of_worker_threads( local_hardware_concurrency - 1 );
+        auto const number_of_worker_threads( local_hardware_concurrency - BOOST_SWEATER_USE_CALLER_THREAD );
         auto p_workers( std::make_unique<thread[]>( number_of_worker_threads ) );
         pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
 #   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
@@ -709,9 +715,12 @@ public:
         iteration &= enqueue_failure_iteration_mask;
 
         auto const caller_thread_start_iteration( iteration );
+#   if BOOST_SWEATER_USE_CALLER_THREAD
         BOOST_ASSERT( caller_thread_start_iteration < iterations );
         work( caller_thread_start_iteration, iterations );
-
+#   else
+        BOOST_VERIFY( caller_thread_start_iteration == iterations );
+#   endif
         setup.semaphore.wait();
 
         return enqueue_failure_iteration_mask != 0;
@@ -996,7 +1005,7 @@ private:
     my_queue queue_;
 
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-    using pool_threads_t = container::static_vector<thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - 1>; // also sweat on the calling thread
+    using pool_threads_t = container::static_vector<thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD>;
 #else
     using pool_threads_t = iterator_range<thread *>;
 #endif
