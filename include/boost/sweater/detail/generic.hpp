@@ -553,15 +553,15 @@ public:
     : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD )
 #endif
     {
-#   ifndef __GNUC__
+#   ifdef __GNUC__ // compilers with init_priority attribute (see hardware_concurency.hpp)
         auto const local_hardware_concurrency( hardware_concurrency_max );
 #   else
         /// \note Avoid the static-initialization-order-fiasco (for compilers
         /// not supporting the init_priority attribute) by not using the
-        /// global hardware_concurrency variable (i.e. allow users to safely
-        /// create plain global-variable sweat_shop singletons).
+        /// global hardware_concurrency_max variable (i.e. allow users to
+        /// safely create plain global-variable sweat_shop singletons).
         ///                                   (01.05.2017.) (Domagoj Saric)
-        auto const local_hardware_concurrency( static_cast<hardware_concurrency_t>( std::thread::hardware_concurrency() ) );
+        auto const local_hardware_concurrency( detail::get_hardware_concurrency_max() );
 #    endif // __GNUC__
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( local_hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );

@@ -3,7 +3,7 @@
 /// \file hardware_concurrency.hpp
 /// ------------------------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2018.
+/// (c) Copyright Domagoj Saric 2016 - 2019.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -80,12 +80,12 @@ namespace detail
     {
         return static_cast<hardware_concurrency_t>
         (
-    #      ifdef __linux__
+#       ifdef __linux__
             // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
             get_nprocs_conf()
-    #       else
+#       else
             std::thread::hardware_concurrency()
-    #       endif
+#       endif
         );
     }
 } // namespace detail
