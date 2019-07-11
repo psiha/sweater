@@ -456,11 +456,15 @@ private:
             auto const error( thread_impl::create( start_routine, arg ) );
             if ( BOOST_UNLIKELY( error ) )
             {
-            #if 0 // disabled - avoid the overhead of (at least) <system_error>
+#       ifndef BOOST_NO_EXCEPTIONS
+#           if 0 // disabled - avoid the overhead of (at least) <system_error>
                 throw std::system_error( std::error_code( error, std::system_category() ), "Thread creation failed" );
-            #else
+#           else
                 throw std::runtime_error( "Not enough resources to create a new thread" );
-            #endif // 0 // disabled - avoid the overhead of <system_error>
+#           endif // 0 // disabled - avoid the overhead of <system_error>
+#       else
+                std::terminate();
+#       endif
             }
         }
     }; // class thread
@@ -779,7 +783,7 @@ public:
             Functor   work   ;
             promise_t promise;
         }; // struct future_wrapper
-        
+
         typename future_wrapper::future_t future;
         auto const dispatch_succeeded( this->create_fire_and_destroy<future_wrapper>( std::forward<F>( work ), future ) );
         if ( BOOST_UNLIKELY( !dispatch_succeeded ) )
