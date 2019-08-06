@@ -51,7 +51,6 @@
 #   pragma detect_mismatch( "BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY", _STRINGIZE( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY ) )
 #endif // _MSC_VER
 
-
 #include <cstdint>
 #include <thread>
 //------------------------------------------------------------------------------
@@ -94,7 +93,7 @@ namespace detail
 // http://clang-developers.42468.n3.nabble.com/Clang-equivalent-to-attribute-init-priority-td4034229.html
 // https://gcc.gnu.org/ml/gcc-help/2011-05/msg00221.html
 // "can only use 'init_priority' attribute on file-scope definitions of objects of class type"
-struct hardware_concurrency_max_t
+inline struct hardware_concurrency_max_t
 {
     hardware_concurrency_t const value = detail::get_hardware_concurrency_max();
     operator hardware_concurrency_t() const noexcept { return value; }
