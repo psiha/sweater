@@ -56,8 +56,8 @@
 //------------------------------------------------------------------------------
 #ifdef __ANDROID__
 // https://android.googlesource.com/platform/bionic/+/HEAD/docs/status.md
-__attribute__(( weak )) int get_nprocs     () { return static_cast< int >( ::sysconf( _SC_NPROCESSORS_ONLN ) ); }
-__attribute__(( weak )) int get_nprocs_conf() { return static_cast< int >( ::sysconf( _SC_NPROCESSORS_CONF ) ); }
+__attribute__(( weak )) int get_nprocs     () noexcept { return static_cast< int >( ::sysconf( _SC_NPROCESSORS_ONLN ) ); }
+__attribute__(( weak )) int get_nprocs_conf() noexcept { return static_cast< int >( ::sysconf( _SC_NPROCESSORS_CONF ) ); }
 #endif // __ANDROID__
 //------------------------------------------------------------------------------
 namespace boost
