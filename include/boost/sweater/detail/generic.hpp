@@ -550,9 +550,10 @@ public:
     BOOST_ATTRIBUTES( BOOST_COLD )
     shop()
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-    : pool_( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD )
+    : pool_( hardware_concurrency_max - BOOST_SWEATER_USE_CALLER_THREAD )
 #endif
     {
+#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 #   ifdef __GNUC__ // compilers with init_priority attribute (see hardware_concurency.hpp)
         auto const local_hardware_concurrency( hardware_concurrency_max );
 #   else
@@ -562,10 +563,7 @@ public:
         /// safely create plain global-variable sweat_shop singletons).
         ///                                   (01.05.2017.) (Domagoj Saric)
         auto const local_hardware_concurrency( detail::get_hardware_concurrency_max() );
-#    endif // __GNUC__
-#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( local_hardware_concurrency <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
-#   else
+#   endif // __GNUC__
         auto const number_of_worker_threads( local_hardware_concurrency - BOOST_SWEATER_USE_CALLER_THREAD );
         auto p_workers( std::make_unique<thread[]>( number_of_worker_threads ) );
         pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
