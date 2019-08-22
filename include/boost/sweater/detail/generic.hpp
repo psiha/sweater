@@ -816,10 +816,10 @@ public:
     BOOST_ATTRIBUTES( BOOST_MINSIZE )
     bool set_priority( priority const new_priority ) noexcept
     {
-#ifdef __EMSCRIPTEN__
-        (void) new_priority;
-        return true;
-#else
+    #ifdef __EMSCRIPTEN__
+        if constexpr ( true ) 
+            return ( new_priority == priority::normal );
+    #endif
     #ifdef __ANDROID__
         /// \note Android's pthread_setschedparam() does not actually work so we
         /// have to abuse the general Linux' setpriority() non-POSIX compliance
@@ -891,7 +891,6 @@ public:
         }
     #endif // __linux
         return success;
-#endif
     }
 
 private:

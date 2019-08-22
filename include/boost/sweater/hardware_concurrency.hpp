@@ -18,7 +18,9 @@
 #pragma once
 //------------------------------------------------------------------------------
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#   if defined( __ANDROID__ )
+#   if defined( __EMSCRIPTEN__ ) && !defined( __EMSCRIPTEN_PTHREADS__ )
+#       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 1
+#   elif defined( __ANDROID__ )
 #       if defined( __aarch64__ )
 #           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 32 // SGS6 8, Meizu PRO 6 10 cores
 #       elif defined( __arm__ )
@@ -42,6 +44,9 @@
 #ifdef __ANDROID__
 #    include <unistd.h>
 #endif // __ANDROID__
+#ifdef __EMSCRIPTEN_PTHREADS__
+#   include <emscripten/threading.h> 
+#endif // __EMSCRIPTEN_PTHREADS__
 #ifdef __linux__
 #   include <sys/sysinfo.h>
 #endif // __linux__
@@ -79,7 +84,9 @@ namespace detail
     {
         return static_cast<hardware_concurrency_t>
         (
-#       ifdef __linux__
+#       if defined( __EMSCRIPTEN_PTHREADS__ )
+            emscripten_has_threading_support() ? emscripten_num_logical_cores() : 1
+#       elif defined( __linux__ )
             // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
             get_nprocs_conf()
 #       else
@@ -88,6 +95,27 @@ namespace detail
         );
     }
 } // namespace detail
+
+#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
+
+inline hardware_concurrency_t       hardware_concurrency_current() noexcept { return 1; }
+inline hardware_concurrency_t const hardware_concurrency_max{ 1 };
+
+#else
+
+inline auto hardware_concurrency_current() noexcept
+{
+    return static_cast<hardware_concurrency_t>
+    (
+#   if defined( __EMSCRIPTEN_PTHREADS__ )
+        detail::get_hardware_concurrency_max()
+#   elif defined( __linux__ )
+        get_nprocs()
+#   else
+        std::thread::hardware_concurrency()
+#   endif
+    );
+}
 
 #ifdef __GNUC__
 // http://clang-developers.42468.n3.nabble.com/Clang-equivalent-to-attribute-init-priority-td4034229.html
@@ -102,17 +130,7 @@ inline struct hardware_concurrency_max_t
 inline auto const hardware_concurrency_max( detail::get_hardware_concurrency_max() );
 #endif // compiler
 
-inline auto hardware_concurrency_current() noexcept
-{
-    return static_cast<hardware_concurrency_t>
-    (
-#   ifdef __linux__
-        get_nprocs()
-#   else
-        std::thread::hardware_concurrency()
-#   endif
-    );
-}
+#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
 
 //------------------------------------------------------------------------------
 } // namespace sweater

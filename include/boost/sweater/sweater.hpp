@@ -3,7 +3,7 @@
 /// \file sweater.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2018.
+/// (c) Copyright Domagoj Saric 2016 - 2019.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -17,7 +17,12 @@
 #define sweater_hpp__83B147A4_8450_4A6D_8FC1_72EA64FACABF
 #pragma once
 //------------------------------------------------------------------------------
-#if defined( __APPLE__ ) && !defined( BOOST_SWEATER_IMPL )
+#include "hardware_concurrency.hpp"
+
+#  if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
+#   define BOOST_SWEATER_IMPL single_threaded
+#	include "detail/single_threaded.hpp"
+#elif defined( __APPLE__ ) && !defined( BOOST_SWEATER_IMPL )
 #   define BOOST_SWEATER_IMPL apple
 #	include "detail/apple.hpp"
 #elif defined( _WIN32_unimplemented ) && !defined( BOOST_SWEATER_IMPL )
