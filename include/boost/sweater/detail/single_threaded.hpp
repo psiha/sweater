@@ -52,12 +52,17 @@ public:
     template <typename F>
     static void fire_and_forget( F && work )
     {
+#   if defined( __EMSCRIPTEN__ ) && !defined( __EMSCRIPTEN_PTHREADS__ )
         work();
+#   else
+        std::thread( std::forward<F>( work ) ).detach();
+#   endif
     }
 
     template <typename F>
     static auto dispatch( F && work )
     {
+#   if defined( __EMSCRIPTEN__ ) && !defined( __EMSCRIPTEN_PTHREADS__ )
         using result_t = typename std::result_of<F()>::type;
         std::promise< result_t > promise;
         std::future < result_t > future( promise.get_future() );
@@ -86,6 +91,9 @@ public:
             }
         );
         return future;
+#   else
+        return std::async( std::launch::async | std::launch::deferred, std::forward<F>( work ) );
+#   endif
     }
 }; // class shop
 
