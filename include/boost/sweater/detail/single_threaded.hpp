@@ -42,7 +42,7 @@ public:
     static constexpr hardware_concurrency_t number_of_workers() noexcept { return 1; }
 
     template <typename F>
-    void spread_the_sweat( iterations_t const iterations, F && __restrict work ) noexcept( work( 0, iterations ) )
+    void spread_the_sweat( iterations_t const iterations, F && __restrict work ) noexcept( noexcept( std::declval< F >()( 0, 42 ) ) )
     {
         work( 0, iterations );
     }
