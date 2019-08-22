@@ -17,6 +17,8 @@
 
 #include "../hardware_concurrency.hpp"
 
+#include <boost/core/no_exceptions_support.hpp>
+
 #include <cstdint>
 #include <future>
 #include <thread>
@@ -50,13 +52,40 @@ public:
     template <typename F>
     static void fire_and_forget( F && work )
     {
-        std::thread( std::forward<F>( work ) ).detach();
+        work();
     }
 
     template <typename F>
     static auto dispatch( F && work )
     {
-        return std::async( std::launch::async | std::launch::deferred, std::forward<F>( work ) );
+        using result_t = typename std::result_of<F()>::type;
+        std::promise< result_t > promise;
+        std::future < result_t > future( promise.get_future() );
+        fire_and_forget
+        (
+            [promise = std::move( promise ), work = std::forward<F>( work )]
+            () mutable noexcept
+            {
+                BOOST_TRY
+                {
+                    if constexpr ( std::is_same_v<result_t, void> )
+                    {
+                        work();
+                        promise.set_value();
+                    }
+                    else
+                    {
+                        promise.set_value( work() );
+                    }
+                }
+                BOOST_CATCH( ... )
+                {
+                    promise.set_exception( std::current_exception() );
+                }
+                BOOST_CATCH_END
+            }
+        );
+        return future;
     }
 }; // class shop
 
