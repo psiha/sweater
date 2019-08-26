@@ -51,6 +51,11 @@
 #   include <sys/sysinfo.h>
 #endif // __linux__
 
+#if BOOST_SWEATER_DOCKER_LIMITS
+#   include <fcntl.h>
+#   include <sys/types.h>
+#endif
+
 #ifdef _MSC_VER
 #   include <yvals.h>
 #   pragma detect_mismatch( "BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY", _STRINGIZE( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY ) )
@@ -78,6 +83,63 @@ using hardware_concurrency_t = std::uint_fast8_t;
 using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
 #endif
 
+#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
+
+inline hardware_concurrency_t       hardware_concurrency_current() noexcept { return 1; }
+inline hardware_concurrency_t const hardware_concurrency_max{ 1 };
+
+inline struct hardware_concurrency_max_t
+{
+    hardware_concurrency_t const value = detail::get_hardware_concurrency_max();
+    operator hardware_concurrency_t() const noexcept { return value; }
+} const hardware_concurrency_max __attribute__(( init_priority( 101 ) ));
+
+#elif BOOST_SWEATER_DOCKER_LIMITS
+
+namespace detail
+{
+    int read_int( char const * const file_path ) noexcept
+    {
+        auto const fd( ::open( file_path, O_RDONLY, 0 ) );
+        if ( fd == -1 )
+            return -1;
+        char value[ 64 ];
+        BOOST_VERIFY( ::read( fd, value, sizeof( value ) ) < signed( sizeof( value ) ) );
+        return std::atoi( value );
+    }
+
+    inline auto const get_docker_limit() noexcept
+    {
+        // https://bugs.openjdk.java.net/browse/JDK-8146115
+        // http://hg.openjdk.java.net/jdk/hs/rev/7f22774a5f42
+        // RAM limit /sys/fs/cgroup/memory.limit_in_bytes
+        // swap limt /sys/fs/cgroup/memory.memsw.limit_in_bytes
+        
+        auto const cfs_quota ( read_int( "/sys/fs/cgroup/cpu.cfs_quota_us"  ) );
+        auto const cfs_period( read_int( "/sys/fs/cgroup/cpu.cfs_period_us" ) );
+        if ( ( cfs_quota > 0 ) && ( cfs_period > 0 ) )
+        {
+            // Docker allows non-whole core quota assignments - use some sort of
+            // heurestical rounding.
+            return std::max( ( cfs_quota + cfs_period / 2 ) / cfs_period, 1 );
+        }
+        return -1;
+    }
+} // namespace detail
+
+inline struct hardware_concurrency_max_t
+{
+    auto const docker_quota = detail::get_docker_limit();
+
+    auto const value = static_cast<hardware_concurrency_t>( ( docker_quota != -1 ) ? docker_quota : get_nprocs_conf() );
+
+    operator hardware_concurrency_t() const noexcept { return value; }
+} const hardware_concurrency_max __attribute__(( init_priority( 101 ) ));
+
+inline auto hardware_concurrency_current() noexcept { return static_cast<hardware_concurrency_t>( ( hardware_concurrency_max.docker_quota != -1 ) ? hardware_concurrency_max.docker_quota : get_nprocs() ); }
+
+#else // generic/standard impl
+
 namespace detail
 {
     inline auto get_hardware_concurrency_max() noexcept
@@ -95,13 +157,6 @@ namespace detail
         );
     }
 } // namespace detail
-
-#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
-
-inline hardware_concurrency_t       hardware_concurrency_current() noexcept { return 1; }
-inline hardware_concurrency_t const hardware_concurrency_max{ 1 };
-
-#else
 
 inline auto hardware_concurrency_current() noexcept
 {
@@ -130,7 +185,7 @@ inline struct hardware_concurrency_max_t
 inline auto const hardware_concurrency_max( detail::get_hardware_concurrency_max() );
 #endif // compiler
 
-#endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
+#endif // impl
 
 //------------------------------------------------------------------------------
 } // namespace sweater
