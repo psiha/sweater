@@ -91,12 +91,6 @@ using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
 inline hardware_concurrency_t       hardware_concurrency_current() noexcept { return 1; }
 inline hardware_concurrency_t const hardware_concurrency_max{ 1 };
 
-inline struct hardware_concurrency_max_t
-{
-    hardware_concurrency_t const value = detail::get_hardware_concurrency_max();
-    operator hardware_concurrency_t() const noexcept { return value; }
-} const hardware_concurrency_max __attribute__(( init_priority( 101 ) ));
-
 #elif BOOST_SWEATER_DOCKER_LIMITS
 
 namespace detail
