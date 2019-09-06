@@ -45,7 +45,7 @@
 #    include <unistd.h>
 #endif // __ANDROID__
 #ifdef __EMSCRIPTEN_PTHREADS__
-#   include <emscripten/threading.h> 
+#   include <emscripten/threading.h>
 #endif // __EMSCRIPTEN_PTHREADS__
 #ifdef __linux__
 #   include <sys/sysinfo.h>
@@ -114,9 +114,9 @@ namespace detail
         // http://hg.openjdk.java.net/jdk/hs/rev/7f22774a5f42
         // RAM limit /sys/fs/cgroup/memory.limit_in_bytes
         // swap limt /sys/fs/cgroup/memory.memsw.limit_in_bytes
-        
-        auto const cfs_quota ( read_int( "/sys/fs/cgroup/cpu.cfs_quota_us"  ) );
-        auto const cfs_period( read_int( "/sys/fs/cgroup/cpu.cfs_period_us" ) );
+
+        auto const cfs_quota ( read_int( "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"  ) );
+        auto const cfs_period( read_int( "/sys/fs/cgroup/cpu/cpu.cfs_period_us" ) );
         if ( ( cfs_quota > 0 ) && ( cfs_period > 0 ) )
         {
             // Docker allows non-whole core quota assignments - use some sort of
