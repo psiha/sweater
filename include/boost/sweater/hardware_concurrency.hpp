@@ -52,8 +52,11 @@
 #endif // __linux__
 
 #if BOOST_SWEATER_DOCKER_LIMITS
+#   include <boost/assert.hpp>
+
 #   include <fcntl.h>
 #   include <sys/types.h>
+#   include <unistd.h>
 #endif
 
 #ifdef _MSC_VER
@@ -98,7 +101,7 @@ inline struct hardware_concurrency_max_t
 
 namespace detail
 {
-    int read_int( char const * const file_path ) noexcept
+    inline int read_int( char const * const file_path ) noexcept
     {
         auto const fd( ::open( file_path, O_RDONLY, 0 ) );
         if ( fd == -1 )
@@ -129,9 +132,9 @@ namespace detail
 
 inline struct hardware_concurrency_max_t
 {
-    auto const docker_quota = detail::get_docker_limit();
+    int const docker_quota = detail::get_docker_limit();
 
-    auto const value = static_cast<hardware_concurrency_t>( ( docker_quota != -1 ) ? docker_quota : get_nprocs_conf() );
+    hardware_concurrency_t const value = static_cast<hardware_concurrency_t>( ( docker_quota != -1 ) ? docker_quota : get_nprocs_conf() );
 
     operator hardware_concurrency_t() const noexcept { return value; }
 } const hardware_concurrency_max __attribute__(( init_priority( 101 ) ));
