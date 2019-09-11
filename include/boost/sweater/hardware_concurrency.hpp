@@ -18,7 +18,9 @@
 #pragma once
 //------------------------------------------------------------------------------
 #ifndef BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#   if defined( __ANDROID__ )
+#   if defined( __EMSCRIPTEN__ ) && !defined( __EMSCRIPTEN_PTHREADS__ )
+#       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 1
+#   elif defined( __ANDROID__ )
 #       if defined( __aarch64__ )
 #           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 32 // SGS6 8, Meizu PRO 6 10 cores
 #       elif defined( __arm__ )
@@ -42,9 +44,20 @@
 #ifdef __ANDROID__
 #    include <unistd.h>
 #endif // __ANDROID__
+#ifdef __EMSCRIPTEN_PTHREADS__
+#   include <emscripten/threading.h>
+#endif // __EMSCRIPTEN_PTHREADS__
 #ifdef __linux__
 #   include <sys/sysinfo.h>
 #endif // __linux__
+
+#if BOOST_SWEATER_DOCKER_LIMITS
+#   include <boost/assert.hpp>
+
+#   include <fcntl.h>
+#   include <sys/types.h>
+#   include <unistd.h>
+#endif
 
 #ifdef _MSC_VER
 #   include <yvals.h>
@@ -73,13 +86,70 @@ using hardware_concurrency_t = std::uint_fast8_t;
 using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
 #endif
 
+#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
+
+inline hardware_concurrency_t       hardware_concurrency_current() noexcept { return 1; }
+inline hardware_concurrency_t const hardware_concurrency_max{ 1 };
+
+#elif BOOST_SWEATER_DOCKER_LIMITS
+
+namespace detail
+{
+    inline int read_int( char const * const file_path ) noexcept
+    {
+        auto const fd( ::open( file_path, O_RDONLY, 0 ) );
+        if ( fd == -1 )
+            return -1;
+        char value[ 64 ];
+        BOOST_VERIFY( ::read( fd, value, sizeof( value ) ) < signed( sizeof( value ) ) );
+        return std::atoi( value );
+    }
+
+    inline auto const get_docker_limit() noexcept
+    {
+        // https://bugs.openjdk.java.net/browse/JDK-8146115
+        // http://hg.openjdk.java.net/jdk/hs/rev/7f22774a5f42
+        // RAM limit /sys/fs/cgroup/memory.limit_in_bytes
+        // swap limt /sys/fs/cgroup/memory.memsw.limit_in_bytes
+
+        auto const cfs_quota ( read_int( "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"  ) );
+        auto const cfs_period( read_int( "/sys/fs/cgroup/cpu/cpu.cfs_period_us" ) );
+        if ( ( cfs_quota > 0 ) && ( cfs_period > 0 ) )
+        {
+            // Docker allows non-whole core quota assignments - use some sort of
+            // heurestical rounding.
+            return std::max( ( cfs_quota + cfs_period / 2 ) / cfs_period, 1 );
+        }
+        return -1;
+    }
+} // namespace detail
+
+inline struct hardware_concurrency_max_t
+{
+    int const docker_quota = detail::get_docker_limit();
+
+    hardware_concurrency_t const value = static_cast<hardware_concurrency_t>( ( docker_quota != -1 ) ? docker_quota : get_nprocs_conf() );
+
+    operator hardware_concurrency_t() const noexcept { return value; }
+} const hardware_concurrency_max __attribute__(( init_priority( 101 ) ));
+
+inline auto hardware_concurrency_current() noexcept { return static_cast<hardware_concurrency_t>( ( hardware_concurrency_max.docker_quota != -1 ) ? hardware_concurrency_max.docker_quota : get_nprocs() ); }
+
+#else // generic/standard impl
+
 namespace detail
 {
     inline auto get_hardware_concurrency_max() noexcept
     {
         return static_cast<hardware_concurrency_t>
         (
-#       ifdef __linux__
+#       if defined( __EMSCRIPTEN_PTHREADS__ )
+#         if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 0
+            emscripten_has_threading_support() ? emscripten_num_logical_cores() : 1
+#         else
+            BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#         endif
+#       elif defined( __linux__ )
             // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
             get_nprocs_conf()
 #       else
@@ -88,6 +158,20 @@ namespace detail
         );
     }
 } // namespace detail
+
+inline auto hardware_concurrency_current() noexcept
+{
+    return static_cast<hardware_concurrency_t>
+    (
+#   if defined( __EMSCRIPTEN_PTHREADS__ )
+        detail::get_hardware_concurrency_max()
+#   elif defined( __linux__ )
+        get_nprocs()
+#   else
+        std::thread::hardware_concurrency()
+#   endif
+    );
+}
 
 #ifdef __GNUC__
 // http://clang-developers.42468.n3.nabble.com/Clang-equivalent-to-attribute-init-priority-td4034229.html
@@ -102,17 +186,7 @@ inline struct hardware_concurrency_max_t
 inline auto const hardware_concurrency_max( detail::get_hardware_concurrency_max() );
 #endif // compiler
 
-inline auto hardware_concurrency_current() noexcept
-{
-    return static_cast<hardware_concurrency_t>
-    (
-#   ifdef __linux__
-        get_nprocs()
-#   else
-        std::thread::hardware_concurrency()
-#   endif
-    );
-}
+#endif // impl
 
 //------------------------------------------------------------------------------
 } // namespace sweater

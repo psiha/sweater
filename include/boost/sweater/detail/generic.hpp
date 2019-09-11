@@ -68,11 +68,16 @@ namespace generic
 {
 //------------------------------------------------------------------------------
 
-#if defined( __linux ) && !defined( __ANDROID__ ) || defined( __APPLE__ )
+#if defined( BOOST_HAS_PTHREADS ) && !defined( __ANDROID__ )
 namespace detail
 {
+#ifdef __EMSCRIPTEN__
+    inline auto const default_policy_priority_min        ( 0 );
+    inline auto const default_policy_priority_max        ( 0 );
+#else
     inline auto const default_policy_priority_min        ( ::sched_get_priority_min( SCHED_OTHER ) );
     inline auto const default_policy_priority_max        ( ::sched_get_priority_max( SCHED_OTHER ) );
+#endif
     inline auto const default_policy_priority_range      ( static_cast<std::uint8_t>( default_policy_priority_max - default_policy_priority_min ) );
     inline auto const default_policy_priority_unchangable( default_policy_priority_range == 0 );
 
@@ -519,14 +524,14 @@ private:
     class spread_setup
     {
     public:
-        spread_setup( iterations_t const iterations ) noexcept
+        spread_setup( iterations_t const iterations, hardware_concurrency_t const actual_number_of_workers ) noexcept
             :
-            iterations_per_worker          ( iterations / shop::number_of_workers() ),
-            threads_with_extra_iteration   ( iterations % shop::number_of_workers() - leave_one_for_the_calling_thread() ),
-            number_of_dispatched_work_parts( number_of_work_parts( iterations ) - BOOST_SWEATER_USE_CALLER_THREAD ),
+            iterations_per_worker          ( iterations / actual_number_of_workers ),
+            threads_with_extra_iteration   ( iterations % actual_number_of_workers - leave_one_for_the_calling_thread() ),
+            number_of_dispatched_work_parts( number_of_work_parts( iterations, actual_number_of_workers ) - BOOST_SWEATER_USE_CALLER_THREAD ),
             semaphore                      ( number_of_dispatched_work_parts )
         {
-            BOOST_ASSERT( ( leave_one_for_the_calling_thread() == false ) || ( iterations < iterations_t( shop::number_of_workers() ) ) );
+            BOOST_ASSERT( ( leave_one_for_the_calling_thread() == false ) || ( iterations < iterations_t( actual_number_of_workers ) ) );
 #       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
             BOOST_ASSUME( number_of_dispatched_work_parts <= ( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD ) );
 #       endif
@@ -540,9 +545,9 @@ private:
     private:
         // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
         bool leave_one_for_the_calling_thread() const noexcept { return ( iterations_per_worker == 0 ) && BOOST_SWEATER_USE_CALLER_THREAD; }
-        static hardware_concurrency_t number_of_work_parts( iterations_t const iterations ) noexcept
+        static hardware_concurrency_t number_of_work_parts( iterations_t const iterations, hardware_concurrency_t const actual_number_of_workers ) noexcept
         {
-            return static_cast<hardware_concurrency_t>( std::min<iterations_t>( shop::number_of_workers(), iterations ) );
+            return static_cast<hardware_concurrency_t>( std::min<iterations_t>( actual_number_of_workers, iterations ) );
         }
     }; // class spread_setup
 
@@ -643,12 +648,13 @@ public:
 #   endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     }
 
-    static hardware_concurrency_t number_of_workers() noexcept
+    auto number_of_workers() const noexcept
     {
+        auto const actual_number_of_workers( static_cast< hardware_concurrency_t >( pool_.size() ) );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( hardware_concurrency_max <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+        BOOST_ASSUME( actual_number_of_workers <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   endif
-        return hardware_concurrency_max - unused_cores;
+        return actual_number_of_workers;
     }
 
     /// For GCD dispatch_apply/OMP-like parallel loops.
@@ -668,7 +674,7 @@ public:
             return true;
         }
 
-        spread_setup setup( iterations );
+        spread_setup setup( iterations, number_of_workers() );
 
         /// \note MSVC does not support VLAs but has an alloca that returns (16
         /// byte) aligned memory. Clang's alloca is unaligned and it does not
@@ -793,14 +799,6 @@ public:
         return future;
     }
 
-#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
-    static void set_number_of_unused_cores( hardware_concurrency_t const number_of_unused_cores ) noexcept
-    {
-        BOOST_ASSERT_MSG( number_of_unused_cores < hardware_concurrency, "No one left to sweat?" );
-        unused_cores = number_of_unused_cores;
-    }
-#endif // BOOST_SWEATER_ADJUSTABLE_PARALLELISM
-
 #ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
     static void set_idle_suspend_spin_count( std::uint32_t const new_spin_count ) noexcept
     {
@@ -811,6 +809,10 @@ public:
     BOOST_ATTRIBUTES( BOOST_MINSIZE )
     bool set_priority( priority const new_priority ) noexcept
     {
+    #ifdef __EMSCRIPTEN__
+        if constexpr ( true ) 
+            return ( new_priority == priority::normal );
+    #endif
     #ifdef __ANDROID__
         /// \note Android's pthread_setschedparam() does not actually work so we
         /// have to abuse the general Linux' setpriority() non-POSIX compliance
@@ -882,6 +884,16 @@ public:
         }
     #endif // __linux
         return success;
+    }
+
+    void set_max_allowed_threads( hardware_concurrency_t const max_threads ) noexcept
+    {
+    #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        pool_.resize( max_threads - BOOST_SWEATER_USE_CALLER_THREAD );
+    #else
+        auto const actual_size( std::min< hardware_concurrency_t >( max_threads, hardware_concurrency_max - BOOST_SWEATER_USE_CALLER_THREAD ) );
+        pool_.advance_end( static_cast< signed >( pool_.size() ) - actual_size );
+    #endif
     }
 
 private:
@@ -1012,23 +1024,12 @@ private:
     using pool_threads_t = iterator_range<thread *>;
 #endif
     pool_threads_t pool_;
-
-#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
-    static hardware_concurrency_t unused_cores;
-#else
-    static hardware_concurrency_t constexpr unused_cores = 0;
-#endif // BOOST_SWEATER_ADJUSTIBLE_PARALLELISM
 }; // class shop
 
 #ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
 std::uint32_t shop::spin_count = 1 * 1000 * 1000;
 #endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-
-#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
-BOOST_OVERRIDABLE_MEMBER_SYMBOL
-hardware_concurrency_t shop::unused_cores( 0 );
-#endif // BOOST_SWEATER_ADJUSTABLE_PARALLELISM
 
 //------------------------------------------------------------------------------
 } // namespace generic
