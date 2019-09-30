@@ -22,7 +22,6 @@
 
 #include <boost/core/no_exceptions_support.hpp>
 #include <boost/config_ex.hpp>
-#include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 #include <boost/functionoid/functionoid.hpp>
 #include <boost/range/iterator_range_core.hpp>
@@ -68,11 +67,16 @@ namespace generic
 {
 //------------------------------------------------------------------------------
 
-#if defined( __linux ) && !defined( __ANDROID__ ) || defined( __APPLE__ )
+#if defined( BOOST_HAS_PTHREADS ) && !defined( __ANDROID__ )
 namespace detail
 {
+#ifdef __EMSCRIPTEN__
+    inline auto const default_policy_priority_min        ( 0 );
+    inline auto const default_policy_priority_max        ( 0 );
+#else
     inline auto const default_policy_priority_min        ( ::sched_get_priority_min( SCHED_OTHER ) );
     inline auto const default_policy_priority_max        ( ::sched_get_priority_max( SCHED_OTHER ) );
+#endif
     inline auto const default_policy_priority_range      ( static_cast<std::uint8_t>( default_policy_priority_max - default_policy_priority_min ) );
     inline auto const default_policy_priority_unchangable( default_policy_priority_range == 0 );
 
@@ -195,8 +199,9 @@ private:
         static auto get_active_thread_id() noexcept BOOST_NOTHROW_LITE { return pthread_self(); }
 
     protected:
-        thread_impl() = default;
-       ~thread_impl() = default;
+       // https://stackoverflow.com/questions/43819314/default-member-initializer-needed-within-definition-of-enclosing-class-outside
+       constexpr  thread_impl() noexcept {};
+                 ~thread_impl() noexcept = default;
 
         using thread_procedure = void * (*) ( void * );
 
@@ -357,7 +362,7 @@ private:
         }; // struct synchronized_invocation
 
     public:
-        thread() = default;
+        thread() noexcept = default;
        ~thread() noexcept { BOOST_ASSERT_MSG( !joinable(), "Abandoning a thread!" ); }
 
         thread( thread && other ) noexcept { swap( other ); }
@@ -456,11 +461,15 @@ private:
             auto const error( thread_impl::create( start_routine, arg ) );
             if ( BOOST_UNLIKELY( error ) )
             {
-            #if 0 // disabled - avoid the overhead of (at least) <system_error>
+#       ifndef BOOST_NO_EXCEPTIONS
+#           if 0 // disabled - avoid the overhead of (at least) <system_error>
                 throw std::system_error( std::error_code( error, std::system_category() ), "Thread creation failed" );
-            #else
+#           else
                 throw std::runtime_error( "Not enough resources to create a new thread" );
-            #endif // 0 // disabled - avoid the overhead of <system_error>
+#           endif // 0 // disabled - avoid the overhead of <system_error>
+#       else
+                std::terminate();
+#       endif
             }
         }
     }; // class thread
@@ -515,14 +524,14 @@ private:
     class spread_setup
     {
     public:
-        spread_setup( iterations_t const iterations ) noexcept
+        spread_setup( iterations_t const iterations, hardware_concurrency_t const actual_number_of_workers ) noexcept
             :
-            iterations_per_worker          ( iterations / shop::number_of_workers() ),
-            threads_with_extra_iteration   ( iterations % shop::number_of_workers() - leave_one_for_the_calling_thread() ),
-            number_of_dispatched_work_parts( number_of_work_parts( iterations ) - BOOST_SWEATER_USE_CALLER_THREAD ),
+            iterations_per_worker          ( iterations / actual_number_of_workers ),
+            threads_with_extra_iteration   ( iterations % actual_number_of_workers - leave_one_for_the_calling_thread() ),
+            number_of_dispatched_work_parts( number_of_work_parts( iterations, actual_number_of_workers ) - BOOST_SWEATER_USE_CALLER_THREAD ),
             semaphore                      ( number_of_dispatched_work_parts )
         {
-            BOOST_ASSERT( ( leave_one_for_the_calling_thread() == false ) || ( iterations < iterations_t( shop::number_of_workers() ) ) );
+            BOOST_ASSERT( ( leave_one_for_the_calling_thread() == false ) || ( iterations < iterations_t( actual_number_of_workers ) ) );
 #       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
             BOOST_ASSUME( number_of_dispatched_work_parts <= ( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD ) );
 #       endif
@@ -536,9 +545,9 @@ private:
     private:
         // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
         bool leave_one_for_the_calling_thread() const noexcept { return ( iterations_per_worker == 0 ) && BOOST_SWEATER_USE_CALLER_THREAD; }
-        static hardware_concurrency_t number_of_work_parts( iterations_t const iterations ) noexcept
+        static hardware_concurrency_t number_of_work_parts( iterations_t const iterations, hardware_concurrency_t const actual_number_of_workers ) noexcept
         {
-            return static_cast<hardware_concurrency_t>( std::min<iterations_t>( shop::number_of_workers(), iterations ) );
+            return static_cast<hardware_concurrency_t>( std::min<iterations_t>( actual_number_of_workers, iterations ) );
         }
     }; // class spread_setup
 
@@ -546,37 +555,17 @@ private:
 
     using my_queue = queues::mpmc_moodycamel<work_t>;
 
-public:
-    BOOST_ATTRIBUTES( BOOST_COLD )
-    shop()
-#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-    : pool_( hardware_concurrency_max - BOOST_SWEATER_USE_CALLER_THREAD )
-#endif
+    auto worker_loop() noexcept
     {
-#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#   ifdef __GNUC__ // compilers with init_priority attribute (see hardware_concurency.hpp)
-        auto const local_hardware_concurrency( hardware_concurrency_max );
-#   else
-        /// \note Avoid the static-initialization-order-fiasco (for compilers
-        /// not supporting the init_priority attribute) by not using the
-        /// global hardware_concurrency_max variable (i.e. allow users to
-        /// safely create plain global-variable sweat_shop singletons).
-        ///                                   (01.05.2017.) (Domagoj Saric)
-        auto const local_hardware_concurrency( detail::get_hardware_concurrency_max() );
-#   endif // __GNUC__
-        auto const number_of_worker_threads( local_hardware_concurrency - BOOST_SWEATER_USE_CALLER_THREAD );
-        auto p_workers( std::make_unique<thread[]>( number_of_worker_threads ) );
-        pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
-#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-
         /// \note Even a trivial only-this-capturing lambda fails the
-        /// std::is_trivially_copyable test with MSVC14.1u3 which makes the
+        /// std::is_trivially_copyable test with MSVC14.1u3-16.3 which makes the
         /// thread startup logic go into the synchronized path which in turn
         /// causes deadlocks on DLL startup when global static sweat_shops are
         /// used
-        /// (https://blogs.msdn.microsoft.com/oldnewthing/20070904-00/?p=25283).
+        /// https://blogs.msdn.microsoft.com/oldnewthing/20070904-00/?p=25283
+        /// https://stackoverflow.com/questions/32986193/when-is-a-lambda-trivial.
         ///                                   (28.09.2017.) (Domagoj Saric)
-        struct worker_loop : shop
+        struct worker : shop
         {
             //[this]() noexcept
             void operator()() noexcept
@@ -616,35 +605,38 @@ public:
                         work();
                 }
             }
-        }; // worker_loop
-        for ( auto & worker : pool_ )
-            worker = std::ref( static_cast<worker_loop &>( *this ) );
-#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        p_workers.release();
-#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        }; // worker
+        auto worker_ref( std::ref( static_cast<worker &>( *this ) ) );
+        using worker_ref_t = decltype( worker_ref );
+        static_assert( std::is_trivially_copyable_v< worker_ref_t > && std::is_trivially_destructible_v< worker_ref_t > );
+        return worker_ref;
     }
 
-    BOOST_ATTRIBUTES( BOOST_COLD )
-    ~shop() noexcept
+public:
+    shop()
     {
-        {
-            std::unique_lock<mutex> lock( mutex_ );
-            brexit_.store( true, std::memory_order_relaxed );
-            work_event_.notify_all();
-        }
-        for ( auto & worker : pool_ )
-            worker.join();
-#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        delete[] pool_.begin();
-#   endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#   ifdef __GNUC__ // compilers with init_priority attribute (see hardware_concurency.hpp)
+        auto const local_hardware_concurrency( hardware_concurrency_max );
+#   else
+        /// \note Avoid the static-initialization-order-fiasco (for compilers
+        /// not supporting the init_priority attribute) by not using the
+        /// global hardware_concurrency_max variable (i.e. allow users to
+        /// safely create plain global-variable sweat_shop singletons).
+        ///                                   (01.05.2017.) (Domagoj Saric)
+        auto const local_hardware_concurrency( detail::get_hardware_concurrency_max() );
+#   endif // __GNUC__
+        create_pool( local_hardware_concurrency );
     }
 
-    static hardware_concurrency_t number_of_workers() noexcept
+    ~shop() noexcept { stop_and_destroy_pool(); }
+
+    auto number_of_workers() const noexcept
     {
+        auto const actual_number_of_workers( static_cast< hardware_concurrency_t >( pool_.size() ) );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( hardware_concurrency_max <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+        BOOST_ASSUME( actual_number_of_workers <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   endif
-        return hardware_concurrency_max - unused_cores;
+        return actual_number_of_workers;
     }
 
     /// For GCD dispatch_apply/OMP-like parallel loops.
@@ -664,7 +656,7 @@ public:
             return true;
         }
 
-        spread_setup setup( iterations );
+        spread_setup setup( iterations, number_of_workers() );
 
         /// \note MSVC does not support VLAs but has an alloca that returns (16
         /// byte) aligned memory. Clang's alloca is unaligned and it does not
@@ -777,7 +769,7 @@ public:
             Functor   work   ;
             promise_t promise;
         }; // struct future_wrapper
-        
+
         typename future_wrapper::future_t future;
         auto const dispatch_succeeded( this->create_fire_and_destroy<future_wrapper>( std::forward<F>( work ), future ) );
         if ( BOOST_UNLIKELY( !dispatch_succeeded ) )
@@ -789,14 +781,6 @@ public:
         return future;
     }
 
-#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
-    static void set_number_of_unused_cores( hardware_concurrency_t const number_of_unused_cores ) noexcept
-    {
-        BOOST_ASSERT_MSG( number_of_unused_cores < hardware_concurrency, "No one left to sweat?" );
-        unused_cores = number_of_unused_cores;
-    }
-#endif // BOOST_SWEATER_ADJUSTABLE_PARALLELISM
-
 #ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
     static void set_idle_suspend_spin_count( std::uint32_t const new_spin_count ) noexcept
     {
@@ -807,6 +791,10 @@ public:
     BOOST_ATTRIBUTES( BOOST_MINSIZE )
     bool set_priority( priority const new_priority ) noexcept
     {
+    #ifdef __EMSCRIPTEN__
+        if constexpr ( true ) 
+            return ( new_priority == priority::normal );
+    #endif
     #ifdef __ANDROID__
         /// \note Android's pthread_setschedparam() does not actually work so we
         /// have to abuse the general Linux' setpriority() non-POSIX compliance
@@ -830,7 +818,7 @@ public:
             #if defined( __ANDROID__ )
                 success &= ( ::setpriority( PRIO_PROCESS, thread.native_handle(), nice_value ) == 0 );
             #else
-                std::uint8_t const api_range            ( static_cast<std::int8_t >( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) );
+                std::uint8_t const api_range            ( static_cast<std::int8_t>( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) );
                 auto         const platform_range       ( detail::default_policy_priority_range );
                 auto         const uninverted_nice_value( static_cast<std::uint8_t>( - ( nice_value - static_cast<std::int8_t>( priority::idle ) ) ) );
                 int          const priority_value       ( detail::default_policy_priority_min + detail::round_divide( uninverted_nice_value * platform_range, api_range ) ); // surely it will be hoisted
@@ -865,9 +853,11 @@ public:
                 hardware_concurrency_max,
                 [ &success, nice_value ]( iterations_t, iterations_t const thread_index ) noexcept
                 {
+#               if BOOST_SWEATER_USE_CALLER_THREAD
                     /// \note Do not change the caller thread's priority.
                     ///                       (05.05.2017.) (Domagoj Saric)
                     if ( thread_index != hardware_concurrency_max )
+#               endif
                     {
                         auto const result( ::setpriority( PRIO_PROCESS, 0, nice_value ) );
                         BOOST_ASSERT( ( result == 0 ) || ( errno == EACCES ) );
@@ -880,7 +870,53 @@ public:
         return success;
     }
 
+    void set_max_allowed_threads( hardware_concurrency_t const max_threads )
+    {
+        BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue." );
+        stop_and_destroy_pool();
+        create_pool( max_threads - BOOST_SWEATER_USE_CALLER_THREAD );
+    }
+
 private:
+    BOOST_ATTRIBUTES( BOOST_COLD )
+    void create_pool( hardware_concurrency_t const size )
+    {
+        BOOST_ASSERT_MSG( size <= detail::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
+        auto const current_size( pool_.size() );
+        BOOST_ASSUME( current_size == 0 );
+#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        pool_.resize( size );
+#   else
+        auto p_workers( std::make_unique<thread[]>( size ) );
+        pool_ = make_iterator_range_n( p_workers.get(), size );
+#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+
+        auto const worker_loop( this->worker_loop() );
+        for ( auto & worker : pool_ )
+            worker = worker_loop;
+#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        p_workers.release();
+#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    }
+
+    BOOST_ATTRIBUTES( BOOST_COLD )
+    void stop_and_destroy_pool() noexcept
+    {
+        {
+            std::unique_lock<mutex> lock( mutex_ );
+            brexit_.store( true, std::memory_order_relaxed );
+            work_event_.notify_all();
+        }
+        for ( auto & worker : pool_ )
+            worker.join();
+#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        pool_.clear();
+#   else
+        delete[] pool_.begin();
+        pool_ = {};
+#   endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    }
+
     BOOST_NOINLINE
     iterations_t // mask for the current iteration count (for branchless setting to zero)
     BOOST_CC_REG enqueue( work_t * __restrict const dispatched_work_parts, hardware_concurrency_t const number_of_dispatched_work_parts, batch_semaphore & __restrict semaphore ) noexcept
@@ -1008,23 +1044,12 @@ private:
     using pool_threads_t = iterator_range<thread *>;
 #endif
     pool_threads_t pool_;
-
-#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
-    static hardware_concurrency_t unused_cores;
-#else
-    static hardware_concurrency_t constexpr unused_cores = 0;
-#endif // BOOST_SWEATER_ADJUSTIBLE_PARALLELISM
 }; // class shop
 
 #ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 BOOST_OVERRIDABLE_MEMBER_SYMBOL
 std::uint32_t shop::spin_count = 1 * 1000 * 1000;
 #endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-
-#ifdef BOOST_SWEATER_ADJUSTABLE_PARALLELISM
-BOOST_OVERRIDABLE_MEMBER_SYMBOL
-hardware_concurrency_t shop::unused_cores( 0 );
-#endif // BOOST_SWEATER_ADJUSTABLE_PARALLELISM
 
 //------------------------------------------------------------------------------
 } // namespace generic

@@ -6,7 +6,7 @@
 /// MoodyCamel based implementation of the queue backend for the generic sweater
 /// implementation.
 ///
-/// Copyright (c) Domagoj Saric 2017.
+/// Copyright (c) Domagoj Saric 2017 - 2019.
 ///
 /// Use, modification and distribution is subject to the
 /// Boost Software License, Version 1.0.
@@ -87,6 +87,8 @@ public:
 
     consumer_token_t consumer_token() noexcept { return consumer_token_t( queue_ ); }
     producer_token_t producer_token() noexcept { return producer_token_t( queue_ ); }
+
+    auto empty() const noexcept { return queue_.size_approx() == 0; }
 
 private:
     work_queue queue_;
