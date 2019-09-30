@@ -22,7 +22,6 @@
 
 #include <boost/core/no_exceptions_support.hpp>
 #include <boost/config_ex.hpp>
-#include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
 #include <boost/functionoid/functionoid.hpp>
 #include <boost/range/iterator_range_core.hpp>
@@ -200,8 +199,9 @@ private:
         static auto get_active_thread_id() noexcept BOOST_NOTHROW_LITE { return pthread_self(); }
 
     protected:
-        thread_impl() = default;
-       ~thread_impl() = default;
+       // https://stackoverflow.com/questions/43819314/default-member-initializer-needed-within-definition-of-enclosing-class-outside
+       constexpr  thread_impl() noexcept {};
+                 ~thread_impl() noexcept = default;
 
         using thread_procedure = void * (*) ( void * );
 
@@ -362,7 +362,7 @@ private:
         }; // struct synchronized_invocation
 
     public:
-        thread() = default;
+        thread() noexcept = default;
        ~thread() noexcept { BOOST_ASSERT_MSG( !joinable(), "Abandoning a thread!" ); }
 
         thread( thread && other ) noexcept { swap( other ); }
@@ -555,37 +555,17 @@ private:
 
     using my_queue = queues::mpmc_moodycamel<work_t>;
 
-public:
-    BOOST_ATTRIBUTES( BOOST_COLD )
-    shop()
-#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-    : pool_( hardware_concurrency_max - BOOST_SWEATER_USE_CALLER_THREAD )
-#endif
+    auto worker_loop() noexcept
     {
-#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#   ifdef __GNUC__ // compilers with init_priority attribute (see hardware_concurency.hpp)
-        auto const local_hardware_concurrency( hardware_concurrency_max );
-#   else
-        /// \note Avoid the static-initialization-order-fiasco (for compilers
-        /// not supporting the init_priority attribute) by not using the
-        /// global hardware_concurrency_max variable (i.e. allow users to
-        /// safely create plain global-variable sweat_shop singletons).
-        ///                                   (01.05.2017.) (Domagoj Saric)
-        auto const local_hardware_concurrency( detail::get_hardware_concurrency_max() );
-#   endif // __GNUC__
-        auto const number_of_worker_threads( local_hardware_concurrency - BOOST_SWEATER_USE_CALLER_THREAD );
-        auto p_workers( std::make_unique<thread[]>( number_of_worker_threads ) );
-        pool_ = make_iterator_range_n( p_workers.get(), number_of_worker_threads );
-#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-
         /// \note Even a trivial only-this-capturing lambda fails the
-        /// std::is_trivially_copyable test with MSVC14.1u3 which makes the
+        /// std::is_trivially_copyable test with MSVC14.1u3-16.3 which makes the
         /// thread startup logic go into the synchronized path which in turn
         /// causes deadlocks on DLL startup when global static sweat_shops are
         /// used
-        /// (https://blogs.msdn.microsoft.com/oldnewthing/20070904-00/?p=25283).
+        /// https://blogs.msdn.microsoft.com/oldnewthing/20070904-00/?p=25283
+        /// https://stackoverflow.com/questions/32986193/when-is-a-lambda-trivial.
         ///                                   (28.09.2017.) (Domagoj Saric)
-        struct worker_loop : shop
+        struct worker : shop
         {
             //[this]() noexcept
             void operator()() noexcept
@@ -625,28 +605,30 @@ public:
                         work();
                 }
             }
-        }; // worker_loop
-        for ( auto & worker : pool_ )
-            worker = std::ref( static_cast<worker_loop &>( *this ) );
-#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        p_workers.release();
-#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        }; // worker
+        auto worker_ref( std::ref( static_cast<worker &>( *this ) ) );
+        using worker_ref_t = decltype( worker_ref );
+        static_assert( std::is_trivially_copyable_v< worker_ref_t > && std::is_trivially_destructible_v< worker_ref_t > );
+        return worker_ref;
     }
 
-    BOOST_ATTRIBUTES( BOOST_COLD )
-    ~shop() noexcept
+public:
+    shop()
     {
-        {
-            std::unique_lock<mutex> lock( mutex_ );
-            brexit_.store( true, std::memory_order_relaxed );
-            work_event_.notify_all();
-        }
-        for ( auto & worker : pool_ )
-            worker.join();
-#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        delete[] pool_.begin();
-#   endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#   ifdef __GNUC__ // compilers with init_priority attribute (see hardware_concurency.hpp)
+        auto const local_hardware_concurrency( hardware_concurrency_max );
+#   else
+        /// \note Avoid the static-initialization-order-fiasco (for compilers
+        /// not supporting the init_priority attribute) by not using the
+        /// global hardware_concurrency_max variable (i.e. allow users to
+        /// safely create plain global-variable sweat_shop singletons).
+        ///                                   (01.05.2017.) (Domagoj Saric)
+        auto const local_hardware_concurrency( detail::get_hardware_concurrency_max() );
+#   endif // __GNUC__
+        create_pool( local_hardware_concurrency );
     }
+
+    ~shop() noexcept { stop_and_destroy_pool(); }
 
     auto number_of_workers() const noexcept
     {
@@ -836,7 +818,7 @@ public:
             #if defined( __ANDROID__ )
                 success &= ( ::setpriority( PRIO_PROCESS, thread.native_handle(), nice_value ) == 0 );
             #else
-                std::uint8_t const api_range            ( static_cast<std::int8_t >( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) );
+                std::uint8_t const api_range            ( static_cast<std::int8_t>( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) );
                 auto         const platform_range       ( detail::default_policy_priority_range );
                 auto         const uninverted_nice_value( static_cast<std::uint8_t>( - ( nice_value - static_cast<std::int8_t>( priority::idle ) ) ) );
                 int          const priority_value       ( detail::default_policy_priority_min + detail::round_divide( uninverted_nice_value * platform_range, api_range ) ); // surely it will be hoisted
@@ -871,9 +853,11 @@ public:
                 hardware_concurrency_max,
                 [ &success, nice_value ]( iterations_t, iterations_t const thread_index ) noexcept
                 {
+#               if BOOST_SWEATER_USE_CALLER_THREAD
                     /// \note Do not change the caller thread's priority.
                     ///                       (05.05.2017.) (Domagoj Saric)
                     if ( thread_index != hardware_concurrency_max )
+#               endif
                     {
                         auto const result( ::setpriority( PRIO_PROCESS, 0, nice_value ) );
                         BOOST_ASSERT( ( result == 0 ) || ( errno == EACCES ) );
@@ -886,17 +870,53 @@ public:
         return success;
     }
 
-    void set_max_allowed_threads( hardware_concurrency_t const max_threads ) noexcept
+    void set_max_allowed_threads( hardware_concurrency_t const max_threads )
     {
-    #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        pool_.resize( max_threads - BOOST_SWEATER_USE_CALLER_THREAD );
-    #else
-        auto const actual_size( std::min< hardware_concurrency_t >( max_threads, hardware_concurrency_max - BOOST_SWEATER_USE_CALLER_THREAD ) );
-        pool_.advance_end( static_cast< signed >( pool_.size() ) - actual_size );
-    #endif
+        BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue." );
+        stop_and_destroy_pool();
+        create_pool( max_threads - BOOST_SWEATER_USE_CALLER_THREAD );
     }
 
 private:
+    BOOST_ATTRIBUTES( BOOST_COLD )
+    void create_pool( hardware_concurrency_t const size )
+    {
+        BOOST_ASSERT_MSG( size <= detail::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
+        auto const current_size( pool_.size() );
+        BOOST_ASSUME( current_size == 0 );
+#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        pool_.resize( size );
+#   else
+        auto p_workers( std::make_unique<thread[]>( size ) );
+        pool_ = make_iterator_range_n( p_workers.get(), size );
+#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+
+        auto const worker_loop( this->worker_loop() );
+        for ( auto & worker : pool_ )
+            worker = worker_loop;
+#   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        p_workers.release();
+#   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    }
+
+    BOOST_ATTRIBUTES( BOOST_COLD )
+    void stop_and_destroy_pool() noexcept
+    {
+        {
+            std::unique_lock<mutex> lock( mutex_ );
+            brexit_.store( true, std::memory_order_relaxed );
+            work_event_.notify_all();
+        }
+        for ( auto & worker : pool_ )
+            worker.join();
+#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+        pool_.clear();
+#   else
+        delete[] pool_.begin();
+        pool_ = {};
+#   endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    }
+
     BOOST_NOINLINE
     iterations_t // mask for the current iteration count (for branchless setting to zero)
     BOOST_CC_REG enqueue( work_t * __restrict const dispatched_work_parts, hardware_concurrency_t const number_of_dispatched_work_parts, batch_semaphore & __restrict semaphore ) noexcept
