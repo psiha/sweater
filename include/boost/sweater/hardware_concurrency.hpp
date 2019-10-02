@@ -180,7 +180,7 @@ inline auto hardware_concurrency_current() noexcept
 inline struct hardware_concurrency_max_t
 {
     hardware_concurrency_t const value = detail::get_hardware_concurrency_max();
-    operator hardware_concurrency_t() const noexcept { return value; }
+    __attribute__(( const )) operator hardware_concurrency_t() const noexcept { return value; }
 } const hardware_concurrency_max __attribute__(( init_priority( 101 ) ));
 #else
 inline auto const hardware_concurrency_max( detail::get_hardware_concurrency_max() );
