@@ -889,7 +889,7 @@ private:
     BOOST_ATTRIBUTES( BOOST_COLD )
     void create_pool( hardware_concurrency_t const size )
     {
-        BOOST_ASSERT_MSG( size <= boost::sweater::detail::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
+        BOOST_ASSERT_MSG( size <= detail::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
         auto const current_size( pool_.size() );
         BOOST_ASSUME( current_size == 0 );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
