@@ -105,7 +105,7 @@ namespace detail
         return std::atoi( value );
     }
 
-    inline auto const get_docker_limit() noexcept
+    inline auto get_docker_limit() noexcept
     {
         // https://bugs.openjdk.java.net/browse/JDK-8146115
         // http://hg.openjdk.java.net/jdk/hs/rev/7f22774a5f42
