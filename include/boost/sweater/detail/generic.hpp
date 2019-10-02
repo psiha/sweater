@@ -730,7 +730,15 @@ public:
         using Functor = std::remove_reference_t<F>;
         struct future_wrapper
         {
+            // Note: Clang v8 and clang v9 think that result_t is unused
+        #ifdef __clang__
+        #   pragma clang diagnostic push
+        #   pragma clang diagnostic ignored "-Wunused-local-typedef"
+        #endif
             using result_t  = decltype( std::declval<Functor &>()() );
+        #ifdef __clang__
+        #   pragma clang diagnostic pop
+        #endif
             using promise_t = std::promise<result_t>;
             using future_t  = std::future <result_t>;
 
@@ -792,7 +800,7 @@ public:
     bool set_priority( priority const new_priority ) noexcept
     {
     #ifdef __EMSCRIPTEN__
-        if constexpr ( true ) 
+        if constexpr ( true )
             return ( new_priority == priority::normal );
     #endif
     #ifdef __ANDROID__
@@ -851,7 +859,7 @@ public:
             spread_the_sweat
             (
                 hardware_concurrency_max,
-                [ &success, nice_value ]( iterations_t, iterations_t const thread_index ) noexcept
+                [ &success, nice_value ]( iterations_t, [[ maybe_unused ]] iterations_t const thread_index ) noexcept
                 {
 #               if BOOST_SWEATER_USE_CALLER_THREAD
                     /// \note Do not change the caller thread's priority.
@@ -881,7 +889,7 @@ private:
     BOOST_ATTRIBUTES( BOOST_COLD )
     void create_pool( hardware_concurrency_t const size )
     {
-        BOOST_ASSERT_MSG( size <= detail::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
+        BOOST_ASSERT_MSG( size <= boost::sweater::detail::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
         auto const current_size( pool_.size() );
         BOOST_ASSUME( current_size == 0 );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
