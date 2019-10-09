@@ -27,6 +27,7 @@
 #include <boost/range/iterator_range_core.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <future>
@@ -136,7 +137,12 @@ private:
         static constexpr auto is_noexcept = true;
         static constexpr auto rtti        = false;
 
+#   ifdef __EMSCRIPTEN__
+        // https://github.com/emscripten-core/emscripten/issues/5996
+        static constexpr std::uint8_t sbo_alignment = 8;
+#   else
         static constexpr std::uint8_t sbo_alignment = 16;
+#   endif
 
         using empty_handler = functionoid::assert_on_empty;
     }; // struct worker_traits
@@ -799,11 +805,11 @@ public:
     BOOST_ATTRIBUTES( BOOST_MINSIZE )
     bool set_priority( priority const new_priority ) noexcept
     {
-    #ifdef __EMSCRIPTEN__
-        if constexpr ( true )
+#   ifdef __EMSCRIPTEN__
+        if constexpr ( true ) 
             return ( new_priority == priority::normal );
-    #endif
-    #ifdef __ANDROID__
+#   endif
+#   ifdef __ANDROID__
         /// \note Android's pthread_setschedparam() does not actually work so we
         /// have to abuse the general Linux' setpriority() non-POSIX compliance
         /// (i.e. that it sets the calling thread's priority).
@@ -817,7 +823,7 @@ public:
         /// https://github.com/android/platform_frameworks_base/blob/master/core/jni/android_util_Process.cpp#L475
         /// https://android.googlesource.com/platform/frameworks/native/+/jb-dev/libs/utils/Threads.cpp#329
         ///                                   (03.05.2017.) (Domagoj Saric)
-    #endif
+#   endif
         auto const nice_value( static_cast<int>( new_priority ) );
         bool success( true );
         for ( auto & thread : pool_ )
@@ -852,7 +858,7 @@ public:
         #endif // thread backend
         }
 
-    #if defined( __linux ) // also on Android
+#   if defined( __linux ) // also on Android
         if ( !success )
         {
             success = true;
@@ -874,7 +880,7 @@ public:
                 }
             );
         }
-    #endif // __linux
+#   endif // __linux
         return success;
     }
 
