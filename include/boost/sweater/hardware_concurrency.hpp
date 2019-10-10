@@ -151,11 +151,7 @@ namespace detail
         return static_cast<hardware_concurrency_t>
         (
 #       if defined( __EMSCRIPTEN_PTHREADS__ )
-#         if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-            BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#         else
             emscripten_has_threading_support() ? emscripten_num_logical_cores() : 1
-#         endif
 #       elif defined( __linux__ )
             // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
             get_nprocs_conf()
