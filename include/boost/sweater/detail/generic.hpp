@@ -55,6 +55,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #endif // __linux
+
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -806,7 +807,7 @@ public:
     bool set_priority( priority const new_priority ) noexcept
     {
 #   ifdef __EMSCRIPTEN__
-        if constexpr ( true ) 
+        if constexpr ( true )
             return ( new_priority == priority::normal );
 #   endif
 #   ifdef __ANDROID__
