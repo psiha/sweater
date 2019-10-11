@@ -27,6 +27,7 @@
 #include <boost/range/iterator_range_core.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <future>
@@ -54,6 +55,7 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #endif // __linux
+
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -136,7 +138,12 @@ private:
         static constexpr auto is_noexcept = true;
         static constexpr auto rtti        = false;
 
+#   ifdef __EMSCRIPTEN__
+        // https://github.com/emscripten-core/emscripten/issues/5996
+        static constexpr std::uint8_t sbo_alignment = 8;
+#   else
         static constexpr std::uint8_t sbo_alignment = 16;
+#   endif
 
         using empty_handler = functionoid::assert_on_empty;
     }; // struct worker_traits
@@ -730,7 +737,15 @@ public:
         using Functor = std::remove_reference_t<F>;
         struct future_wrapper
         {
+            // Note: Clang v8 and clang v9 think that result_t is unused
+        #ifdef __clang__
+        #   pragma clang diagnostic push
+        #   pragma clang diagnostic ignored "-Wunused-local-typedef"
+        #endif
             using result_t  = decltype( std::declval<Functor &>()() );
+        #ifdef __clang__
+        #   pragma clang diagnostic pop
+        #endif
             using promise_t = std::promise<result_t>;
             using future_t  = std::future <result_t>;
 
@@ -791,11 +806,11 @@ public:
     BOOST_ATTRIBUTES( BOOST_MINSIZE )
     bool set_priority( priority const new_priority ) noexcept
     {
-    #ifdef __EMSCRIPTEN__
-        if constexpr ( true ) 
+#   ifdef __EMSCRIPTEN__
+        if constexpr ( true )
             return ( new_priority == priority::normal );
-    #endif
-    #ifdef __ANDROID__
+#   endif
+#   ifdef __ANDROID__
         /// \note Android's pthread_setschedparam() does not actually work so we
         /// have to abuse the general Linux' setpriority() non-POSIX compliance
         /// (i.e. that it sets the calling thread's priority).
@@ -809,7 +824,7 @@ public:
         /// https://github.com/android/platform_frameworks_base/blob/master/core/jni/android_util_Process.cpp#L475
         /// https://android.googlesource.com/platform/frameworks/native/+/jb-dev/libs/utils/Threads.cpp#329
         ///                                   (03.05.2017.) (Domagoj Saric)
-    #endif
+#   endif
         auto const nice_value( static_cast<int>( new_priority ) );
         bool success( true );
         for ( auto & thread : pool_ )
@@ -844,14 +859,14 @@ public:
         #endif // thread backend
         }
 
-    #if defined( __linux ) // also on Android
+#   if defined( __linux ) // also on Android
         if ( !success )
         {
             success = true;
             spread_the_sweat
             (
                 hardware_concurrency_max,
-                [ &success, nice_value ]( iterations_t, iterations_t const thread_index ) noexcept
+                [ &success, nice_value ]( iterations_t, [[ maybe_unused ]] iterations_t const thread_index ) noexcept
                 {
 #               if BOOST_SWEATER_USE_CALLER_THREAD
                     /// \note Do not change the caller thread's priority.
@@ -866,7 +881,7 @@ public:
                 }
             );
         }
-    #endif // __linux
+#   endif // __linux
         return success;
     }
 
@@ -881,7 +896,7 @@ private:
     BOOST_ATTRIBUTES( BOOST_COLD )
     void create_pool( hardware_concurrency_t const size )
     {
-        BOOST_ASSERT_MSG( size <= detail::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
+        BOOST_ASSERT_MSG( size <= sweater::detail::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
         auto const current_size( pool_.size() );
         BOOST_ASSUME( current_size == 0 );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY

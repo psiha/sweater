@@ -105,7 +105,7 @@ namespace detail
         return std::atoi( value );
     }
 
-    inline auto const get_docker_limit() noexcept
+    inline auto get_docker_limit() noexcept
     {
         // https://bugs.openjdk.java.net/browse/JDK-8146115
         // http://hg.openjdk.java.net/jdk/hs/rev/7f22774a5f42
@@ -135,6 +135,13 @@ inline struct hardware_concurrency_max_t
 
 inline auto hardware_concurrency_current() noexcept { return static_cast<hardware_concurrency_t>( ( hardware_concurrency_max.docker_quota != -1 ) ? hardware_concurrency_max.docker_quota : get_nprocs() ); }
 
+namespace detail
+{
+    // obey docker limits even when someone attempts to create pool with more threads than allowed by the Docker container
+    // but return number of all CPUs when there is no Docker CPU quota in place
+    inline auto get_hardware_concurrency_max() noexcept { return static_cast<hardware_concurrency_t>( ( hardware_concurrency_max.docker_quota != -1 ) ? hardware_concurrency_max.docker_quota : get_nprocs_conf() ); }
+}
+
 #else // generic/standard impl
 
 namespace detail
@@ -144,11 +151,7 @@ namespace detail
         return static_cast<hardware_concurrency_t>
         (
 #       if defined( __EMSCRIPTEN_PTHREADS__ )
-#         if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-            BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#         else
             emscripten_has_threading_support() ? emscripten_num_logical_cores() : 1
-#         endif
 #       elif defined( __linux__ )
             // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
             get_nprocs_conf()
@@ -180,7 +183,7 @@ inline auto hardware_concurrency_current() noexcept
 inline struct hardware_concurrency_max_t
 {
     hardware_concurrency_t const value = detail::get_hardware_concurrency_max();
-    operator hardware_concurrency_t() const noexcept { return value; }
+    __attribute__(( pure )) operator hardware_concurrency_t() const noexcept { return value; }
 } const hardware_concurrency_max __attribute__(( init_priority( 101 ) ));
 #else
 inline auto const hardware_concurrency_max( detail::get_hardware_concurrency_max() );

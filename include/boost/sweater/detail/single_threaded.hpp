@@ -46,7 +46,7 @@ public:
     template <typename F>
     void spread_the_sweat( iterations_t const iterations, F && __restrict work ) noexcept( noexcept( std::declval< F >()( 0, 42 ) ) )
     {
-        work( 0, iterations );
+        work( static_cast< iterations_t >( 0 ), iterations );
     }
 
     template <typename F>
