@@ -889,6 +889,7 @@ public:
     {
         BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue." );
         stop_and_destroy_pool();
+        brexit_.store( false, std::memory_order_relaxed );
         create_pool( max_threads - BOOST_SWEATER_USE_CALLER_THREAD );
     }
 
@@ -942,7 +943,11 @@ private:
         if ( BOOST_LIKELY( enqueue_succeeded ) )
         {
             std::unique_lock<mutex> lock( mutex_ );
-            work_event_.notify_all();
+            if ( BOOST_UNLIKELY( number_of_dispatched_work_parts < number_of_workers() ) )
+                for ( auto part( 0U ); part < number_of_dispatched_work_parts; ++part )
+                    work_event_.notify_one();
+            else
+                work_event_.notify_all();
             return static_cast<iterations_t>( -1 );
         }
         else
