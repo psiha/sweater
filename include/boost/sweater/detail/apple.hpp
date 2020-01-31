@@ -90,7 +90,10 @@ public:
                     plain_iters *   iterations_per_worker
                 );
                 auto const stop_iteration( start_iteration + iterations_per_worker + this_has_extra_iter );
+                // Note: iterations variable is captured only if NDEBUG is not defined
+            #ifndef NDEBUG
                 BOOST_ASSERT( stop_iteration <= iterations );
+            #endif
                 BOOST_ASSERT_MSG( start_iteration < stop_iteration, "Sweater internal inconsistency: worker called with no work to do." );
                 work( start_iteration, stop_iteration );
             }
