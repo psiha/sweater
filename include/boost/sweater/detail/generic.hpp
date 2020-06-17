@@ -3,7 +3,7 @@
 /// \file generic.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2019.
+/// (c) Copyright Domagoj Saric 2016 - 2020.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -385,8 +385,8 @@ private:
         template <class F>
         thread & operator=( F && functor )
         {
-            using ret_t   = std::result_of<thread_procedure( void * )>::type;
-            using Functor = typename std::decay<F>::type;
+            using ret_t   = std::invoke_result_t<thread_procedure, void *>;
+            using Functor = std::decay_t<F>;
 
             if constexpr
             (
@@ -676,24 +676,24 @@ public:
         /// destructible and constructible work_ts.
         ///                                   (21.01.2017.) (Domagoj Saric)
 #   ifdef BOOST_MSVC
-        auto const dispatched_work_parts( static_cast<work_t *>( alloca( setup.number_of_dispatched_work_parts * sizeof( work_t ) ) ) );
+        auto const dispatched_work_parts{ static_cast<work_t *>( alloca( setup.number_of_dispatched_work_parts * sizeof( work_t ) ) ) };
 #   else
         alignas( work_t ) char dispatched_work_parts_storage[ setup.number_of_dispatched_work_parts * sizeof( work_t ) ];
-        auto * const BOOST_MAY_ALIAS dispatched_work_parts( reinterpret_cast<work_t *>( dispatched_work_parts_storage ) );
+        auto * const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) };
 #   endif // BOOST_MSVC
 
-        iterations_t iteration( 0 );
-        for ( hardware_concurrency_t work_part( 0 ); work_part < setup.number_of_dispatched_work_parts; ++work_part )
+        iterations_t iteration{ 0 };
+        for ( hardware_concurrency_t work_part{ 0 }; work_part < setup.number_of_dispatched_work_parts; ++work_part )
         {
-            auto const start_iteration( iteration );
-            auto const extra_iteration( work_part < setup.threads_with_extra_iteration );
-            auto const end_iteration  ( static_cast<iterations_t>( start_iteration + setup.iterations_per_worker + extra_iteration ) );
-            auto const placeholder( &dispatched_work_parts[ work_part ] );
+            auto const start_iteration{ iteration };
+            auto const extra_iteration{ work_part < setup.threads_with_extra_iteration };
+            auto const end_iteration  { static_cast<iterations_t>( start_iteration + setup.iterations_per_worker + extra_iteration ) };
+            auto const placeholder{ &dispatched_work_parts[ work_part ] };
 #       ifdef BOOST_MSVC
             // MSVC14.1 still generates a branch w/o this (GCC issues a warning that it knows that &placeholder cannot be null so this has to be ifdef-guarded).
             BOOST_ASSUME( placeholder );
 #       endif // BOOST_MSVC
-            auto & semaphore( setup.semaphore );
+            auto & semaphore{ setup.semaphore };
             new ( placeholder ) work_t
             (
                 [&work, start_iteration = iteration, end_iteration, &semaphore]() noexcept
@@ -706,12 +706,12 @@ public:
         }
 
         auto const enqueue_failure_iteration_mask
-        (
+        {
             enqueue( dispatched_work_parts, setup.number_of_dispatched_work_parts, setup.semaphore )
-        );
+        };
         iteration &= enqueue_failure_iteration_mask;
 
-        auto const caller_thread_start_iteration( iteration );
+        auto const caller_thread_start_iteration{ iteration };
 #   if BOOST_SWEATER_USE_CALLER_THREAD
         BOOST_ASSERT( caller_thread_start_iteration < iterations );
         work( caller_thread_start_iteration, iterations );
