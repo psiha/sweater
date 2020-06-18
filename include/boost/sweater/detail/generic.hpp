@@ -462,32 +462,31 @@ private:
         static auto hardware_concurrency() noexcept { return hardware_concurrency_max; }
 
     private:
+        BOOST_ATTRIBUTES( BOOST_COLD )
         void create( thread_procedure const start_routine, void * const arg )
         {
             BOOST_ASSERT_MSG( !joinable(), "A thread already created" );
             auto const error( thread_impl::create( start_routine, arg ) );
             if ( BOOST_UNLIKELY( error ) )
             {
-#       ifndef BOOST_NO_EXCEPTIONS
-#           if 0 // disabled - avoid the overhead of (at least) <system_error>
+#           ifdef BOOST_NO_EXCEPTIONS
+                std::terminate();
+#           elif 0 // disabled - avoid the overhead of (at least) <system_error>
                 throw std::system_error( std::error_code( error, std::system_category() ), "Thread creation failed" );
 #           else
                 throw std::runtime_error( "Not enough resources to create a new thread" );
-#           endif // 0 // disabled - avoid the overhead of <system_error>
-#       else
-                std::terminate();
-#       endif
+#           endif
             }
         }
     }; // class thread
 
-    class batch_semaphore
+    class latch
     {
     public:
-        batch_semaphore( hardware_concurrency_t const initial_value ) noexcept : counter_( initial_value ) {}
+        latch( hardware_concurrency_t const initial_value ) noexcept : counter_( initial_value ) {}
 
         BOOST_NOINLINE
-        void release() noexcept
+        void arrive() noexcept
         {
             std::unique_lock<mutex> lock( mutex_ );
             if ( counter_.fetch_sub( 1, std::memory_order_relaxed ) == 1 )
@@ -506,7 +505,7 @@ private:
                     /// \note Lock/wait on the mutex to make sure another thread
                     /// is not right in release() between the counter decrement
                     /// and event_.notify() before we exit this function (after
-                    /// which the batch_semaphore destructor is possibly called
+                    /// which the latch destructor is possibly called
                     /// causing the event_.notify() call on the other thread to
                     /// be called on a dead object).
                     ///                       (26.01.2017.) (Domagoj Saric)
@@ -520,13 +519,13 @@ private:
                 event_.wait( lock );
         }
 
-        void reset() noexcept { counter_.store( 0, std::memory_order_release ); }
+        void mark_as_arrived_to_by_all() noexcept { counter_.store( 0, std::memory_order_release ); }
 
     private:
         mutex              mutex_  ;
         condition_variable event_  ;
         worker_counter     counter_;
-    }; // struct batch_semaphore
+    }; // class latch
 
     class spread_setup
     {
@@ -536,7 +535,7 @@ private:
             iterations_per_worker          ( iterations / actual_number_of_workers ),
             threads_with_extra_iteration   ( iterations % actual_number_of_workers - leave_one_for_the_calling_thread() ),
             number_of_dispatched_work_parts( number_of_work_parts( iterations, actual_number_of_workers ) - BOOST_SWEATER_USE_CALLER_THREAD ),
-            semaphore                      ( number_of_dispatched_work_parts )
+            completion_latch               ( number_of_dispatched_work_parts )
         {
             BOOST_ASSERT( ( leave_one_for_the_calling_thread() == false ) || ( iterations < iterations_t( actual_number_of_workers ) ) );
 #       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
@@ -547,7 +546,7 @@ private:
         iterations_t           const iterations_per_worker;
         hardware_concurrency_t const threads_with_extra_iteration;
         hardware_concurrency_t const number_of_dispatched_work_parts;
-        batch_semaphore              semaphore;
+        latch                        completion_latch;
 
     private:
         // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
@@ -693,13 +692,13 @@ public:
             // MSVC14.1 still generates a branch w/o this (GCC issues a warning that it knows that &placeholder cannot be null so this has to be ifdef-guarded).
             BOOST_ASSUME( placeholder );
 #       endif // BOOST_MSVC
-            auto & semaphore{ setup.semaphore };
+            auto & completion_latch{ setup.completion_latch };
             new ( placeholder ) work_t
             (
-                [&work, start_iteration = iteration, end_iteration, &semaphore]() noexcept
+                [&work, start_iteration = iteration, end_iteration, &completion_latch]() noexcept
                 {
                     work( start_iteration, end_iteration );
-                    semaphore.release();
+                    completion_latch.arrive();
                 }
             );
             iteration = end_iteration;
@@ -707,7 +706,7 @@ public:
 
         auto const enqueue_failure_iteration_mask
         {
-            enqueue( dispatched_work_parts, setup.number_of_dispatched_work_parts, setup.semaphore )
+            enqueue( dispatched_work_parts, setup.number_of_dispatched_work_parts, setup.completion_latch )
         };
         iteration &= enqueue_failure_iteration_mask;
 
@@ -718,7 +717,7 @@ public:
 #   else
         BOOST_VERIFY( caller_thread_start_iteration == iterations );
 #   endif
-        setup.semaphore.wait();
+        setup.completion_latch.wait();
 
         return enqueue_failure_iteration_mask != 0;
     }
@@ -935,7 +934,12 @@ private:
 
     BOOST_NOINLINE
     iterations_t // mask for the current iteration count (for branchless setting to zero)
-    BOOST_CC_REG enqueue( work_t * __restrict const dispatched_work_parts, hardware_concurrency_t const number_of_dispatched_work_parts, batch_semaphore & __restrict semaphore ) noexcept
+    BOOST_CC_REG enqueue
+    (
+        work_t                 * __restrict const dispatched_work_parts,
+        hardware_concurrency_t              const number_of_dispatched_work_parts,
+        latch                  & __restrict       completion_latch
+    ) noexcept
     {
         auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
         for ( hardware_concurrency_t work_part( 0 ); work_part < number_of_dispatched_work_parts; ++work_part )
@@ -955,7 +959,7 @@ private:
             /// \note If enqueue failed perform everything on the caller's
             /// thread.
             ///                               (21.01.2017.) (Domagoj Saric)
-            semaphore.reset();
+            completion_latch.mark_as_arrived_to_by_all();
             return static_cast<iterations_t>( 0 );
         }
     }
