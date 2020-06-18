@@ -55,7 +55,6 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #endif // __linux
-
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -187,7 +186,9 @@ private:
 
         void notify_all() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_cond_broadcast( &cv_ ) == 0 ); }
         void notify_one() noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_cond_signal   ( &cv_ ) == 0 ); }
-        void wait( std::unique_lock<pthread_mutex> & lock ) noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_cond_wait( &cv_, &lock.mutex()->mutex_ ) == 0 ); }
+
+        void wait( std::unique_lock<pthread_mutex> & lock   ) noexcept BOOST_NOTHROW_LITE { wait( *lock.mutex() ); }
+        void wait( pthread_mutex & mutex /*must be locked*/ ) noexcept BOOST_NOTHROW_LITE { BOOST_VERIFY( pthread_cond_wait( &cv_, &mutex.mutex_ ) == 0 ); }
 
     private:
         pthread_cond_t cv_;
@@ -268,13 +269,16 @@ private:
         condition_variable( condition_variable const &  ) = delete ;
        ~condition_variable(                             ) = default;
 
-        void notify_all(               ) noexcept { ::WakeAllConditionVariable( &cv_ ); }
-        void notify_one(               ) noexcept { ::WakeConditionVariable   ( &cv_ ); }
-        void wait      ( lock_t & lock ) noexcept { BOOST_VERIFY( wait( lock, INFINITE ) ); }
+        void notify_all() noexcept { ::WakeAllConditionVariable( &cv_ ); }
+        void notify_one() noexcept { ::WakeConditionVariable   ( &cv_ ); }
 
-        bool wait( lock_t & lock, std::uint32_t const milliseconds ) noexcept
+        void wait( lock_t & lock ) noexcept { BOOST_VERIFY( wait( lock, INFINITE ) ); }
+        void wait( mutex  & m    ) noexcept { BOOST_VERIFY( wait( m   , INFINITE ) ); }
+
+        bool wait( lock_t & lock                , std::uint32_t const milliseconds ) noexcept { wait( *lock.mutex(), milliseconds ); }
+        bool wait( mutex  & m /*must be locked*/, std::uint32_t const milliseconds ) noexcept
         {
-            auto const result( ::SleepConditionVariableSRW( &cv_, &lock.mutex()->lock_, milliseconds, 0/*CONDITION_VARIABLE_LOCKMODE_SHARED*/ ) );
+            auto const result( ::SleepConditionVariableSRW( &cv_, &m.lock_, milliseconds, 0/*CONDITION_VARIABLE_LOCKMODE_SHARED*/ ) );
             BOOST_ASSERT( result || ::GetLastError() == ERROR_TIMEOUT );
             return result != false;
         }
@@ -480,10 +484,15 @@ private:
         }
     }; // class thread
 
-    class latch
+    class barrier
     {
     public:
-        latch( hardware_concurrency_t const initial_value ) noexcept : counter_( initial_value ) {}
+        barrier( hardware_concurrency_t const initial_value ) noexcept
+            :
+            counter_( initial_value )
+        {
+            BOOST_VERIFY( mutex_.try_lock() );
+        }
 
         BOOST_NOINLINE
         void arrive() noexcept
@@ -496,36 +505,17 @@ private:
         BOOST_NOINLINE
         void wait() noexcept
         {
-#       ifdef BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-            for ( auto try_count( 0U ); try_count < spin_count; ++try_count )
-            {
-                bool const all_workers_done( counter_.load( std::memory_order_relaxed ) == 0 );
-                if ( BOOST_LIKELY( all_workers_done ) )
-                {
-                    /// \note Lock/wait on the mutex to make sure another thread
-                    /// is not right in release() between the counter decrement
-                    /// and event_.notify() before we exit this function (after
-                    /// which the latch destructor is possibly called
-                    /// causing the event_.notify() call on the other thread to
-                    /// be called on a dead object).
-                    ///                       (26.01.2017.) (Domagoj Saric)
-                    std::unique_lock<mutex>{ mutex_ };
-                    return;
-                }
-            }
-#       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-            std::unique_lock<mutex> lock{ mutex_ };
             while ( BOOST_UNLIKELY( counter_.load( std::memory_order_relaxed ) != 0 ) )
-                event_.wait( lock );
+                event_.wait( mutex_ );
         }
 
-        void mark_as_arrived_to_by_all() noexcept { counter_.store( 0, std::memory_order_release ); }
+        void mark_as_arrived_to_by_all() noexcept { counter_.store( 0, std::memory_order_relaxed ); }
 
     private:
         mutex              mutex_  ;
         condition_variable event_  ;
         worker_counter     counter_;
-    }; // class latch
+    }; // class barrier
 
     class spread_setup
     {
@@ -535,7 +525,7 @@ private:
             iterations_per_worker          ( iterations / actual_number_of_workers ),
             threads_with_extra_iteration   ( iterations % actual_number_of_workers - leave_one_for_the_calling_thread() ),
             number_of_dispatched_work_parts( number_of_work_parts( iterations, actual_number_of_workers ) - BOOST_SWEATER_USE_CALLER_THREAD ),
-            completion_latch               ( number_of_dispatched_work_parts )
+            completion_barrier               ( number_of_dispatched_work_parts )
         {
             BOOST_ASSERT( ( leave_one_for_the_calling_thread() == false ) || ( iterations < iterations_t( actual_number_of_workers ) ) );
 #       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
@@ -546,7 +536,7 @@ private:
         iterations_t           const iterations_per_worker;
         hardware_concurrency_t const threads_with_extra_iteration;
         hardware_concurrency_t const number_of_dispatched_work_parts;
-        latch                        completion_latch;
+        barrier                        completion_barrier;
 
     private:
         // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
@@ -692,13 +682,12 @@ public:
             // MSVC14.1 still generates a branch w/o this (GCC issues a warning that it knows that &placeholder cannot be null so this has to be ifdef-guarded).
             BOOST_ASSUME( placeholder );
 #       endif // BOOST_MSVC
-            auto & completion_latch{ setup.completion_latch };
             new ( placeholder ) work_t
             (
-                [&work, start_iteration = iteration, end_iteration, &completion_latch]() noexcept
+                [&work, start_iteration = iteration, end_iteration, &completion_barrier = setup.completion_barrier]() noexcept
                 {
                     work( start_iteration, end_iteration );
-                    completion_latch.arrive();
+                    completion_barrier.arrive();
                 }
             );
             iteration = end_iteration;
@@ -706,7 +695,7 @@ public:
 
         auto const enqueue_failure_iteration_mask
         {
-            enqueue( dispatched_work_parts, setup.number_of_dispatched_work_parts, setup.completion_latch )
+            enqueue( dispatched_work_parts, setup.number_of_dispatched_work_parts, setup.completion_barrier )
         };
         iteration &= enqueue_failure_iteration_mask;
 
@@ -717,7 +706,7 @@ public:
 #   else
         BOOST_VERIFY( caller_thread_start_iteration == iterations );
 #   endif
-        setup.completion_latch.wait();
+        setup.completion_barrier.wait();
 
         return enqueue_failure_iteration_mask != 0;
     }
@@ -938,7 +927,7 @@ private:
     (
         work_t                 * __restrict const dispatched_work_parts,
         hardware_concurrency_t              const number_of_dispatched_work_parts,
-        latch                  & __restrict       completion_latch
+        barrier                  & __restrict       completion_barrier
     ) noexcept
     {
         auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
@@ -959,7 +948,7 @@ private:
             /// \note If enqueue failed perform everything on the caller's
             /// thread.
             ///                               (21.01.2017.) (Domagoj Saric)
-            completion_latch.mark_as_arrived_to_by_all();
+            completion_barrier.mark_as_arrived_to_by_all();
             return static_cast<iterations_t>( 0 );
         }
     }
