@@ -275,7 +275,7 @@ private:
         void wait( lock_t & lock ) noexcept { BOOST_VERIFY( wait( lock, INFINITE ) ); }
         void wait( mutex  & m    ) noexcept { BOOST_VERIFY( wait( m   , INFINITE ) ); }
 
-        bool wait( lock_t & lock                , std::uint32_t const milliseconds ) noexcept { wait( *lock.mutex(), milliseconds ); }
+        bool wait( lock_t & lock                , std::uint32_t const milliseconds ) noexcept { return wait( *lock.mutex(), milliseconds ); }
         bool wait( mutex  & m /*must be locked*/, std::uint32_t const milliseconds ) noexcept
         {
             auto const result( ::SleepConditionVariableSRW( &cv_, &m.lock_, milliseconds, 0/*CONDITION_VARIABLE_LOCKMODE_SHARED*/ ) );
@@ -493,6 +493,9 @@ private:
         {
             BOOST_VERIFY( mutex_.try_lock() );
         }
+#   ifndef _WIN32 // not needed for trivial SRWs
+        ~barrier() noexcept { mutex_.unlock(); }
+#   endif
 
         BOOST_NOINLINE
         void arrive() noexcept
@@ -512,6 +515,7 @@ private:
         void mark_as_arrived_to_by_all() noexcept { counter_.store( 0, std::memory_order_relaxed ); }
 
     private:
+        // http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2007/n2406.html#gen_cond_var
         mutex              mutex_  ;
         condition_variable event_  ;
         worker_counter     counter_;
@@ -643,14 +647,17 @@ public:
     {
         static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
+#   if 0 // worth it...not worth it...
         if ( BOOST_UNLIKELY( iterations == 0 ) )
             return true;
-
+#   endif
+#   if 0 // worth it...not worth it...
         if ( BOOST_UNLIKELY( iterations == 1 ) )
         {
             work( 0, 1 );
             return true;
         }
+#   endif
 
         spread_setup setup( iterations, number_of_workers() );
 
@@ -684,7 +691,7 @@ public:
 #       endif // BOOST_MSVC
             new ( placeholder ) work_t
             (
-                [&work, start_iteration = iteration, end_iteration, &completion_barrier = setup.completion_barrier]() noexcept
+                [&completion_barrier = setup.completion_barrier, &work, start_iteration = iteration, end_iteration]() noexcept
                 {
                     work( start_iteration, end_iteration );
                     completion_barrier.arrive();
@@ -936,11 +943,15 @@ private:
         if ( BOOST_LIKELY( enqueue_succeeded ) )
         {
             std::unique_lock<mutex> lock( mutex_ );
-            if ( BOOST_UNLIKELY( number_of_dispatched_work_parts < number_of_workers() ) )
+            if ( BOOST_LIKELY( number_of_dispatched_work_parts == number_of_workers() ) )
+            {
+                work_event_.notify_all();
+            }
+            else
+            {
                 for ( auto part( 0U ); part < number_of_dispatched_work_parts; ++part )
                     work_event_.notify_one();
-            else
-                work_event_.notify_all();
+            }
             return static_cast<iterations_t>( -1 );
         }
         else
