@@ -52,8 +52,13 @@
 #endif // BOOST_HAS_PTHREADS
 
 #if defined( __linux )
+#include <unistd.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
+
+__attribute__(( const, weak ))
+pid_t gettid() { return syscall( SYS_gettid ); }
 #endif // __linux
 //------------------------------------------------------------------------------
 namespace boost
@@ -888,6 +893,8 @@ public:
 #       if 0 // Android does not have pthread_setaffinity_np or pthread_attr_setaffinity_np
          // and there seems to be no way of detecting its presence.
         pthread_setaffinity_np( thread.get_id(), sizeof( cpuset ), &cpuset );
+#       elif defined( __ANDROID__ ) && ( __ANDROID_API__ >= 21 )
+        BOOST_VERIFY( sched_setaffinity( pthread_gettid_np( thread.get_id() ), sizeof( cpuset ), &cpuset ) == 0 );
 #       else
         // TODO can be done more efficiently for the BOOST_SWEATER_EXACT_WORKER_SELECTION case
         spread_the_sweat
