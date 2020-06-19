@@ -91,7 +91,7 @@ namespace detail
 } // namespace detail
 #endif // __linux && !__ANDROID__ || __APPLE__
 
-// Useful resource saving if jobs are always dispatched from a single thread
+// Resource saving option if jobs are always dispatched from a single thread
 // (i.e. there is no fear of overcommiting the CPU)
 #ifndef BOOST_SWEATER_USE_CALLER_THREAD
 #   define BOOST_SWEATER_USE_CALLER_THREAD false
@@ -310,7 +310,8 @@ private:
             handle_ = {};
         }
 
-        auto get_id() const noexcept { return ::GetThreadId( handle_ ); }
+        auto get_id    () const noexcept { return ::GetThreadId( handle_ ); }
+        auto get_handle() const noexcept { return handle_; }
 
         static auto get_active_thread_id() noexcept { return ::GetCurrentThreadId(); }
 
@@ -396,8 +397,8 @@ private:
             (
                 ( sizeof ( functor ) <= sizeof ( void * ) ) &&
                 ( alignof( Functor ) <= alignof( void * ) ) &&
-                std::is_trivially_copyable    <Functor>::value &&
-                std::is_trivially_destructible<Functor>::value
+                std::is_trivially_copy_constructible_v<Functor> &&
+                std::is_trivially_destructible_v      <Functor>
             )
             {
                 void * context;
@@ -529,7 +530,7 @@ private:
             iterations_per_worker          ( iterations / actual_number_of_workers ),
             threads_with_extra_iteration   ( iterations % actual_number_of_workers - leave_one_for_the_calling_thread() ),
             number_of_dispatched_work_parts( number_of_work_parts( iterations, actual_number_of_workers ) - BOOST_SWEATER_USE_CALLER_THREAD ),
-            completion_barrier               ( number_of_dispatched_work_parts )
+            completion_barrier             ( number_of_dispatched_work_parts )
         {
             BOOST_ASSERT( ( leave_one_for_the_calling_thread() == false ) || ( iterations < iterations_t( actual_number_of_workers ) ) );
 #       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
@@ -540,7 +541,7 @@ private:
         iterations_t           const iterations_per_worker;
         hardware_concurrency_t const threads_with_extra_iteration;
         hardware_concurrency_t const number_of_dispatched_work_parts;
-        barrier                        completion_barrier;
+        barrier                      completion_barrier;
 
     private:
         // If iterations < workers prefer using the caller thread instead of waking up a worker thread...
@@ -555,22 +556,22 @@ private:
 
     using my_queue = queues::mpmc_moodycamel<work_t>;
 
-    auto worker_loop() noexcept
+    auto worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_index ) noexcept
     {
-        /// \note Even a trivial only-this-capturing lambda fails the
-        /// std::is_trivially_copyable test with MSVC14.1u3-16.3 which makes the
-        /// thread startup logic go into the synchronized path which in turn
-        /// causes deadlocks on DLL startup when global static sweat_shops are
-        /// used
-        /// https://blogs.msdn.microsoft.com/oldnewthing/20070904-00/?p=25283
-        /// https://stackoverflow.com/questions/32986193/when-is-a-lambda-trivial.
-        ///                                   (28.09.2017.) (Domagoj Saric)
-        struct worker : shop
+        auto worker_loop_impl
         {
-            //[this]() noexcept
-            void operator()() noexcept
+            [=, this]() noexcept
             {
-                auto token( queue_.consumer_token() );
+#           if BOOST_SWEATER_EXACT_WORKER_SELECTION
+                auto       & __restrict work_event{ pool_[ worker_index ].event };
+#           else
+                auto       & __restrict work_event{ work_event_ };
+#           endif
+                auto       & __restrict queue     { queue_      };
+                auto       & __restrict work_mutex{ mutex_      };
+                auto const & __restrict exit      { brexit_     };
+
+                auto token( queue.consumer_token() );
 
                 work_t work;
 
@@ -580,7 +581,7 @@ private:
                     auto const dequeue_cost( 2048 );
                     for ( auto try_count( 0U ); try_count < (spin_count / dequeue_cost); ++try_count )
                     {
-                        if ( BOOST_LIKELY( queue_.dequeue( work, token ) ) )
+                        if ( BOOST_LIKELY( queue.dequeue( work, token ) ) )
                         {
                             work();
                             try_count = 0; // restart the spin-wait
@@ -590,26 +591,24 @@ private:
 
                     bool have_work;
                     {
-                        std::unique_lock<mutex> lock( mutex_ );
-                        if ( BOOST_UNLIKELY( brexit_.load( std::memory_order_relaxed ) ) )
+                        std::unique_lock<mutex> lock( work_mutex );
+                        if ( BOOST_UNLIKELY( exit.load( std::memory_order_relaxed ) ) )
                             return;
                         /// \note No need for another loop here as a
                         /// spurious-wakeup would be handled by the check in
                         /// the loop above.
                         ///               (08.11.2016.) (Domagoj Saric)
-                        have_work = queue_.dequeue( work, token );
+                        have_work = queue.dequeue( work, token );
                         if ( BOOST_UNLIKELY( !have_work ) )
-                            work_event_.wait( lock );
+                            work_event.wait( lock );
                     }
                     if ( BOOST_LIKELY( have_work ) )
                         work();
                 }
             }
-        }; // worker
-        auto worker_ref( std::ref( static_cast<worker &>( *this ) ) );
-        using worker_ref_t = decltype( worker_ref );
-        static_assert( std::is_trivially_copyable_v< worker_ref_t > && std::is_trivially_destructible_v< worker_ref_t > );
-        return worker_ref;
+        }; // worker_loop_impl
+        static_assert( std::is_trivially_copy_constructible_v< decltype( worker_loop_impl ) > && std::is_trivially_destructible_v< decltype( worker_loop_impl ) > );
+        return worker_loop_impl;
     }
 
 public:
@@ -755,9 +754,6 @@ public:
             {
                 BOOST_TRY
                 {
-                #if BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1903 ) )
-                    set_promise( promise, work );
-                #else
                     if constexpr ( std::is_same_v<result_t, void> )
                     {
                         work();
@@ -767,7 +763,6 @@ public:
                     {
                         promise.set_value( work() );
                     }
-                #endif // MSVC constexpr compilation failure workaround
                 }
                 BOOST_CATCH( ... )
                 {
@@ -824,34 +819,34 @@ public:
         bool success( true );
         for ( auto & thread : pool_ )
         {
-        #ifdef BOOST_HAS_PTHREADS
-            #if defined( __ANDROID__ )
-                success &= ( ::setpriority( PRIO_PROCESS, thread.native_handle(), nice_value ) == 0 );
-            #else
-                std::uint8_t const api_range            ( static_cast<std::int8_t>( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) );
-                auto         const platform_range       ( detail::default_policy_priority_range );
-                auto         const uninverted_nice_value( static_cast<std::uint8_t>( - ( nice_value - static_cast<std::int8_t>( priority::idle ) ) ) );
-                int          const priority_value       ( detail::default_policy_priority_min + detail::round_divide( uninverted_nice_value * platform_range, api_range ) ); // surely it will be hoisted
-                #if defined( __APPLE__ )
-                    BOOST_ASSERT( !detail::default_policy_priority_unchangable );
-                    ::sched_param scheduling_parameters;
-                    int           policy;
-                    auto const handle( thread.native_handle() );
-                    BOOST_VERIFY( pthread_getschedparam( handle, &policy, &scheduling_parameters ) == 0 );
-                    scheduling_parameters.sched_priority = priority_value;
-                    success &= ( pthread_setschedparam( handle, policy, &scheduling_parameters ) == 0 );
-                #else
-                    success &= !detail::default_policy_priority_unchangable && ( pthread_setschedprio( thread.native_handle(), priority_value ) == 0 );
-                #endif
-            #endif // __ANDROID__
-        #else
+#   ifdef BOOST_HAS_PTHREADS
+#       if defined( __ANDROID__ )
+            success &= ( ::setpriority( PRIO_PROCESS, thread.native_handle(), nice_value ) == 0 );
+#       else
+            std::uint8_t const api_range            ( static_cast<std::int8_t>( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) );
+            auto         const platform_range       ( detail::default_policy_priority_range );
+            auto         const uninverted_nice_value( static_cast<std::uint8_t>( - ( nice_value - static_cast<std::int8_t>( priority::idle ) ) ) );
+            int          const priority_value       ( detail::default_policy_priority_min + detail::round_divide( uninverted_nice_value * platform_range, api_range ) ); // surely it will be hoisted
+#           if defined( __APPLE__ )
+            BOOST_ASSERT( !detail::default_policy_priority_unchangable );
+            ::sched_param scheduling_parameters;
+            int           policy;
+            auto const handle( thread.native_handle() );
+            BOOST_VERIFY( pthread_getschedparam( handle, &policy, &scheduling_parameters ) == 0 );
+            scheduling_parameters.sched_priority = priority_value;
+            success &= ( pthread_setschedparam( handle, policy, &scheduling_parameters ) == 0 );
+#           else
+            success &= !detail::default_policy_priority_unchangable && ( pthread_setschedprio( thread.native_handle(), priority_value ) == 0 );
+#           endif
+#       endif // __ANDROID__
+#   else // thread backend
             /// \note SetThreadPriority() silently falls back to the highest
             /// priority level available to the caller based on its privileges
             /// (instead of failing).
             ///                               (23.06.2017.) (Domagoj Saric)
             BOOST_VERIFY( ::SetThreadPriority( thread.native_handle(), nice_value ) != false );
             success &= true;
-        #endif // thread backend
+#   endif // thread backend
         }
 
 #   if defined( __linux ) // also on Android
@@ -880,6 +875,37 @@ public:
         return success;
     }
 
+    BOOST_ATTRIBUTES( BOOST_COLD )
+    void bind_worker_to_cpu( hardware_concurrency_t const worker_index, unsigned const cpu_id ) noexcept
+    {
+        auto & thread{ pool_[ worker_index ] };
+#   ifdef _WIN32
+        BOOST_VERIFY( ::SetThreadAffinityMask( thread.get_handle(), DWORD_PTR( 1 ) << cpu_id ) != 0 );
+#   else // platform
+        cpu_set_t cpuset;
+        CPU_ZERO( &cpuset );
+        CPU_SET( cpu_id, &cpuset );
+#       if 0 // Android does not have pthread_setaffinity_np or pthread_attr_setaffinity_np
+         // and there seems to be no way of detecting its presence.
+        pthread_setaffinity_np( thread.get_id(), sizeof( cpuset ), &cpuset );
+#       else
+        // TODO can be done more efficiently for the BOOST_SWEATER_EXACT_WORKER_SELECTION case
+        spread_the_sweat
+        (
+            number_of_workers(),
+            [ &, target_handle = thread.get_id() ]( iterations_t, iterations_t ) noexcept
+            {
+                if ( pthread_self() == target_handle )
+                {
+                    BOOST_VERIFY( sched_setaffinity( ::gettid(), sizeof( cpuset ), &cpuset ) == 0 );
+                }
+            }
+        );
+#       endif // platform
+#   endif // platform
+    }
+
+    BOOST_ATTRIBUTES( BOOST_COLD )
     void set_max_allowed_threads( hardware_concurrency_t const max_threads )
     {
         BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue." );
@@ -898,13 +924,12 @@ private:
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         pool_.resize( size );
 #   else
-        auto p_workers( std::make_unique<thread[]>( size ) );
+        auto p_workers( std::make_unique<worker_thread[]>( size ) );
         pool_ = make_iterator_range_n( p_workers.get(), size );
 #   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
-        auto const worker_loop( this->worker_loop() );
-        for ( auto & worker : pool_ )
-            worker = worker_loop;
+        for ( hardware_concurrency_t worker_index{ 0 }; worker_index < size; ++worker_index )
+            pool_[ worker_index ] = worker_loop( worker_index );
 #   if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         p_workers.release();
 #   endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
@@ -916,7 +941,7 @@ private:
         {
             std::unique_lock<mutex> lock( mutex_ );
             brexit_.store( true, std::memory_order_relaxed );
-            work_event_.notify_all();
+            wake_all_workers();
         }
         for ( auto & worker : pool_ )
             worker.join();
@@ -934,7 +959,7 @@ private:
     (
         work_t                 * __restrict const dispatched_work_parts,
         hardware_concurrency_t              const number_of_dispatched_work_parts,
-        barrier                  & __restrict       completion_barrier
+        barrier                & __restrict       completion_barrier
     ) noexcept
     {
         auto const enqueue_succeeded( queue_.enqueue_bulk( std::make_move_iterator( dispatched_work_parts ), number_of_dispatched_work_parts ) );
@@ -945,12 +970,18 @@ private:
             std::unique_lock<mutex> lock( mutex_ );
             if ( BOOST_LIKELY( number_of_dispatched_work_parts == number_of_workers() ) )
             {
-                work_event_.notify_all();
+                wake_all_workers();
             }
             else
             {
                 for ( auto part( 0U ); part < number_of_dispatched_work_parts; ++part )
+                {
+#               if BOOST_SWEATER_EXACT_WORKER_SELECTION
+                    pool_[ part ].event.notify_one();
+#               else
                     work_event_.notify_one();
+#               endif
+                }
             }
             return static_cast<iterations_t>( -1 );
         }
@@ -1030,24 +1061,43 @@ private:
         return BOOST_LIKELY( enqueue_succeeded );
     }
 
-    BOOST_NOINLINE
     void wake_one_worker() noexcept
     {
         /// No need for a branch here as the worker thread has to handle
         /// spurious wakeups anyway.
-        std::unique_lock<mutex> lock( mutex_ );
+#   if BOOST_SWEATER_EXACT_WORKER_SELECTION
+        //...mrmlj...TODO find a idle worker...
+        pool_.front().event.notify_one();
+#   else
         work_event_.notify_one();
+#   endif
     }
 
-#if BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1903 ) )
-    template <typename Promise, typename Work> static void set_promise( Promise            & promise, Work & work ) { promise.set_value( work() ); }
-    template <                  typename Work> static void set_promise( std::promise<void> & promise, Work & work ) { work(); promise.set_value(); }
-#endif // MSVC constexpr compilation failure workaround
+    void wake_all_workers() noexcept
+    {
+        /// No need for a branch here as the worker thread has to handle
+        /// spurious wakeups anyway.
+#   if BOOST_SWEATER_EXACT_WORKER_SELECTION
+        for ( auto & worker : pool_ )
+            worker.event.notify_one();
+#   else
+        work_event_.notify_one();
+#   endif
+    }
 
 private:
     std::atomic<bool>  brexit_ = ATOMIC_FLAG_INIT;
     mutex              mutex_;
+#if BOOST_SWEATER_EXACT_WORKER_SELECTION
+    struct alignas( 64 ) worker_thread : thread
+    {
+        using thread::operator=;
+        condition_variable event;
+    };
+#else
+    using worker_thread = thread;
     condition_variable work_event_;
+#endif
 
     /// \todo Further queue refinements.
     /// https://en.wikipedia.org/wiki/Work_stealing
@@ -1063,9 +1113,9 @@ private:
     my_queue queue_;
 
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-    using pool_threads_t = container::static_vector<thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD>;
+    using pool_threads_t = container::static_vector<worker_thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD>;
 #else
-    using pool_threads_t = iterator_range<thread *>;
+    using pool_threads_t = iterator_range<worker_thread *>;
 #endif
     pool_threads_t pool_;
 }; // class shop
