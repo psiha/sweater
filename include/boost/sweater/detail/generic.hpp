@@ -52,8 +52,17 @@
 #endif // BOOST_HAS_PTHREADS
 
 #if defined( __linux )
-#include <sys/time.h>
-#include <sys/resource.h>
+#   include <sys/time.h>
+#   include <sys/resource.h>
+#   include <features.h>
+#   ifdef __GLIBC__
+    // Glibc does not provide a wrapper for this system call; call it using syscall(2).
+    // https://stackoverflow.com/a/36025103
+    // https://linux.die.net/man/2/gettid
+#       include <sys/syscall.h>
+        pid_t gettid() { return syscall( SYS_gettid ); }
+#   endif
+
 #endif // __linux
 //------------------------------------------------------------------------------
 namespace boost
