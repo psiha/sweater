@@ -1090,7 +1090,7 @@ private:
         for ( auto & worker : pool_ )
             worker.event.notify_one();
 #   else
-        work_event_.notify_one();
+        work_event_.notify_all();
 #   endif
     }
 
