@@ -60,7 +60,7 @@
     // https://stackoverflow.com/a/36025103
     // https://linux.die.net/man/2/gettid
 #       include <sys/syscall.h>
-        pid_t gettid() { return syscall( SYS_gettid ); }
+        inline pid_t gettid() { return syscall( SYS_gettid ); }
 #   endif
 
 #endif // __linux
