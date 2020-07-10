@@ -47,7 +47,7 @@ struct openmp
 	static auto number_of_workers() noexcept { return static_cast<hardware_concurrency_t>( omp_get_max_threads() ); }
 
 	template <typename F>
-	static void spread_the_sweat( iterations_t const iterations, F & work ) noexcept
+	static void spread_the_sweat( iterations_t const iterations, F & work, iterations_t /*const parallelizable_iterations_count TODO*/ = 1 ) noexcept
 	{
 		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 		#pragma omp parallel

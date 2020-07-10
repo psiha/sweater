@@ -81,9 +81,9 @@ namespace sweater
 //------------------------------------------------------------------------------
 
 #if defined( __arm__ ) || defined( __aarch64__ ) || defined( __ANDROID__ ) || defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ )
-using hardware_concurrency_t = std::uint_fast8_t;
+using hardware_concurrency_t = std::uint8_t;
 #else
-using hardware_concurrency_t = std::uint_fast16_t; // e.g. Intel MIC
+using hardware_concurrency_t = std::uint16_t; // e.g. Intel MIC
 #endif
 
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY == 1

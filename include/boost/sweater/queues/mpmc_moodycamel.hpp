@@ -6,7 +6,7 @@
 /// MoodyCamel based implementation of the queue backend for the generic sweater
 /// implementation.
 ///
-/// Copyright (c) Domagoj Saric 2017 - 2019.
+/// Copyright (c) Domagoj Saric 2017 - 2020.
 ///
 /// Use, modification and distribution is subject to the
 /// Boost Software License, Version 1.0.
@@ -85,15 +85,38 @@ public:
     template <typename ... Token>
     bool dequeue( Work & work, Token & ... token ) noexcept( std::is_nothrow_move_assignable<Work>::value ) { return queue_.try_dequeue( token..., work ); }
 
+    bool dequeue_from_producer( Work & work, producer_token_t & token ) noexcept( std::is_nothrow_move_assignable<Work>::value ) { return queue_.try_dequeue_from_producer( token, work ); }
+
     consumer_token_t consumer_token() noexcept { return consumer_token_t( queue_ ); }
     producer_token_t producer_token() noexcept { return producer_token_t( queue_ ); }
 
     auto empty() const noexcept { return queue_.size_approx() == 0; }
+    auto depth() const noexcept { return queue_.size_approx(); }
 
 private:
     work_queue queue_;
 }; // class mpmc_moodycamel
 
+#if 0
+template <typename Work>
+class rw_moodycamel
+{
+private:
+    using work_queue = moodycamel::ReaderWriterQueue<Work>;
+
+public:
+    template <typename Functor>
+    bool enqueue( Functor && functor ) { return queue_.enqueue( std::forward<Functor>( functor ) ); }
+
+    template <typename ... Token>
+    bool dequeue( Work & work, Token & ... token ) noexcept( std::is_nothrow_move_assignable<Work>::value ) { return queue_.try_dequeue( token..., work ); }
+
+    auto empty() const noexcept { return queue_.size_approx() == 0; }
+
+private:
+    work_queue queue_;
+}; // class rwc_moodycamel
+#endif
 //------------------------------------------------------------------------------
 } // namespace queues
 //------------------------------------------------------------------------------
