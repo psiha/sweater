@@ -481,7 +481,7 @@ private:
         using lock_t = std::unique_lock<mutex>;
 
         condition_variable(                             ) noexcept : cv_{ CONDITION_VARIABLE_INIT } {}
-        condition_variable( condition_variable && other ) noexcept : cv_( other.cv_ ) { other.cv_ = { CONDITION_VARIABLE_INIT }; }
+        condition_variable( condition_variable && other ) noexcept : cv_{ other.cv_ } { other.cv_ = { CONDITION_VARIABLE_INIT }; }
         condition_variable( condition_variable const &  ) = delete ;
        ~condition_variable(                             ) = default;
 
@@ -734,31 +734,30 @@ private:
     class semaphore
     {
     public:
-        semaphore() noexcept : value_{ 0 } {}
+        semaphore() noexcept : value_{ 0 }, waiters_{ 0 } {}
+#   ifndef NDEBUG
+        ~semaphore() noexcept { BOOST_ASSERT( value_ == 0 ); BOOST_ASSERT( waiters_ == 0 ); }
+#   endif
 
         void signal( hardware_concurrency_t const count = 1 ) noexcept
         {
 #       if BOOST_SWEATER_EXACT_WORKER_SELECTION
             BOOST_ASSUME( count == 1 );
 #       endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
-            int old_value;
             {
                 std::scoped_lock<mutex> lock{ mutex_ };
-                old_value = value_.fetch_add( count, std::memory_order_relaxed );
+                value_.fetch_add( count, std::memory_order_relaxed );
             }
-            if ( old_value < 0 )
-            {
-#           if BOOST_SWEATER_EXACT_WORKER_SELECTION
-                BOOST_ASSUME( old_value == -1 );
-                condition_.notify_one();
-#           else
-                if ( static_cast<hardware_concurrency_t>( -old_value ) > count )
-                    for ( auto notified{ 0U }; notified < count; ++notified )
-                        condition_.notify_one();
-                else
-                    condition_.notify_all();
-#           endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
-            }
+#       if BOOST_SWEATER_EXACT_WORKER_SELECTION
+            BOOST_ASSUME( waiters_ <= 1 );
+            condition_.notify_one();
+#       else
+            if ( count < waiters_ )
+                for ( auto notified{ 0U }; notified < count; ++notified )
+                    condition_.notify_one();
+            else
+                condition_.notify_all();
+#       endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
         }
 
         void wait() noexcept
@@ -768,22 +767,26 @@ private:
                 auto value{ value_.load( std::memory_order_relaxed ) };
                 for ( auto spin_try{ 0U }; spin_try < worker_spin_count; ++spin_try )
 		        {
-			        if ( ( value > 0 ) && value_.compare_exchange_strong( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) ) [[ likely ]]
+			        if ( ( value > 0 ) && value_.compare_exchange_weak( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) ) [[ likely ]]
 				        return;
                     detail::nops( 8 );
 		        }
+                BOOST_ASSUME( value <= 0 );
             }
 #       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
             std::unique_lock<mutex> lock{ mutex_ };
-            if ( value_.fetch_sub( 1, std::memory_order_relaxed ) < 1 ) // ( --value_ < 0 )
+            ++waiters_;
+            while ( value_.load( std::memory_order_relaxed ) <= 0 ) // support spurious wakeups
                 condition_.wait( lock );
-            BOOST_ASSERT( value_ >= 0 );
+            value_.fetch_sub( 1, std::memory_order_relaxed );
+            --waiters_;
         }
 
     private:
-        std::atomic<std::int32_t> value_;
-        mutex                     mutex_;
+        std::atomic<std::int32_t> value_    ; // atomic to support spin-waits
+        hardware_concurrency_t    waiters_  ; // to enable detecion when notify_all() can be used
+        mutex                     mutex_    ;
         condition_variable        condition_;
     }; // class semaphore
 #endif // pthreads?
@@ -1501,6 +1504,8 @@ private:
         barrier completion_barrier;
         work_part_template.target_as<spread_work_base>().p_completion_barrier = &completion_barrier;
 
+        auto const items_in_shop{ number_of_items() };
+        if ( BOOST_UNLIKELY( items_in_shop ) ) [[ unlikely ]]
         { // support recursive spread_the_sweat calls: for now just perform everything in the caller
             auto const this_thread{ thread::get_active_thread_id() };
             for ( auto const & worker : pool_ )
@@ -1523,7 +1528,7 @@ private:
 #   endif // BOOST_SWEATER_USE_PARALLELIZATION_COST
 
         auto const actual_number_of_workers{ number_of_workers() };
-        auto const free_workers            { std::max<int>( 0, actual_number_of_workers - number_of_items() ) };
+        auto const free_workers            { std::max<int>( 0, actual_number_of_workers - items_in_shop ) };
         auto const max_work_parts          { free_workers ? free_workers : number_of_worker_threads() }; // prefer using any available worker - otherwise queue and wait
         auto const use_caller_thread       { BOOST_SWEATER_USE_CALLER_THREAD && free_workers };
 
@@ -1718,25 +1723,26 @@ private:
                 BOOST_ASSERT( chunk_setup.start_iteration < chunk_setup.end_iteration );
                 iteration = end_iteration;
             }
-            BOOST_ASSERT( use_caller_thread ? ( iteration == iterations - iterations_per_part ) : ( iteration == iterations ) );
+            BOOST_ASSUME( iteration == iterations );
 
-            work_items_.fetch_add( number_of_dispatched_work_parts, std::memory_order_relaxed );
+            work_items_.fetch_add( number_of_dispatched_work_parts, std::memory_order_acquire );
             enqueue_succeeded = queue_.enqueue_bulk
             (
                 std::make_move_iterator( dispatched_work_parts ),
                 number_of_dispatched_work_parts
             );
-            if ( BOOST_UNLIKELY( !enqueue_succeeded ) )
+            events::worker_bulk_enqueue_end();
+            if ( BOOST_LIKELY( enqueue_succeeded ) )
+            {
+                completion_barrier.initialize( number_of_dispatched_work_parts );
+                events::worker_bulk_signal_begin( number_of_dispatched_work_parts );
+                work_semaphore_.signal( number_of_dispatched_work_parts );
+                events::worker_bulk_signal_end();
+            }
+            else
             {
                 caller_thread_end_iteration = iterations;
             }
-            events::worker_bulk_enqueue_end();
-
-            // Uncoditionally do the wakeup (even if !enqueue_succeeded) as it
-            // will only do pointless work (minimize optimistic case branching).
-            events::worker_bulk_signal_begin( number_of_dispatched_work_parts );
-            work_semaphore_.signal( number_of_dispatched_work_parts );
-            events::worker_bulk_signal_end();
 
             for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
             {
@@ -1838,7 +1844,7 @@ private:
             this->wake_one_worker();
 #       endif
         }
-        this->work_items_.fetch_add( enqueue_succeeded, std::memory_order_relaxed );
+        this->work_items_.fetch_add( enqueue_succeeded, std::memory_order_acquire );
         return BOOST_LIKELY( enqueue_succeeded );
     }
 
