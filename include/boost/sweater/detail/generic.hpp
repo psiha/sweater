@@ -427,26 +427,32 @@ private:
     {
     public:
         pthread_semaphore() noexcept { BOOST_VERIFY( ::sem_init   ( &handle_, 0, 0 ) == 0 ); }
-	   ~pthread_semaphore() noexcept { BOOST_VERIFY( ::sem_destroy( &handle_       ) == 0 ); }
+       ~pthread_semaphore() noexcept { BOOST_VERIFY( ::sem_destroy( &handle_       ) == 0 ); }
 
         pthread_semaphore( pthread_semaphore const & ) = delete;
 
-	    bool try_wait() noexcept { return ::sem_trywait( &handle_ ) == 0; }
+        bool try_wait() noexcept { return ::sem_trywait( &handle_ ) == 0; }
         void     wait() noexcept
         {
 #       if BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
             for ( auto spin_try{ 0U }; spin_try < worker_spin_count; ++spin_try )
-		    {
-			    if ( BOOST_LIKELY( try_wait() ) )
-				    return;
+            {
+                if ( BOOST_LIKELY( try_wait() ) )
+                    return;
                 detail::nops( 8 );
-		    }
+            }
 #       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
             BOOST_VERIFY( ::sem_wait( &handle_ ) == 0 );
         }
 
-	    void signal(                              ) noexcept { BOOST_VERIFY( ::sem_post( &handle_ ) == 0 ); }
-	    void signal( hardware_concurrency_t count ) noexcept { while ( count-- ) signal(); }
+        void signal(                              ) noexcept { BOOST_VERIFY( ::sem_post( &handle_ ) == 0 ); }
+        void signal( hardware_concurrency_t count ) noexcept
+#       ifdef __clang__
+          __attribute__(( no_sanitize( "implicit-integer-truncation"  ) ))
+          __attribute__(( no_sanitize( "implicit-integer-sign-change" ) ))
+          __attribute__(( no_sanitize( "undefined"                    ) ))
+#       endif
+        { while ( count-- ) signal(); }
 
     private:
         sem_t handle_;
@@ -736,7 +742,13 @@ private:
     public:
         semaphore() noexcept : value_{ 0 }, waiters_{ 0 } {}
 #   ifndef NDEBUG
-        ~semaphore() noexcept { BOOST_ASSERT( value_ == 0 ); BOOST_ASSERT( waiters_ == 0 ); }
+        ~semaphore() noexcept
+        {
+#       if 0 // need not hold on early destruction (when workers exit before waiting)
+            BOOST_ASSERT( value_   == 0 );
+#       endif
+            BOOST_ASSERT( waiters_ == 0 );
+        }
 #   endif
 
         void signal( hardware_concurrency_t const count = 1 ) noexcept
@@ -766,11 +778,11 @@ private:
             { // waiting for atomic_ref
                 auto value{ value_.load( std::memory_order_relaxed ) };
                 for ( auto spin_try{ 0U }; spin_try < worker_spin_count; ++spin_try )
-		        {
-			        if ( ( value > 0 ) && value_.compare_exchange_weak( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) ) [[ likely ]]
-				        return;
+                {
+                    if ( ( value > 0 ) && value_.compare_exchange_weak( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) ) [[ likely ]]
+                        return;
                     detail::nops( 8 );
-		        }
+                }
                 BOOST_ASSUME( value <= 0 );
             }
 #       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
@@ -841,6 +853,9 @@ private:
 
 #   if BOOST_SWEATER_USE_CALLER_THREAD
         BOOST_NOINLINE void spin_wait() noexcept
+#   ifdef __clang__
+          __attribute__(( no_sanitize( "unsigned-integer-overflow" ) ))
+#   endif
         {
             BOOST_ASSERT( spin_wait_ );
 
@@ -1356,7 +1371,7 @@ public:
             number_of_cores += hmp_clusters.cores[ cluster ];
             total_power     += cluster_capacities[ cluster ];
         }
-        
+
         std::uint8_t final_total_power{ 0 };
         for ( auto cluster{ 0 }; cluster < number_of_clusters; ++cluster )
         {
@@ -1372,7 +1387,7 @@ public:
         auto const underflow_err{ static_cast<std::uint8_t>( std::max( 0, hmp_config::max_power - final_total_power     ) ) };
         hmp_clusters.power[ number_of_clusters - 1 ] -=  overflow_err;
         hmp_clusters.power[ 0                      ] += underflow_err;
-        
+
         final_total_power -=  overflow_err;
         final_total_power += underflow_err;
         BOOST_ASSERT( final_total_power == hmp_config::max_power );
