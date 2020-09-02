@@ -3,7 +3,7 @@
 /// \file single_threaded.hpp
 /// -------------------------
 ///
-/// (c) Copyright Domagoj Saric 2019.
+/// (c) Copyright Domagoj Saric 2019 - 2020.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -46,7 +46,8 @@ public:
     template <typename F>
     void spread_the_sweat( iterations_t const iterations, F && __restrict work, iterations_t /*const parallelizable_iterations_count TODO*/ = 1 ) noexcept( noexcept( std::declval< F >()( 0, 42 ) ) )
     {
-        work( static_cast< iterations_t >( 0 ), iterations );
+        if ( BOOST_LIKELY( iterations ) )
+            work( static_cast< iterations_t >( 0 ), iterations );
     }
 
     template <typename F>
