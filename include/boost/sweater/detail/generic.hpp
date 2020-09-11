@@ -760,6 +760,8 @@ private:
                 std::scoped_lock<mutex> lock{ mutex_ };
                 value_.fetch_add( count, std::memory_order_relaxed );
             }
+            if ( !waiters_ ) // unknown whether condvar notify can avoid syscalls when there are no waiters
+                return;
 #       if BOOST_SWEATER_EXACT_WORKER_SELECTION
             BOOST_ASSUME( waiters_ <= 1 );
             condition_.notify_one();
@@ -807,15 +809,18 @@ private:
     {
     public:
         barrier() noexcept : barrier( 0 ) {}
-        barrier( hardware_concurrency_t const initial_value ) noexcept : counter_( initial_value ) {}
+        barrier( hardware_concurrency_t const initial_value ) noexcept : counter_{ initial_value } {}
+#   ifndef NDEBUG
+        ~barrier() noexcept { BOOST_ASSERT( counter_ == 0 ); }
+#   endif // NDEBUG
 
         void initialize( hardware_concurrency_t const initial_value ) noexcept
         {
             BOOST_ASSERT_MSG( counter_ == 0, "Already initialized" );
-            counter_ = initial_value;
+            counter_.store( initial_value, std::memory_order_release );
         }
 
-        void add_expected_arrival() noexcept { counter_.fetch_add( 1, std::memory_order_relaxed ); }
+        void add_expected_arrival() noexcept { counter_.fetch_add( 1, std::memory_order_acquire ); }
 
 #   if BOOST_SWEATER_USE_CALLER_THREAD
         void use_spin_wait( bool const value ) noexcept { spin_wait_ = value; }
@@ -827,15 +832,15 @@ private:
 #       if BOOST_SWEATER_USE_CALLER_THREAD
             if ( BOOST_LIKELY( spin_wait_ ) )
             {
-                counter_.fetch_sub( 1, std::memory_order_seq_cst );
+                BOOST_VERIFY( counter_.fetch_sub( 1, std::memory_order_acquire ) >= 1 );
                 return;
             }
 #       endif // BOOST_SWEATER_USE_CALLER_THREAD
             bool everyone_arrived;
             {
-                std::scoped_lock<mutex> lock( mutex_ );
+                std::scoped_lock<mutex> lock{ mutex_ };
                 BOOST_ASSERT( counter_ > 0 );
-                everyone_arrived = counter_.fetch_sub( 1, std::memory_order_relaxed ) == 1;
+                everyone_arrived = ( counter_.fetch_sub( 1, std::memory_order_relaxed ) == 1 );
             }
             if ( BOOST_UNLIKELY( everyone_arrived ) )
                 event_.notify_one();
@@ -846,7 +851,7 @@ private:
 #       if BOOST_SWEATER_USE_CALLER_THREAD
             BOOST_ASSERT( !spin_wait_ );
 #       endif // BOOST_SWEATER_USE_CALLER_THREAD
-            std::scoped_lock<mutex> lock( mutex_ );
+            std::scoped_lock<mutex> lock{ mutex_ };
             while ( BOOST_UNLIKELY( counter_.load( std::memory_order_relaxed ) != 0 ) )
                 event_.wait( mutex_ );
         }
@@ -1102,7 +1107,7 @@ public:
                 BOOST_ASSERT( tid == p_thread->thread_id );
 #           endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
                 BOOST_ASSUME( start_iteration < end_iteration );
-                auto & __restrict work( *static_cast<std::decay_t<F> *>( const_cast< void * >( p_work ) ) );
+                auto & __restrict work{ *static_cast<std::decay_t<F> *>( const_cast< void * >( p_work ) ) };
                 work( start_iteration, end_iteration );
                 p_completion_barrier->arrive();
             }
@@ -1741,6 +1746,11 @@ private:
             BOOST_ASSUME( iteration == iterations );
 
             work_items_.fetch_add( number_of_dispatched_work_parts, std::memory_order_acquire );
+            // Has to be initialized before enqueuing (to support spinning waits in workers -
+            // where trivial work would get dequeued and executed (and 'arrived at') before
+            // this thread could enter the if ( enqueue_succeeded ) block and initialize the
+            // the barrier there).
+            completion_barrier.initialize( number_of_dispatched_work_parts );
             enqueue_succeeded = queue_.enqueue_bulk
             (
                 std::make_move_iterator( dispatched_work_parts ),
@@ -1749,13 +1759,13 @@ private:
             events::worker_bulk_enqueue_end();
             if ( BOOST_LIKELY( enqueue_succeeded ) )
             {
-                completion_barrier.initialize( number_of_dispatched_work_parts );
                 events::worker_bulk_signal_begin( number_of_dispatched_work_parts );
                 work_semaphore_.signal( number_of_dispatched_work_parts );
                 events::worker_bulk_signal_end();
             }
             else
             {
+                completion_barrier.initialize( 0 );
                 caller_thread_end_iteration = iterations;
             }
 
