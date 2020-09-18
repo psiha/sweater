@@ -737,17 +737,17 @@ private:
 #ifdef BOOST_HAS_PTHREADS
     using semaphore = pthread_semaphore;
 #else
-    class semaphore
+    class alignas( 64 ) semaphore
     {
     public:
-        semaphore() noexcept : value_{ 0 }, waiters_{ 0 } {}
+        semaphore() noexcept = default;
 #   ifndef NDEBUG
         ~semaphore() noexcept
         {
 #       if 0 // need not hold on early destruction (when workers exit before waiting)
-            BOOST_ASSERT( value_   == 0 );
+            BOOST_ASSUME( value_   == 0 );
 #       endif
-            BOOST_ASSERT( waiters_ == 0 );
+            BOOST_ASSUME( waiters_ == 0 );
         }
 #   endif
 
@@ -756,21 +756,32 @@ private:
 #       if BOOST_SWEATER_EXACT_WORKER_SELECTION
             BOOST_ASSUME( count == 1 );
 #       endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
+            auto const old_value{ value_.fetch_add( count, std::memory_order_release ) };
+            if ( old_value > 0 )
             {
-                std::scoped_lock<mutex> lock{ mutex_ };
-                value_.fetch_add( count, std::memory_order_relaxed );
-            }
-            if ( !waiters_ ) // unknown whether condvar notify can avoid syscalls when there are no waiters
+                BOOST_ASSUME( waiters_ == 0 );
                 return;
+            }
 #       if BOOST_SWEATER_EXACT_WORKER_SELECTION
             BOOST_ASSUME( waiters_ <= 1 );
             condition_.notify_one();
 #       else
-            if ( count < waiters_ )
-                for ( auto notified{ 0U }; notified < count; ++notified )
+            auto const to_wake{ std::min( static_cast<hardware_concurrency_t>( -old_value ), count ) };
+            {
+                std::scoped_lock<mutex> lock{ mutex_ };
+                to_release_ += to_wake;
+                if ( !waiters_ ) // unknown whether condvar notify can avoid syscalls when there are no waiters
+                    return;
+            }
+            if ( to_wake < waiters_ )
+            {
+                for ( auto notified{ 0U }; notified < to_wake; ++notified )
                     condition_.notify_one();
+            }
             else
+            {
                 condition_.notify_all();
+            }
 #       endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
         }
 
@@ -789,23 +800,27 @@ private:
             }
 #       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
+            auto const old_value{ value_.fetch_sub( 1, std::memory_order_acquire ) };
+            if ( old_value > 0 )
+                return;
             std::unique_lock<mutex> lock{ mutex_ };
             ++waiters_;
-            while ( value_.load( std::memory_order_relaxed ) <= 0 ) // support spurious wakeups
+            while ( to_release_ == 0 ) // support spurious wakeups
                 condition_.wait( lock );
-            value_.fetch_sub( 1, std::memory_order_relaxed );
+            --to_release_;
             --waiters_;
         }
 
     private:
-        std::atomic<std::int32_t> value_    ; // atomic to support spin-waits
-        hardware_concurrency_t    waiters_  ; // to enable detecion when notify_all() can be used
+        std::atomic<std::int32_t> value_      = 0; // atomic to support spin-waits
+        hardware_concurrency_t    waiters_    = 0; // to enable detection when notify_all() can be used
+        hardware_concurrency_t    to_release_ = 0;
         mutex                     mutex_    ;
         condition_variable        condition_;
     }; // class semaphore
 #endif // pthreads?
 
-    class barrier
+    class alignas( 64 ) barrier
     {
     public:
         barrier() noexcept : barrier( 0 ) {}
@@ -858,9 +873,6 @@ private:
 
 #   if BOOST_SWEATER_USE_CALLER_THREAD
         BOOST_NOINLINE void spin_wait() noexcept
-#   ifdef __clang__
-          __attribute__(( no_sanitize( "unsigned-integer-overflow" ) ))
-#   endif
         {
             BOOST_ASSERT( spin_wait_ );
 
@@ -872,7 +884,7 @@ private:
                 if ( BOOST_LIKELY( counter_.load( std::memory_order_acquire ) == 0 ) )
                 {
 #               if BOOST_SWEATER_CALLER_BOOST
-                    caller_boost = std::max<std::int8_t>( 0, caller_boost - 1 );
+                    caller_boost = std::max<std::int8_t>( 0, static_cast<std::int8_t>( caller_boost ) - 1 );
 #               endif // BOOST_SWEATER_CALLER_BOOST
                     return;
                 }
@@ -1110,6 +1122,11 @@ public:
                 auto & __restrict work{ *static_cast<std::decay_t<F> *>( const_cast< void * >( p_work ) ) };
                 work( start_iteration, end_iteration );
                 p_completion_barrier->arrive();
+#           ifndef NDEBUG
+                p_work               = nullptr;
+                p_completion_barrier = nullptr;
+                start_iteration = end_iteration = static_cast<iterations_t>( -1 );
+#           endif // !NDEBUG
             }
         }; // struct spread_wrapper
         static_assert( std::is_standard_layout_v<spread_wrapper> ); // required for correctness of work_t::target_as() usage
@@ -1521,6 +1538,8 @@ private:
         if ( BOOST_UNLIKELY( iterations == 0 ) ) [[ unlikely ]]
             return true;
 
+        events::spread_begin( iterations );
+
         barrier completion_barrier;
         work_part_template.target_as<spread_work_base>().p_completion_barrier = &completion_barrier;
 
@@ -1537,8 +1556,6 @@ private:
                 }
             }
         }
-
-        events::spread_begin( iterations );
 
 #   if BOOST_SWEATER_USE_PARALLELIZATION_COST
         parallelizable_iterations_count = parallelizable_iterations_count * min_parallel_iter_boost / min_parallel_iter_boost_weight;
