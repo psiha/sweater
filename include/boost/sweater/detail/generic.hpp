@@ -53,6 +53,13 @@
 #include <windows.h> // for SetThreadPriority
 #endif // BOOST_HAS_PTHREADS
 
+#if defined( __ANDROID__ )
+#   include <linux/futex.h>
+#   include <sys/syscall.h>
+#   include <sys/system_properties.h>
+#   include <unistd.h>
+#endif // ANDROID
+
 #if defined( __linux )
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -184,6 +191,16 @@ namespace detail
     }
 #endif // __linux && !__ANDROID__ || __APPLE__
 
+#ifdef __ANDROID__
+    inline struct slow_thread_signals_t
+    {
+        bool const value{ android_get_device_api_level() < 24 }; // pre Android 7 Noughat
+        __attribute__(( const )) operator bool() const noexcept { return value; }
+    } const slow_thread_signals __attribute__(( init_priority( 101 ) ));
+#else
+    bool constexpr slow_thread_signals{ false };
+#endif // ANDROID
+
     BOOST_ATTRIBUTES( BOOST_COLD )
     inline void nop() noexcept // lightweight spin nop
     {
@@ -271,6 +288,7 @@ private:
     }; // struct hmp_config
 
     static inline hmp_config hmp_clusters;
+
 public:
 #else
     static bool constexpr hmp = false;
@@ -308,8 +326,8 @@ public:
     inline static std::uint8_t caller_boost     = 0;
     inline static std::uint8_t caller_boost_max = 10;
 #else
-    static constexpr auto caller_boost     = 0;
-    static constexpr auto caller_boost_max = 0;
+    static auto const caller_boost     = 0;
+    static auto const caller_boost_max = 0;
 #endif // BOOST_SWEATER_CALLER_BOOST
     static auto const caller_boost_weight = 128;
 
@@ -446,18 +464,116 @@ private:
         }
 
         void signal(                              ) noexcept { BOOST_VERIFY( ::sem_post( &handle_ ) == 0 ); }
-        void signal( hardware_concurrency_t count ) noexcept
-#       ifdef __clang__
-          __attribute__(( no_sanitize( "implicit-integer-truncation"  ) ))
-          __attribute__(( no_sanitize( "implicit-integer-sign-change" ) ))
-          __attribute__(( no_sanitize( "undefined"                    ) ))
-#       endif
-        { while ( count-- ) signal(); }
+        void signal( hardware_concurrency_t count ) noexcept { while ( count ) { signal(); --count; } }
 
     private:
         sem_t handle_;
     }; // class pthread_semaphore
 
+#if defined( __ANDROID__ )
+    // Partial fix attempt for slow thread synchronization on older Android
+    // versions (it seems to be related to the OS version rather than the
+    // kernel version).
+    // Here we only use global semaphore objects so there is no need for the
+    // race-condition workaround described in the links below.
+    // http://git.musl-libc.org/cgit/musl/commit/?id=88c4e720317845a8e01aee03f142ba82674cd23d
+    // https://github.com/preshing/cpp11-on-multicore/blob/master/common/sema.h
+    // https://stackoverflow.com/questions/36094115/c-low-level-semaphore-implementation
+    // https://comp.programming.threads.narkive.com/IRKGW6HP/too-much-overhead-from-semaphores
+    // TODO: futex barrier
+    // https://github.com/forhappy/barriers/blob/master/futex-barrier.c
+    // https://www.remlab.net/op/futex-misc.shtml
+    // https://dept-info.labri.fr/~denis/Enseignement/2008-IR/Articles/01-futex.pdf
+    class futex_semaphore
+    {
+    private:
+        enum state { locked = 0, contested = - 1 };
+
+    public:
+        futex_semaphore() noexcept = default;
+#   ifndef NDEBUG
+        ~futex_semaphore() noexcept
+        {
+#       if 0 // need not hold on early destruction (when workers exit before waiting)
+            BOOST_ASSUME( value_   == 0 );
+#       endif
+            BOOST_ASSERT( waiters_ == 0 );
+        }
+#   endif // !NDEBUG
+
+        void signal( hardware_concurrency_t const count = 1 ) noexcept
+        {
+#       if BOOST_SWEATER_EXACT_WORKER_SELECTION && !defined( __ANDROID__ )
+            BOOST_ASSUME( count == 1 );
+#       endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
+            if ( BOOST_UNLIKELY( !count ) )
+                return;
+
+            auto value{ value_.load( std::memory_order_relaxed ) };
+            hardware_concurrency_t desired;
+            do
+            {
+                desired = value + count + ( value < state::locked );
+            } while ( !value_.compare_exchange_weak( value, desired, std::memory_order_acquire, std::memory_order_relaxed ) );
+
+            if ( waiters_.load( std::memory_order_acquire ) )
+            {
+#           if 0 // FUTEX_WAKE implicitly performs this clipping
+                auto const to_wake{ std::min({ static_cast<hardware_concurrency_t>( -old_value ), count, waiters_.load( std::memory_order_relaxed ) }) };
+#           else
+                auto const to_wake{ count };
+#           endif
+                futex( &value_, FUTEX_WAKE, to_wake );
+            }
+        }
+
+        void wait() noexcept
+        {
+#       if BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
+            { // waiting for atomic_ref
+                auto value{ value_.load( std::memory_order_relaxed ) };
+                for ( auto spin_try{ 0U }; spin_try < worker_spin_count; ++spin_try )
+                {
+                    if ( ( value > state::locked ) && try_decrement( value ) ) [[ likely ]]
+                        return;
+                    detail::nops( 8 );
+                }
+                BOOST_ASSUME( value <= state::locked );
+            }
+#       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
+
+            for ( ; ; )
+            {
+                auto value{ value_.load( std::memory_order_relaxed ) };
+                while ( value > state::locked )
+                {
+                    if ( try_decrement( value ) )
+                        return;
+                }
+
+                waiters_.fetch_add( 1, std::memory_order_acquire );
+                value = state::locked; try_decrement( value );
+                futex( &value_, FUTEX_WAIT, state::contested );
+                waiters_.fetch_sub( 1, std::memory_order_release );
+            }
+        }
+
+    private:
+        bool try_decrement( std::int32_t & __restrict last_value ) noexcept
+        {
+            return BOOST_LIKELY( value_.compare_exchange_weak( last_value, last_value - 1, std::memory_order_acquire, std::memory_order_relaxed ) );
+        }
+
+        static void futex( void * const addr1, int const op, int const val1 ) noexcept
+        {
+            ::syscall( SYS_futex, addr1, op | FUTEX_PRIVATE_FLAG, val1, nullptr, nullptr, 0 );
+        }
+
+    private:
+        std::atomic<std::int32_t          > value_   = state::locked;
+        std::atomic<hardware_concurrency_t> waiters_ = 0;
+    }; // class futex_semaphore
+#endif // ANDROID
 #else // Win32
     // Strategies for Implementing POSIX Condition Variables on Win32 http://www.cs.wustl.edu/~schmidt/win32-cv-1.html
     // http://developers.slashdot.org/story/07/02/26/1211220/pthreads-vs-win32-threads
@@ -717,6 +833,7 @@ private:
         }
     }; // class thread
 
+    // http://locklessinc.com/articles/locks
     class spin_lock
     {
     public:
@@ -734,10 +851,12 @@ private:
     // TODO
     // http://www.1024cores.net/home/lock-free-algorithms/eventcounts
     // https://github.com/facebook/folly/blob/master/folly/experimental/EventCount.h
-#ifdef BOOST_HAS_PTHREADS
+#if defined( __ANDROID__ )
+    using semaphore = futex_semaphore;
+#elif defined( BOOST_HAS_PTHREADS )
     using semaphore = pthread_semaphore;
 #else
-    class alignas( 64 ) semaphore
+    class semaphore
     {
     public:
         semaphore() noexcept = default;
@@ -749,7 +868,7 @@ private:
 #       endif
             BOOST_ASSUME( waiters_ == 0 );
         }
-#   endif
+#   endif // !NDEBUG
 
         void signal( hardware_concurrency_t const count = 1 ) noexcept
         {
@@ -759,11 +878,19 @@ private:
             auto const old_value{ value_.fetch_add( count, std::memory_order_release ) };
             if ( old_value > 0 )
             {
+#           if 0 // for tiny work waiters_ can already increment/appear after the fetch_add
                 BOOST_ASSUME( waiters_ == 0 );
+#           endif // disabled
                 return;
             }
 #       if BOOST_SWEATER_EXACT_WORKER_SELECTION
             BOOST_ASSUME( waiters_ <= 1 );
+            {
+                std::scoped_lock<mutex> lock{ mutex_ };
+                ++to_release_;
+                if ( !waiters_ ) // unknown whether condvar notify can avoid syscalls when there are no waiters
+                    return;
+            }
             condition_.notify_one();
 #       else
             auto const to_wake{ std::min( static_cast<hardware_concurrency_t>( -old_value ), count ) };
@@ -826,7 +953,7 @@ private:
         barrier() noexcept : barrier( 0 ) {}
         barrier( hardware_concurrency_t const initial_value ) noexcept : counter_{ initial_value } {}
 #   ifndef NDEBUG
-        ~barrier() noexcept { BOOST_ASSERT( counter_ == 0 ); }
+       ~barrier() noexcept { BOOST_ASSERT( counter_ == 0 ); }
 #   endif // NDEBUG
 
         void initialize( hardware_concurrency_t const initial_value ) noexcept
@@ -847,7 +974,7 @@ private:
 #       if BOOST_SWEATER_USE_CALLER_THREAD
             if ( BOOST_LIKELY( spin_wait_ ) )
             {
-                BOOST_VERIFY( counter_.fetch_sub( 1, std::memory_order_acquire ) >= 1 );
+                BOOST_VERIFY( counter_.fetch_sub( 1, std::memory_order_release ) >= 1 );
                 return;
             }
 #       endif // BOOST_SWEATER_USE_CALLER_THREAD
@@ -993,8 +1120,12 @@ private:
 #           ifdef __linux__
                 parent.pool_[ worker_index ].thread_id_ = ::gettid();
 #           endif // linux
-                auto       & __restrict producer_token{ *parent.pool_[ worker_index ].token_ };
-                auto       & __restrict work_event    {  parent.pool_[ worker_index ].event_ };
+                auto       & __restrict producer_token{                                parent.pool_[ worker_index ].token_                          };
+#           ifdef __ANDROID__
+                auto       & __restrict work_event    { !detail::slow_thread_signals ? parent.pool_[ worker_index ].event_ : parent.work_semaphore_ };
+#           else
+                auto       & __restrict work_event    {                                parent.pool_[ worker_index ].event_                          };
+#           endif // Android
 #           else // BOOST_SWEATER_EXACT_WORKER_SELECTION
                 auto       & __restrict work_event    { parent.work_semaphore_ };
 #           endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
@@ -1008,31 +1139,32 @@ private:
                 for ( ; ; )
                 {
 #               if BOOST_SWEATER_EXACT_WORKER_SELECTION
-                    while ( BOOST_LIKELY( queue.dequeue_from_producer( work, producer_token ) ) ) [[ likely ]]
+                    while
+                    (
+                        !detail::slow_thread_signals &&
+                        BOOST_LIKELY( queue.dequeue_from_producer( work, *producer_token ) )
+                    ) [[ likely ]]
                     {
                         events::worker_work_begin( worker_index );
                         work();
                         events::worker_work_end  ( worker_index );
                         parent.work_completed();
-                        detail::nops( 8 );
                     }
 #               endif
                     // Work stealing for BOOST_SWEATER_EXACT_WORKER_SELECTION
-                    if ( queue.dequeue( work, consumer_token ) ) [[ likely ]]
+                    while ( queue.dequeue( work, consumer_token ) ) [[ likely ]]
                     {
                         events::worker_work_begin( worker_index );
                         work();
                         events::worker_work_end  ( worker_index );
                         parent.work_completed();
                     }
-                    else
-                    {
-                        if ( BOOST_UNLIKELY( exit.load( std::memory_order_relaxed ) ) )
-                            return;
-                        events::worker_sleep_begin( worker_index );
-                        work_event.wait();
-                        events::worker_sleep_end  ( worker_index );
-                    }
+
+                    if ( BOOST_UNLIKELY( exit.load( std::memory_order_relaxed ) ) )
+                        return;
+                    events::worker_sleep_begin( worker_index );
+                    work_event.wait();
+                    events::worker_sleep_end  ( worker_index );
                 }
             }
         }; // worker_loop_impl
@@ -1076,14 +1208,14 @@ public:
         ///                                   (01.05.2017.) (Domagoj Saric)
         auto const local_hardware_concurrency( sweater::detail::get_hardware_concurrency_max() );
 #   endif // __GNUC__
-        create_pool( local_hardware_concurrency - BOOST_SWEATER_USE_CALLER_THREAD );
+        create_pool( local_hardware_concurrency - ( BOOST_SWEATER_USE_CALLER_THREAD && !detail::slow_thread_signals ) );
     }
 
     ~shop() noexcept { stop_and_destroy_pool(); }
 
     hardware_concurrency_t number_of_workers() const noexcept
     {
-        auto const actual_number_of_workers{ number_of_worker_threads() + BOOST_SWEATER_USE_CALLER_THREAD };
+        auto const actual_number_of_workers{ number_of_worker_threads() + ( BOOST_SWEATER_USE_CALLER_THREAD && !detail::slow_thread_signals ) };
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( actual_number_of_workers <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #   endif
@@ -1361,8 +1493,7 @@ public:
         BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue." );
         BOOST_ASSERT_MSG( !hmp          , "Cannot change number of workers directly when HMP is enabled" );
         stop_and_destroy_pool();
-        brexit_.store( false, std::memory_order_relaxed );
-        create_pool( max_threads - BOOST_SWEATER_USE_CALLER_THREAD );
+        create_pool( max_threads - ( BOOST_SWEATER_USE_CALLER_THREAD && !detail::slow_thread_signals ) );
         BOOST_ASSERT( number_of_workers() == max_threads );
     }
 
@@ -1414,7 +1545,9 @@ public:
         final_total_power += underflow_err;
         BOOST_ASSERT( final_total_power == hmp_config::max_power );
 
-        create_pool( number_of_cores - BOOST_SWEATER_USE_CALLER_THREAD );
+        hmp = !detail::slow_thread_signals;
+
+        create_pool( number_of_cores - ( BOOST_SWEATER_USE_CALLER_THREAD && !detail::slow_thread_signals ) );
     }
 #   endif // BOOST_SWEATER_HMP
 
@@ -1426,6 +1559,8 @@ private:
         auto const current_size( pool_.size() );
         if ( size == current_size )
             return;
+        stop_and_destroy_pool();
+        brexit_.store( false, std::memory_order_relaxed );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         pool_.resize( size );
 #   else
@@ -1436,7 +1571,8 @@ private:
         for ( hardware_concurrency_t worker_index{ 0 }; worker_index < size; ++worker_index )
         {
 #       if BOOST_SWEATER_EXACT_WORKER_SELECTION
-            pool_[ worker_index ].token_.emplace( queue_.producer_token() );
+            if ( !detail::slow_thread_signals )
+                pool_[ worker_index ].token_.emplace( queue_.producer_token() );
 #       endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
             pool_[ worker_index ] = worker_loop( worker_index );
         }
@@ -1446,6 +1582,7 @@ private:
 #   if BOOST_SWEATER_CALLER_BOOST
         caller_boost = 0;
 #   endif // BOOST_SWEATER_CALLER_BOOST
+        std::atomic_thread_fence( std::memory_order_seq_cst );
     }
 
 
@@ -1560,6 +1697,8 @@ private:
 #   if BOOST_SWEATER_USE_PARALLELIZATION_COST
         parallelizable_iterations_count = parallelizable_iterations_count * min_parallel_iter_boost / min_parallel_iter_boost_weight;
         parallelizable_iterations_count = std::max<iterations_t>( 1, parallelizable_iterations_count );
+        if ( detail::slow_thread_signals )
+            parallelizable_iterations_count = 1; //...mrmlj...!?
 #   else
         parallelizable_iterations_count = 1;
 #   endif // BOOST_SWEATER_USE_PARALLELIZATION_COST
@@ -1567,7 +1706,7 @@ private:
         auto const actual_number_of_workers{ number_of_workers() };
         auto const free_workers            { std::max<int>( 0, actual_number_of_workers - items_in_shop ) };
         auto const max_work_parts          { free_workers ? free_workers : number_of_worker_threads() }; // prefer using any available worker - otherwise queue and wait
-        auto const use_caller_thread       { BOOST_SWEATER_USE_CALLER_THREAD && free_workers };
+        auto const use_caller_thread       { BOOST_SWEATER_USE_CALLER_THREAD && free_workers && ( !detail::slow_thread_signals || ( detail::slow_thread_signals && ( iterations <= parallelizable_iterations_count ) ) ) };
 
 #   if BOOST_SWEATER_USE_CALLER_THREAD
         completion_barrier.use_spin_wait( use_caller_thread );
@@ -1577,10 +1716,11 @@ private:
         bool enqueue_succeeded;
 #   if BOOST_SWEATER_HMP
         static_assert( BOOST_SWEATER_EXACT_WORKER_SELECTION );
-        if ( BOOST_LIKELY( hmp ) ) [[ likely ]]
+        if ( hmp )
         {
             BOOST_ASSERT_MSG( hmp_clusters.number_of_clusters, "HMP not configured" );
             BOOST_ASSUME( hmp_clusters.number_of_clusters <= hmp_clusters.max_clusters );
+            BOOST_ASSUME( !detail::slow_thread_signals );
 
             std::uint8_t number_used_of_clusters{ 0 };
             iterations_t hmp_distributions[ hmp_clusters.max_clusters ];
@@ -1626,7 +1766,7 @@ private:
             hardware_concurrency_t worker                     { 0 };
             for ( auto cluster{ 0 }; cluster < number_used_of_clusters; ++cluster )
             {
-                auto const remaining_workers{ max_work_parts - worker }; //...mrmlj...quick-fix for recusive and concurrent (but incomplete) spreads...think of a cleaner/'implicit' solution
+                auto const remaining_workers{ max_work_parts - worker }; //...mrmlj...quick-fix for recursive and concurrent (but incomplete) spreads...think of a cleaner/'implicit' solution
 #           if BOOST_SWEATER_CALLER_BOOST
                 auto const cluster_iterations        { std::min<iterations_t>( hmp_distributions[ cluster ], iterations - iteration ) }; // guard in case caller_boost is in effect
 #           else
@@ -1724,73 +1864,80 @@ private:
 #           endif // BOOST_SWEATER_CALLER_BOOST
             }
 
-#       if BOOST_SWEATER_EXACT_WORKER_SELECTION
-            iteration = dispatch_workers( 0, iteration, number_of_dispatched_work_parts, iterations_per_part, parts_with_extra_iteration, iterations, completion_barrier, work_part_template ).second;
-            BOOST_ASSUME( iteration <= iterations );
-            enqueue_succeeded = true;
-#       else // BOOST_SWEATER_EXACT_WORKER_SELECTION
-            events::worker_bulk_enqueue_begin( number_of_dispatched_work_parts );
-            /// \note MSVC does not support VLAs but has an alloca that returns (16
-            /// byte) aligned memory. Clang's alloca is unaligned and it does not
-            /// support VLAs of non-POD types. GCC has a (16 byte) aligned alloca
-            /// and supports VLAs of non-POD types
-            /// (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=19131).
-            /// Regardless of any of this a work_t VLA is not used to avoid needless
-            /// default construction of its members.
-            /// The code below is safe with noexcept enqueue and noexcept
-            /// destructible and constructible work_ts.
-            ///                                   (21.01.2017.) (Domagoj Saric)
-#       ifdef BOOST_MSVC
-            auto const dispatched_work_parts{ static_cast<work_t *>( alloca( number_of_dispatched_work_parts * sizeof( work_t ) ) ) };
-#       else
-            alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
-            auto * const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) };
-#       endif // BOOST_MSVC
-
-            for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
+            if ( BOOST_SWEATER_EXACT_WORKER_SELECTION && !detail::slow_thread_signals )
             {
-                auto const start_iteration{ iteration };
-                auto const extra_iteration{ work_part < parts_with_extra_iteration };
-                auto const end_iteration  { static_cast<iterations_t>( start_iteration + iterations_per_part + extra_iteration ) };
-                auto const placeholder{ &dispatched_work_parts[ work_part ] };
-                auto & work_chunk { *new ( placeholder ) work_t{ work_part_template } };
-                auto & chunk_setup{ work_chunk.target_as<spread_work_base>() };
-                chunk_setup.start_iteration = start_iteration;
-                chunk_setup.  end_iteration =   end_iteration;
-                BOOST_ASSERT( chunk_setup.start_iteration < chunk_setup.end_iteration );
-                iteration = end_iteration;
-            }
-            BOOST_ASSUME( iteration == iterations );
-
-            work_items_.fetch_add( number_of_dispatched_work_parts, std::memory_order_acquire );
-            // Has to be initialized before enqueuing (to support spinning waits in workers -
-            // where trivial work would get dequeued and executed (and 'arrived at') before
-            // this thread could enter the if ( enqueue_succeeded ) block and initialize the
-            // the barrier there).
-            completion_barrier.initialize( number_of_dispatched_work_parts );
-            enqueue_succeeded = queue_.enqueue_bulk
-            (
-                std::make_move_iterator( dispatched_work_parts ),
-                number_of_dispatched_work_parts
-            );
-            events::worker_bulk_enqueue_end();
-            if ( BOOST_LIKELY( enqueue_succeeded ) )
-            {
-                events::worker_bulk_signal_begin( number_of_dispatched_work_parts );
-                work_semaphore_.signal( number_of_dispatched_work_parts );
-                events::worker_bulk_signal_end();
+                iteration = dispatch_workers( 0, iteration, number_of_dispatched_work_parts, iterations_per_part, parts_with_extra_iteration, iterations, completion_barrier, work_part_template ).second;
+                BOOST_ASSUME( iteration <= iterations );
+                enqueue_succeeded = true; //...mrmlj...
             }
             else
             {
-                completion_barrier.initialize( 0 );
-                caller_thread_end_iteration = iterations;
-            }
+#           if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ ) // slow_thread_signals fallback
+                events::worker_bulk_enqueue_begin( number_of_dispatched_work_parts );
+                /// \note MSVC does not support VLAs but has an alloca that returns (16
+                /// byte) aligned memory. Clang's alloca is unaligned and it does not
+                /// support VLAs of non-POD types. GCC has a (16 byte) aligned alloca
+                /// and supports VLAs of non-POD types
+                /// (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=19131).
+                /// Regardless of any of this a work_t VLA is not used to avoid needless
+                /// default construction of its members.
+                /// The code below is safe with noexcept enqueue and noexcept
+                /// destructible and constructible work_ts.
+                ///                                   (21.01.2017.) (Domagoj Saric)
+    #       ifdef BOOST_MSVC
+                auto const dispatched_work_parts{ static_cast<work_t *>( alloca( number_of_dispatched_work_parts * sizeof( work_t ) ) ) };
+    #       else
+                alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
+                auto * const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) };
+    #       endif // BOOST_MSVC
 
-            for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
-            {
-                dispatched_work_parts[ work_part ].~work_t();
+                for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
+                {
+                    auto const start_iteration{ iteration };
+                    auto const extra_iteration{ work_part < parts_with_extra_iteration };
+                    auto const end_iteration  { static_cast<iterations_t>( start_iteration + iterations_per_part + extra_iteration ) };
+                    auto const placeholder{ &dispatched_work_parts[ work_part ] };
+                    auto & work_chunk { *new ( placeholder ) work_t{ work_part_template } };
+                    auto & chunk_setup{ work_chunk.target_as<spread_work_base>() };
+                    chunk_setup.start_iteration = start_iteration;
+                    chunk_setup.  end_iteration =   end_iteration;
+                    BOOST_ASSERT( chunk_setup.start_iteration < chunk_setup.end_iteration );
+                    iteration = end_iteration;
+                }
+                BOOST_ASSUME( iteration == iterations );
+
+                work_items_.fetch_add( number_of_dispatched_work_parts, std::memory_order_acquire );
+                // Has to be initialized before enqueuing (to support spinning waits in workers -
+                // where trivial work would get dequeued and executed (and 'arrived at') before
+                // this thread could enter the if ( enqueue_succeeded ) block and initialize the
+                // the barrier there).
+                completion_barrier.initialize( number_of_dispatched_work_parts );
+                enqueue_succeeded = queue_.enqueue_bulk
+                (
+                    std::make_move_iterator( dispatched_work_parts ),
+                    number_of_dispatched_work_parts
+                );
+                events::worker_bulk_enqueue_end();
+                if ( BOOST_LIKELY( enqueue_succeeded ) )
+                {
+                    events::worker_bulk_signal_begin( number_of_dispatched_work_parts );
+                    work_semaphore_.signal( number_of_dispatched_work_parts );
+                    events::worker_bulk_signal_end();
+                }
+                else
+                {
+                    completion_barrier.initialize( 0 );
+                    caller_thread_end_iteration = iterations;
+                }
+
+                for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
+                {
+                    dispatched_work_parts[ work_part ].~work_t();
+                }
+#           else
+                BOOST_UNREACHABLE();
+#           endif // BOOST_SWEATER_EXACT_WORKER_SELECTION || Android
             }
-#       endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
             if ( caller_thread_end_iteration ) // use_caller_thread or enqueue failed
             {
                 perform_caller_work( caller_thread_end_iteration, work_part_template, completion_barrier );
@@ -1850,12 +1997,17 @@ private:
                 Functor * __restrict p_functor = nullptr;
             }; // struct self_destructed_work
             static_assert( std::is_trivially_destructible_v<self_destructed_work> );
-#       if BOOST_SWEATER_EXACT_WORKER_SELECTION
-            enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
-#       else
-            enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
-            this->wake_one_worker();
-#       endif
+            if ( BOOST_SWEATER_EXACT_WORKER_SELECTION && !detail::slow_thread_signals )
+            {
+                enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+            }
+            else
+            {
+#           if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
+                enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
+                this->work_semaphore_.signal( 1 );
+#           endif
+            }
         }
         else
         {
@@ -1881,45 +2033,42 @@ private:
                 } // void operator()
                 alignas( alignof( Functor ) ) char storage[ sizeof( Functor ) ];
             }; // struct self_destructed_work
-#       if BOOST_SWEATER_EXACT_WORKER_SELECTION
-            enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
-#       else
-            enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
-            this->wake_one_worker();
-#       endif
+            if ( BOOST_SWEATER_EXACT_WORKER_SELECTION && !detail::slow_thread_signals )
+            {
+                enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+            }
+            else
+            {
+#           if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
+                enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
+                this->work_semaphore_.signal( 1 );
+#           endif
+            }
         }
         this->work_items_.fetch_add( enqueue_succeeded, std::memory_order_acquire );
         return BOOST_LIKELY( enqueue_succeeded );
     }
 
 
-    void wake_one_worker() noexcept
-    {
-#   if BOOST_SWEATER_EXACT_WORKER_SELECTION
-        //...mrmlj...TODO find an idle worker...
-        pool_.front().notify();
-#   else
-        work_semaphore_.signal();
-#   endif
-    }
-
-
     void wake_all_workers() noexcept
     {
-#   if BOOST_SWEATER_EXACT_WORKER_SELECTION
-        for ( auto & worker : pool_ )
-            worker.notify();
-#   else
-        work_semaphore_.signal( number_of_worker_threads() );
-#   endif
+        if ( BOOST_SWEATER_EXACT_WORKER_SELECTION && !detail::slow_thread_signals )
+        {
+            for ( auto & worker : pool_ )
+                worker.notify();
+        }
+        else
+        {
+#       if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
+            work_semaphore_.signal( number_of_worker_threads() );
+#       endif
+        }
     }
 
     void work_added    () noexcept { work_items_.fetch_add( 1, std::memory_order_acquire ); }
     void work_completed() noexcept { work_items_.fetch_sub( 1, std::memory_order_release ); }
 
 private:
-    std::atomic<bool                  > brexit_     = false;
-    std::atomic<hardware_concurrency_t> work_items_ = 0;
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
     struct alignas( 64 ) worker_thread : thread
     {
@@ -1929,6 +2078,7 @@ private:
 
         bool enqueue( work_t && work, my_queue & queue ) noexcept
         {
+            BOOST_ASSUME( !detail::slow_thread_signals );
             bool success;
             {
                 std::scoped_lock<spin_lock> const token_lock{ token_mutex_ };
@@ -1946,11 +2096,18 @@ private:
 #   endif // Linux
     }; // struct worker_thread
 
+#if defined( __ANDROID__ )
+    semaphore work_semaphore_; // for old/slow_thread_signals devices
+#endif // Android
+
 #else // BOOST_SWEATER_EXACT_WORKER_SELECTION
     using worker_thread = thread;
 
     semaphore work_semaphore_;
 #endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
+
+    std::atomic<hardware_concurrency_t> work_items_ = 0;
+    std::atomic<bool                  > brexit_     = false;
 
     /// \todo Further queue refinements.
     /// http://ithare.com/implementing-queues-for-event-driven-programs
