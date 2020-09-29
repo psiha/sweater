@@ -1864,13 +1864,15 @@ private:
 #           endif // BOOST_SWEATER_CALLER_BOOST
             }
 
-            if ( BOOST_SWEATER_EXACT_WORKER_SELECTION && !detail::slow_thread_signals )
+#         if BOOST_SWEATER_EXACT_WORKER_SELECTION
+            if ( !detail::slow_thread_signals )
             {
                 iteration = dispatch_workers( 0, iteration, number_of_dispatched_work_parts, iterations_per_part, parts_with_extra_iteration, iterations, completion_barrier, work_part_template ).second;
                 BOOST_ASSUME( iteration <= iterations );
                 enqueue_succeeded = true; //...mrmlj...
             }
             else
+#         endif
             {
 #           if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ ) // slow_thread_signals fallback
                 events::worker_bulk_enqueue_begin( number_of_dispatched_work_parts );
@@ -1997,11 +1999,14 @@ private:
                 Functor * __restrict p_functor = nullptr;
             }; // struct self_destructed_work
             static_assert( std::is_trivially_destructible_v<self_destructed_work> );
-            if ( BOOST_SWEATER_EXACT_WORKER_SELECTION && !detail::slow_thread_signals )
+
+#         if BOOST_SWEATER_EXACT_WORKER_SELECTION
+            if ( !detail::slow_thread_signals )
             {
                 enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
             }
             else
+#         endif
             {
 #           if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
                 enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
@@ -2033,11 +2038,13 @@ private:
                 } // void operator()
                 alignas( alignof( Functor ) ) char storage[ sizeof( Functor ) ];
             }; // struct self_destructed_work
-            if ( BOOST_SWEATER_EXACT_WORKER_SELECTION && !detail::slow_thread_signals )
+#         if BOOST_SWEATER_EXACT_WORKER_SELECTION
+            if ( !detail::slow_thread_signals )
             {
                 enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
             }
             else
+#         endif
             {
 #           if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
                 enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
@@ -2052,12 +2059,14 @@ private:
 
     void wake_all_workers() noexcept
     {
-        if ( BOOST_SWEATER_EXACT_WORKER_SELECTION && !detail::slow_thread_signals )
+#     if BOOST_SWEATER_EXACT_WORKER_SELECTION
+        if ( !detail::slow_thread_signals )
         {
             for ( auto & worker : pool_ )
                 worker.notify();
         }
         else
+#     endif
         {
 #       if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
             work_semaphore_.signal( number_of_worker_threads() );
