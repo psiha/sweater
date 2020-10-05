@@ -534,9 +534,16 @@ private:
                 auto value{ value_.load( std::memory_order_relaxed ) };
                 for ( auto spin_try{ 0U }; spin_try < worker_spin_count; ++spin_try )
                 {
-                    if ( ( value > state::locked ) && try_decrement( value ) ) [[ likely ]]
-                        return;
-                    detail::nops( 8 );
+                    if ( value > state::locked )
+                    {
+                        if ( try_decrement( value ) )
+                            return;
+                    }
+                    else
+                    {
+                        detail::nops( 8 );
+                        value = value_.load( std::memory_order_relaxed );
+                    }
                 }
                 BOOST_ASSUME( value <= state::locked );
             }
@@ -920,9 +927,16 @@ private:
                 auto value{ value_.load( std::memory_order_relaxed ) };
                 for ( auto spin_try{ 0U }; spin_try < worker_spin_count; ++spin_try )
                 {
-                    if ( ( value > 0 ) && value_.compare_exchange_weak( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) ) [[ likely ]]
-                        return;
-                    detail::nops( 8 );
+                    if ( value > 0 )
+                    {
+                        if ( value_.compare_exchange_weak( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) )
+                            return;
+                    }
+                    else
+                    {
+                        detail::nops( 8 );
+                        value = value_.load( std::memory_order_relaxed );
+                    }
                 }
                 BOOST_ASSUME( value <= 0 );
             }
