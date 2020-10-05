@@ -236,24 +236,24 @@ namespace events
 #   define BOOST_AUX_EVENT_INLINE inline constexpr
 #endif // BOOST_SWEATER_EVENTS
 
-    BOOST_AUX_EVENT_INLINE void caller_stalled           ( std::uint8_t /*current_boost*/                                        ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void caller_join_begin        ( bool /*spinning*/                                                     ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void caller_join_end          (                                                                       ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void caller_work_begin        (                                          std::uint32_t /*iterations*/ ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void caller_work_end          (                                                                       ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_enqueue_begin     ( hardware_concurrency_t /*worker_index*/                               ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_enqueue_end       ( hardware_concurrency_t /*worker_index*/, std::uint32_t /*iterations*/ ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_work_begin        ( hardware_concurrency_t /*worker_index*/                               ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_work_end          ( hardware_concurrency_t /*worker_index*/                               ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_sleep_begin       ( hardware_concurrency_t /*worker_index*/                               ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_sleep_end         ( hardware_concurrency_t /*worker_index*/                               ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_bulk_enqueue_begin( hardware_concurrency_t /*number_of_workers*/                          ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_bulk_enqueue_end  (                                                                       ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_bulk_signal_begin ( hardware_concurrency_t /*number_of_workers*/                          ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void worker_bulk_signal_end   (                                                                       ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void caller_stalled           ( std::uint8_t /*current_boost*/                                                                    ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void caller_join_begin        ( bool /*spinning*/                                                                                 ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void caller_join_end          (                                                                                                   ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void caller_work_begin        (                                          std::uint32_t /*iterations*/                             ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void caller_work_end          (                                                                                                   ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_enqueue_begin     ( hardware_concurrency_t /*worker_index*/, std::uint32_t /*begin_iter*/, std::uint32_t /*end_iter*/ ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_enqueue_end       ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_work_begin        ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_work_end          ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_sleep_begin       ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_sleep_end         ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_bulk_enqueue_begin( hardware_concurrency_t /*number_of_workers*/                                                      ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_bulk_enqueue_end  (                                                                                                   ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_bulk_signal_begin ( hardware_concurrency_t /*number_of_workers*/                                                      ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void worker_bulk_signal_end   (                                                                                                   ) noexcept BOOST_AUX_EVENT_BODY
 
-    BOOST_AUX_EVENT_INLINE void spread_begin             ( std::uint32_t /*iterations*/                                          ) noexcept BOOST_AUX_EVENT_BODY
-    BOOST_AUX_EVENT_INLINE void spread_end               ( hardware_concurrency_t /*dispatched_parts*/, bool /*caller_used*/     ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void spread_begin             ( std::uint32_t /*iterations*/                                                                      ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void spread_end               ( hardware_concurrency_t /*dispatched_parts*/, bool /*caller_used*/                                 ) noexcept BOOST_AUX_EVENT_BODY
 
 #undef BOOST_AUX_EVENT_BODY
 #undef BOOST_AUX_EVENT_INLINE
@@ -834,6 +834,7 @@ private:
     }; // class thread
 
     // http://locklessinc.com/articles/locks
+    // https://rigtorp.se/spinlock
     class spin_lock
     {
     public:
@@ -1505,7 +1506,7 @@ public:
 #   if 0
         return queue_.depth();
 #   else
-        return work_items_.load( std::memory_order_acquire );
+        return work_items_.load( std::memory_order_seq_cst );
 #   endif
     }
 
@@ -1640,10 +1641,10 @@ private:
     {
         for ( hardware_concurrency_t work_part{ 0 }; work_part < max_parts && iteration != iterations; ++work_part )
         {
-            events::worker_enqueue_begin( worker_index );
             auto const start_iteration{ iteration };
             auto const extra_iteration{ work_part < parts_with_extra_iteration };
             auto const end_iteration  { static_cast<iterations_t>( start_iteration + per_part_iterations + extra_iteration ) };
+            events::worker_enqueue_begin( worker_index, start_iteration, end_iteration );
             BOOST_ASSERT( work_part_template.target_as<spread_work_base>().p_completion_barrier == &completion_barrier );
             work_t work_chunk{ work_part_template };
             auto & chunk_setup{ work_chunk.target_as<spread_work_base>() };
@@ -1659,7 +1660,7 @@ private:
             work_added();
             BOOST_VERIFY( pool_[ worker_index ].enqueue( std::move( work_chunk ), queue_ ) ); //...mrmlj...todo err handling
             iteration = end_iteration;
-            events::worker_enqueue_end( worker_index, end_iteration - start_iteration );
+            events::worker_enqueue_end( worker_index );
             ++worker_index;
         }
 
@@ -1719,7 +1720,11 @@ private:
         bool enqueue_succeeded;
 #   if BOOST_SWEATER_HMP
         static_assert( BOOST_SWEATER_EXACT_WORKER_SELECTION );
-        if ( hmp )
+        // In case of recursive and concurrent (but incomplete) spreads we skip
+        // HMP logic (because the logic itself would need tweaking and
+        // additional tracking of which cluster cores/workers are actually
+        // free).
+        if ( hmp && !items_in_shop )
         {
             BOOST_ASSERT_MSG( hmp_clusters.number_of_clusters, "HMP not configured" );
             BOOST_ASSUME( hmp_clusters.number_of_clusters <= hmp_clusters.max_clusters );
@@ -1769,13 +1774,12 @@ private:
             hardware_concurrency_t worker                     { 0 };
             for ( auto cluster{ 0 }; cluster < number_used_of_clusters; ++cluster )
             {
-                auto const remaining_workers{ max_work_parts - worker }; //...mrmlj...quick-fix for recursive and concurrent (but incomplete) spreads...think of a cleaner/'implicit' solution
 #           if BOOST_SWEATER_CALLER_BOOST
                 auto const cluster_iterations        { std::min<iterations_t>( hmp_distributions[ cluster ], iterations - iteration ) }; // guard in case caller_boost is in effect
 #           else
-                auto const cluster_iterations        { hmp_distributions [ cluster ] };
+                auto const cluster_iterations        { hmp_distributions[ cluster ] };
 #           endif
-                auto       cluster_cores             { std::min<hardware_concurrency_t>( remaining_workers, hmp_clusters.cores[ cluster ] ) };
+                auto       cluster_cores             { hmp_clusters.cores[ cluster ]      };
                 auto       per_core_iterations       { cluster_iterations / cluster_cores };
                 auto       parts_with_extra_iteration{ cluster_iterations % cluster_cores };
 
