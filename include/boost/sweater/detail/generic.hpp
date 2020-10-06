@@ -545,7 +545,6 @@ private:
                         value = value_.load( std::memory_order_relaxed );
                     }
                 }
-                BOOST_ASSUME( value <= state::locked );
             }
 #       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
@@ -938,7 +937,6 @@ private:
                         value = value_.load( std::memory_order_relaxed );
                     }
                 }
-                BOOST_ASSUME( value <= 0 );
             }
 #       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
