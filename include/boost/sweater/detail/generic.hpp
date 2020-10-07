@@ -37,6 +37,7 @@
 #else
 #include <alloca.h>
 #endif // BOOST_MSVC
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -253,6 +254,8 @@ namespace events
     BOOST_AUX_EVENT_INLINE void worker_bulk_signal_end   (                                                                                                   ) noexcept BOOST_AUX_EVENT_BODY
 
     BOOST_AUX_EVENT_INLINE void spread_begin             ( std::uint32_t /*iterations*/                                                                      ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void spread_preexisting_work  (                                          hardware_concurrency_t /*items_in_shop*/                 ) noexcept BOOST_AUX_EVENT_BODY
+    BOOST_AUX_EVENT_INLINE void spread_recursive_call    ( hardware_concurrency_t /*worker_index*/, hardware_concurrency_t /*items_in_shop*/                 ) noexcept BOOST_AUX_EVENT_BODY
     BOOST_AUX_EVENT_INLINE void spread_end               ( hardware_concurrency_t /*dispatched_parts*/, bool /*caller_used*/                                 ) noexcept BOOST_AUX_EVENT_BODY
 
 #undef BOOST_AUX_EVENT_BODY
@@ -1163,8 +1166,8 @@ private:
                     {
                         events::worker_work_begin( worker_index );
                         work();
-                        events::worker_work_end  ( worker_index );
                         parent.work_completed();
+                        events::worker_work_end  ( worker_index );
                     }
 #               endif
                     // Work stealing for BOOST_SWEATER_EXACT_WORKER_SELECTION
@@ -1172,8 +1175,8 @@ private:
                     {
                         events::worker_work_begin( worker_index );
                         work();
-                        events::worker_work_end  ( worker_index );
                         parent.work_completed();
+                        events::worker_work_end  ( worker_index );
                     }
 
                     if ( BOOST_UNLIKELY( exit.load( std::memory_order_relaxed ) ) )
@@ -1699,11 +1702,13 @@ private:
         auto const items_in_shop{ number_of_items() };
         if ( BOOST_UNLIKELY( items_in_shop ) ) [[ unlikely ]]
         { // support recursive spread_the_sweat calls: for now just perform everything in the caller
+            events::spread_preexisting_work( items_in_shop );
             auto const this_thread{ thread::get_active_thread_id() };
             for ( auto const & worker : pool_ )
             {
                 if ( BOOST_UNLIKELY( worker.get_id() == this_thread ) ) [[ unlikely ]]
                 {
+                    events::spread_recursive_call( static_cast<hardware_concurrency_t>( &worker - &pool_.front() ), items_in_shop );
                     perform_caller_work( iterations, work_part_template, completion_barrier );
                     return true;
                 }
@@ -1884,7 +1889,9 @@ private:
             }
 
 #         if BOOST_SWEATER_EXACT_WORKER_SELECTION
-            if ( !detail::slow_thread_signals )
+            // When there are items_in_shop fallback to the shared queue (as
+            // there is currently no tracking which queues/workers are taken).
+            if ( !detail::slow_thread_signals && !items_in_shop )
             {
                 iteration = dispatch_workers( 0, iteration, number_of_dispatched_work_parts, iterations_per_part, parts_with_extra_iteration, iterations, completion_barrier, work_part_template ).second;
                 BOOST_ASSUME( iteration <= iterations );
@@ -1892,8 +1899,7 @@ private:
             }
             else
 #         endif
-            {
-#           if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ ) // slow_thread_signals fallback
+            { // Also serves as a slow_thread_signals fallback and items_in_shop 'handler'.
                 events::worker_bulk_enqueue_begin( number_of_dispatched_work_parts );
                 /// \note MSVC does not support VLAs but has an alloca that returns (16
                 /// byte) aligned memory. Clang's alloca is unaligned and it does not
@@ -1942,7 +1948,11 @@ private:
                 if ( BOOST_LIKELY( enqueue_succeeded ) )
                 {
                     events::worker_bulk_signal_begin( number_of_dispatched_work_parts );
+#               if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ ) // Android also has the fallback work_semaphore_ for slow_thread_signals devices
                     work_semaphore_.signal( number_of_dispatched_work_parts );
+#               else
+                    wake_all_workers();
+#               endif
                     events::worker_bulk_signal_end();
                 }
                 else
@@ -1955,9 +1965,6 @@ private:
                 {
                     dispatched_work_parts[ work_part ].~work_t();
                 }
-#           else
-                BOOST_UNREACHABLE();
-#           endif // BOOST_SWEATER_EXACT_WORKER_SELECTION || Android
             }
             if ( caller_thread_end_iteration ) // use_caller_thread or enqueue failed
             {
@@ -2093,8 +2100,8 @@ private:
         }
     }
 
-    void work_added    () noexcept { work_items_.fetch_add( 1, std::memory_order_acquire ); }
-    void work_completed() noexcept { work_items_.fetch_sub( 1, std::memory_order_release ); }
+    void work_added    () noexcept { BOOST_VERIFY( work_items_.fetch_add( 1, std::memory_order_acquire ) <  std::numeric_limits<hardware_concurrency_t>::max() ); }
+    void work_completed() noexcept { BOOST_VERIFY( work_items_.fetch_sub( 1, std::memory_order_release ) >= 0                                                  ); } // equal allowed because of late fetch_add in fire_and_forget
 
 private:
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
