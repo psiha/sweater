@@ -1911,12 +1911,12 @@ private:
                 /// The code below is safe with noexcept enqueue and noexcept
                 /// destructible and constructible work_ts.
                 ///                                   (21.01.2017.) (Domagoj Saric)
-    #       ifdef BOOST_MSVC
+#          ifdef BOOST_MSVC
                 auto const dispatched_work_parts{ static_cast<work_t *>( alloca( number_of_dispatched_work_parts * sizeof( work_t ) ) ) };
-    #       else
+#          else
                 alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
                 auto * const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) };
-    #       endif // BOOST_MSVC
+#          endif // BOOST_MSVC
 
                 for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
                 {
@@ -1949,10 +1949,11 @@ private:
                 {
                     events::worker_bulk_signal_begin( number_of_dispatched_work_parts );
 #               if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ ) // Android also has the fallback work_semaphore_ for slow_thread_signals devices
-                    work_semaphore_.signal( number_of_dispatched_work_parts );
-#               else
-                    wake_all_workers();
+                    if ( detail::slow_thread_signals )
+                        work_semaphore_.signal( number_of_dispatched_work_parts );
+                    else
 #               endif
+                        wake_all_workers();
                     events::worker_bulk_signal_end();
                 }
                 else
@@ -2096,6 +2097,8 @@ private:
         {
 #       if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
             work_semaphore_.signal( number_of_worker_threads() );
+#       else
+            BOOST_UNREACHABLE();
 #       endif
         }
     }
