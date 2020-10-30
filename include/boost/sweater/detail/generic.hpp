@@ -1851,7 +1851,7 @@ private:
             auto parts_with_extra_iteration{ iterations % number_of_work_parts };
 
 #       if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-            BOOST_ASSUME( number_of_dispatched_work_parts <= ( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD ) );
+            BOOST_ASSUME( number_of_dispatched_work_parts <= ( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - ( BOOST_SWEATER_USE_CALLER_THREAD && !detail::slow_thread_signals ) ) );
 #       endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
             iterations_t iteration{ 0 };
@@ -2162,7 +2162,12 @@ private:
     my_queue queue_;
 
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-    using pool_threads_t = container::static_vector<worker_thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD>;
+#   ifdef __ANDROID__
+#       define NUM_THREAD_CORRECTIONS 0
+#   else
+#       define NUM_THREAD_CORRECTIONS BOOST_SWEATER_USE_CALLER_THREAD
+#endif
+    using pool_threads_t = container::static_vector<worker_thread, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - NUM_THREAD_CORRECTIONS>;
 #else
     using pool_threads_t = iterator_range<worker_thread *>;
 #endif
