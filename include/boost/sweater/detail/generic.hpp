@@ -2046,14 +2046,24 @@ private:
             struct self_destructed_work
             {
                 self_destructed_work( Args && ... args ) { new ( storage ) Functor{ std::forward<Args>( args )... }; }
-                self_destructed_work( self_destructed_work && other ) noexcept( std::is_nothrow_move_constructible_v<Functor> )
+                self_destructed_work( self_destructed_work && other ) noexcept
+                (
+#               if BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1928 ) )
+                    true
+#               else
+                    std::is_nothrow_move_constructible_v<Functor>
+#               endif // VS 16.8 workarounds
+                )
                 {
                     auto & source( reinterpret_cast<Functor &>( other.storage ) );
                     new ( storage ) Functor( std::move( source ) );
                     source.~Functor();
                 }
                 self_destructed_work( self_destructed_work const & ) = delete;
-                void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
+                void operator()()
+#               if !BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1928 ) )
+                    noexcept( noexcept( std::declval<Functor &>()() ) )
+#               endif // VS 16.8 workarounds
                 {
                     auto & work( reinterpret_cast<Functor &>( storage ) );
                     struct destructor
