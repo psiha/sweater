@@ -81,6 +81,7 @@
 #endif // GCC
 #   endif // glibc
 #endif // __linux
+
 //------------------------------------------------------------------------------
 ////////////////////////////////////////////////////////////////////////////////
 // Compile time configuration
@@ -1458,11 +1459,14 @@ public:
     using cpu_affinity_mask = thread::affinity_mask;
 
     BOOST_ATTRIBUTES( BOOST_COLD )
-    auto bind_worker( hardware_concurrency_t const worker_index, cpu_affinity_mask const mask ) noexcept
+    auto bind_worker( hardware_concurrency_t const worker_index, [[ maybe_unused ]] cpu_affinity_mask const mask ) noexcept
     {
-        auto & thread{ pool_[ worker_index ] };
+        [[ maybe_unused ]] auto & thread{ pool_[ worker_index ] };
 #   ifdef _WIN32
         return ::SetThreadAffinityMask( thread.get_handle(), mask.value_ ) != 0;
+#   elif defined( __EMSCRIPTEN_PTHREADS__ )
+        // cannot set affinity on emscripten
+        return false;
 #   else // platform
 #       if 0 // Android does not have pthread_setaffinity_np or pthread_attr_setaffinity_np
          // and there seems to be no way of detecting its presence.
@@ -1501,9 +1505,13 @@ public:
     BOOST_ATTRIBUTES( BOOST_COLD )
     auto bind_worker_to_cpu( hardware_concurrency_t const worker_index, unsigned const cpu_id ) noexcept
     {
+#ifndef __EMSCRIPTEN_PTHREADS_
         cpu_affinity_mask mask;
         mask.add_cpu( cpu_id );
         return bind_worker( worker_index, mask );
+#else
+        return false;
+#endif
     }
 
     BOOST_ATTRIBUTES( BOOST_COLD )
