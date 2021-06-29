@@ -1707,10 +1707,26 @@ private:
         barrier completion_barrier;
         work_part_template.target_as<spread_work_base>().p_completion_barrier = &completion_barrier;
 
-        auto const items_in_shop{ number_of_items() };
+        auto const items_in_shop{ number_of_items  () };
         if ( BOOST_UNLIKELY( items_in_shop ) ) [[ unlikely ]]
-        { // support recursive spread_the_sweat calls: for now just perform everything in the caller
+        {
             events::spread_preexisting_work( items_in_shop );
+
+            // Support single-core Docker images (for other platforms assume no
+            // single core systems actually exist nowadays) - in case of
+            // concurrent spreads, err on the side of simplicity and perform
+            // the work immediately on the caller (overcommiting the single
+            // core).
+#       if BOOST_SWEATER_USE_CALLER_THREAD && defined( __linux__ ) && !defined( __ANDROID__ )
+            if ( number_of_worker_threads() == 0 ) [[ unlikely ]]
+            {
+                perform_caller_work( iterations, work_part_template, completion_barrier );
+                return true;
+            }
+#       endif // single CPU Docker
+
+            // Support recursive spread_the_sweat calls: for now just perform
+            // everything in the caller.
             auto const this_thread{ thread::get_active_thread_id() };
             for ( auto const & worker : pool_ )
             {
