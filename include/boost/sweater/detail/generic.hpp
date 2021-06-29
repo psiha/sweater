@@ -1086,34 +1086,46 @@ private:
         /// \note BOOST_SWEATER_EXACT_WORKER_SELECTION requires the worker
         /// index to be captured by the worker lambda - this makes it larger
         /// than a void pointer and thus requries the 'synchronized_invocation'
-        /// path in the create thread call. This in turn causes deadlocks on
-        /// Windows when shops are created as global variables in DLLs (as the
-        /// DLL entry procedure then blocks when it must not do so). As a
-        /// workaround the worker index and the shop instance pointer are
-        /// packed together (expecting to never be further apart than 2GB,
-        /// avoiding the 64bit address canonical form pointer tagging
-        /// complexities).
+        /// path in the create thread call. This in turn causes deadlocks when
+        /// shops are created as global variables under
+        /// - Windows in DLLs (as the DLL entry procedure then blocks when it
+        ///   must not do so). As a workaround the worker index and the shop
+        ///   instance pointer are packed together (expecting to never be
+        ///   further apart than 2GB, avoiding the 64bit address canonical
+        ///   form pointer tagging complexities)
+        /// - Emscripten because threads are not created until control is
+        ///   yielded back to JS code (and sweat_shop constructor dead locks
+        ///   waiting for the workers to start - as control is never returned
+        ///   JS).
         /// https://lwn.net/Articles/718888
         /// https://source.android.com/devices/tech/debug/tagged-pointers
         ///                                   (13.08.2020.) (Domagoj Saric)
 #   if BOOST_SWEATER_EXACT_WORKER_SELECTION && ( defined( _WIN64 ) || defined( __LP64__ ) )
-        static std::byte dummy_reference_object{};
+        static_assert( sizeof( void * ) == 8 );
+        static std::byte /*const - MSVC '& on constant'!?*/ dummy_reference_object{};
         auto const shop_offset{ reinterpret_cast<std::byte const *>( this ) - &dummy_reference_object };
         struct shop_and_worker_t
         {
             std:: int64_t shop_offset  : 48;
             std::uint64_t worker_index : 16;
         } const shop_and_worker{ .shop_offset = shop_offset, .worker_index = worker_index };
+        static_assert( sizeof( void * ) == sizeof( shop_and_worker ) );
         BOOST_ASSERT( shop_and_worker.shop_offset  == shop_offset  );
         BOOST_ASSERT( shop_and_worker.worker_index == worker_index );
-#   elif BOOST_SWEATER_EXACT_WORKER_SELECTION && defined( _WIN32 )
-        static auto const p_base{ reinterpret_cast<std::byte const *>( &__ImageBase ) };
-        auto const shop_offset{ static_cast<std::uint32_t>( reinterpret_cast<std::byte const *>( this ) - p_base ) };
+#   elif BOOST_SWEATER_EXACT_WORKER_SELECTION
+        static_assert( sizeof( void * ) == 4 );
+#       ifdef _WIN32
+        static std::byte const & dummy_reference_object{ reinterpret_cast<std::byte const &>( __ImageBase ) };
+#       else
+        static std::byte const dummy_reference_object{};
+#       endif
+        auto const shop_offset{ static_cast<std::uint32_t>( reinterpret_cast<std::byte const *>( this ) - &dummy_reference_object ) };
         struct shop_and_worker_t
         {
             std::uint32_t shop_offset  : 27;
             std::uint32_t worker_index :  5;
         } const shop_and_worker{ .shop_offset = shop_offset, .worker_index = worker_index };
+        static_assert( sizeof( void * ) == sizeof( shop_and_worker ) );
         BOOST_ASSERT( shop_and_worker.shop_offset  == shop_offset  );
         BOOST_ASSERT( shop_and_worker.worker_index == worker_index );
 #   else
@@ -1123,14 +1135,9 @@ private:
         {
             [=]() noexcept
             {
-#           if   BOOST_SWEATER_EXACT_WORKER_SELECTION && ( defined( _WIN64 ) || defined( __LP64__ ) )
+#           if BOOST_SWEATER_EXACT_WORKER_SELECTION
                 auto & parent{ const_cast< shop & >( *reinterpret_cast<shop const *>( &dummy_reference_object + shop_and_worker.shop_offset ) ) };
                 auto const worker_index{ static_cast<hardware_concurrency_t>( shop_and_worker.worker_index ) };
-#           elif BOOST_SWEATER_EXACT_WORKER_SELECTION && defined( _WIN32 )
-                auto & parent{ const_cast< shop & >( *reinterpret_cast<shop const *>( p_base + shop_and_worker.shop_offset ) ) };
-                auto const worker_index{ shop_and_worker.worker_index };
-#           elif BOOST_SWEATER_EXACT_WORKER_SELECTION
-                auto & parent{ *p_shop };
 #           else
                 auto & parent{ *p_shop };
                 auto const worker_index{ static_cast<hardware_concurrency_t>( -1 ) };
@@ -1505,19 +1512,15 @@ public:
     BOOST_ATTRIBUTES( BOOST_COLD )
     auto bind_worker_to_cpu( hardware_concurrency_t const worker_index, unsigned const cpu_id ) noexcept
     {
-#ifndef __EMSCRIPTEN_PTHREADS_
         cpu_affinity_mask mask;
         mask.add_cpu( cpu_id );
         return bind_worker( worker_index, mask );
-#else
-        return false;
-#endif
     }
 
     BOOST_ATTRIBUTES( BOOST_COLD )
     void set_max_allowed_threads( hardware_concurrency_t const max_threads )
     {
-        BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue." );
+        BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue."    );
         BOOST_ASSERT_MSG( !hmp          , "Cannot change number of workers directly when HMP is enabled" );
         stop_and_destroy_pool();
         create_pool( max_threads - ( BOOST_SWEATER_USE_CALLER_THREAD && !detail::slow_thread_signals ) );
