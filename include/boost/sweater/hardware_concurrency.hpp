@@ -137,8 +137,9 @@ inline auto hardware_concurrency_current() noexcept { return static_cast<hardwar
 
 namespace detail
 {
-    // obey docker limits even when someone attempts to create pool with more threads than allowed by the Docker container
-    // but return number of all CPUs when there is no Docker CPU quota in place
+    // Obey docker limits even when someone attempts to create a pool with
+    // more threads than allowed by the Docker container but return the number
+    // of all CPUs when there is no Docker CPU quota in place.
     inline auto get_hardware_concurrency_max() noexcept { return static_cast<hardware_concurrency_t>( ( hardware_concurrency_max.docker_quota != -1 ) ? hardware_concurrency_max.docker_quota : get_nprocs_conf() ); }
 }
 
