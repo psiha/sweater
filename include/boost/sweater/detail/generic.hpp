@@ -3,7 +3,7 @@
 /// \file generic.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2020.
+/// (c) Copyright Domagoj Saric 2016 - 2021.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -1115,15 +1115,17 @@ private:
 #   elif BOOST_SWEATER_EXACT_WORKER_SELECTION
         static_assert( sizeof( void * ) == 4 );
 #       ifdef _WIN32
+        using global_offset_t = std::uint32_t;
         static std::byte const & dummy_reference_object{ reinterpret_cast<std::byte const &>( __ImageBase ) };
 #       else
+        using global_offset_t = std::int32_t;
         static std::byte const dummy_reference_object{};
 #       endif
-        auto const shop_offset{ static_cast<std::uint32_t>( reinterpret_cast<std::byte const *>( this ) - &dummy_reference_object ) };
+        auto const shop_offset{ static_cast<global_offset_t>( reinterpret_cast<std::byte const *>( this ) - &dummy_reference_object ) };
         struct shop_and_worker_t
         {
-            std::uint32_t shop_offset  : 27;
-            std::uint32_t worker_index :  5;
+            global_offset_t shop_offset  : 27;
+            std::uint32_t   worker_index :  5;
         } const shop_and_worker{ .shop_offset = shop_offset, .worker_index = worker_index };
         static_assert( sizeof( void * ) == sizeof( shop_and_worker ) );
         BOOST_ASSERT( shop_and_worker.shop_offset  == shop_offset  );
