@@ -20,9 +20,15 @@
 #include <boost/assert.hpp>
 #include <boost/config_ex.hpp>
 
+#if defined( __EMSCRIPTEN__ ) // TODO: extract and deduplicate this implementation
+#include <cmath>
+
+#include <emscripten/threading.h>
+#else
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#endif // Emscripten / Linux
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -33,10 +39,22 @@ namespace thrd_lite
 
 namespace
 {
+#if defined( __EMSCRIPTEN__ )
+
+	auto futex_wait( void * const addr, int const val ) noexcept { return emscripten_futex_wait( reinterpret_cast<volatile void *>( addr ), val, INFINITY ); }
+	auto futex_wake( void * const addr, int const val ) noexcept { return emscripten_futex_wake( reinterpret_cast<volatile void *>( addr ), val           ); }
+
+#elif defined( __linux__ )
+
     void futex( void * const addr1, int const op, int const val1 ) noexcept
     {
         ::syscall( SYS_futex, addr1, op | FUTEX_PRIVATE_FLAG, val1, nullptr, nullptr, 0 );
     }
+
+    auto futex_wait( void * const addr, int const val ) noexcept { return futex( addr, FUTEX_WAIT, val ); }
+	auto futex_wake( void * const addr, int const val ) noexcept { return futex( addr, FUTEX_WAKE, val ); }
+
+#endif
 } // anonymous namespace
 
 #ifndef NDEBUG
@@ -71,7 +89,7 @@ void futex_semaphore::signal( hardware_concurrency_t const count /*= 1*/ ) noexc
 #   else
         auto const to_wake{ count };
 #   endif
-        futex( &value_, FUTEX_WAKE, to_wake );
+        futex_wake( &value_, to_wake );
     }
 }
 
@@ -88,7 +106,7 @@ void futex_semaphore::wait() noexcept
 
         detail::overflow_checked_inc( waiters_ );
         value = state::locked; try_decrement( value );
-        futex( &value_, FUTEX_WAIT, state::contested );
+        futex_wait( &value_, state::contested );
         detail::underflow_checked_dec( waiters_ );
     }
 }

@@ -36,7 +36,7 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
-#if defined( __linux__ )
+#if defined( __linux__ ) || defined( __EMSCRIPTEN__ )
 using semaphore = futex_semaphore;
 #elif defined( BOOST_HAS_PTHREADS )
 using semaphore = pthread_semaphore;

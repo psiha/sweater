@@ -67,9 +67,15 @@ set( sources_threading_posix
 source_group( "ThrdLite/POSIX" FILES ${sources_threading_posix} )
 list( APPEND sweater_sources ${sources_threading_posix} )
 
-if ( WIN32 )
+if ( NOT ANDROID AND NOT LINUX AND NOT EMSCRIPTEN )
 set_source_files_properties(
     ${src_root}/threading/linux/semaphore.cpp
+    PROPERTIES HEADER_FILE_ONLY ON
+)
+endif()
+
+if ( WIN32 )
+set_source_files_properties(
     ${src_root}/threading/posix/thread.cpp
     ${src_root}/threading/posix/semaphore.cpp
     PROPERTIES HEADER_FILE_ONLY ON
