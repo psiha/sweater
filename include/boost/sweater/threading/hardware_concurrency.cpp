@@ -92,7 +92,7 @@ namespace
         return -1;
     }
 
-    auto const docker_quota{ detail::get_docker_limit() };
+    auto const docker_quota{ get_docker_limit() };
 } // anonymous namespace
 
 hardware_concurrency_t get_hardware_concurrency_max() noexcept
@@ -100,10 +100,10 @@ hardware_concurrency_t get_hardware_concurrency_max() noexcept
     // Obey docker limits even when someone attempts to create a pool with
     // more threads than allowed by the Docker container but return the number
     // of all CPUs when there is no Docker CPU quota in place.
-    return static_cast<hardware_concurrency_t>( ( detail::docker_quota != -1 ) ? detail::docker_quota : get_nprocs_conf() );
+    return static_cast<hardware_concurrency_t>( ( docker_quota != -1 ) ? docker_quota : get_nprocs_conf() );
 }
 
-hardware_concurrency_t hardware_concurrency_current() noexcept { return static_cast<hardware_concurrency_t>( ( detail::docker_quota != -1 ) ? detail::docker_quota : get_nprocs() ); }
+hardware_concurrency_t hardware_concurrency_current() noexcept { return static_cast<hardware_concurrency_t>( ( docker_quota != -1 ) ? docker_quota : get_nprocs() ); }
 
 #else // generic/standard impl
 

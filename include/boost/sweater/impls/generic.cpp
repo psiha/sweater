@@ -239,6 +239,7 @@ shop::shop()
     ///                                   (01.05.2017.) (Domagoj Saric)
     auto const local_hardware_concurrency( thrd_lite::get_hardware_concurrency_max() );
 #endif // __GNUC__
+    BOOST_ASSERT( local_hardware_concurrency > 0 );
     create_pool( local_hardware_concurrency - BOOST_SWEATER_USE_CALLER_THREAD );
 }
 
@@ -257,9 +258,8 @@ BOOST_ATTRIBUTES( BOOST_MINSIZE )
 bool shop::set_priority( thrd_lite::priority const new_priority ) noexcept
 {
 #ifdef __EMSCRIPTEN__
-    if constexpr ( true )
-        return ( new_priority == priority::normal );
-#endif
+    return new_priority == thrd_lite::priority::normal;
+#else // !Emscripten
     auto const nice_value( static_cast<int>( new_priority ) );
     bool success( true );
     for ( auto & thread : pool_ )
@@ -301,6 +301,7 @@ bool shop::set_priority( thrd_lite::priority const new_priority ) noexcept
     }
 #endif // __linux
     return success;
+#endif // !Emscripten
 }
 
 BOOST_ATTRIBUTES( BOOST_COLD )
@@ -332,7 +333,7 @@ bool shop::bind_worker
                 if ( current == target_handle )
                 {
                     BOOST_ASSERT( result == 2 );
-                    result = sched_setaffinity( ::gettid(), sizeof( mask.value_ ), &mask.value_ );
+                    result = thread.bind_to_cpu( ::gettid(), mask );
                     BOOST_ASSERT( result != 2 );
                 }
             }
@@ -350,9 +351,14 @@ bool shop::bind_worker
 
 bool shop::bind_worker_to_cpu( hardware_concurrency_t const worker_index, unsigned const cpu_id ) noexcept
 {
+#ifdef __EMSCRIPTEN__
+    (void)worker_index; (void)cpu_id;
+    return false;
+#else
     cpu_affinity_mask mask;
     mask.add_cpu( cpu_id );
     return bind_worker( worker_index, mask );
+#endif
 }
 
 BOOST_ATTRIBUTES( BOOST_COLD )
@@ -794,7 +800,7 @@ bool BOOST_CC_REG shop::spread_work
             auto const dispatched_work_parts{ static_cast<work_t *>( alloca( number_of_dispatched_work_parts * sizeof( work_t ) ) ) };
 #       else
             alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
-            auto const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) };
+            auto * const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) }; // GCC 11 ICEs w/o the asterisk
 #       endif // BOOST_MSVC
 
             for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
@@ -935,7 +941,12 @@ void shop::wake_all_workers() noexcept
 }
 
 void shop::work_added    ( hardware_concurrency_t const items ) noexcept { thrd_lite::detail:: overflow_checked_add( work_items_, items ); }
-void shop::work_completed(                                    ) noexcept { thrd_lite::detail::underflow_checked_dec( work_items_        ); } // TODO: may harmlessly fail check because of late fetch_add in fire_and_forget
+void shop::work_completed(                                    ) noexcept
+{
+    //thrd_lite::detail::underflow_checked_dec( work_items_ );
+    //...mrmlj...allowing equal to 0 (underflow) because of late fetch_add in fire_and_forget and concurrent invocation races(?)
+    BOOST_VERIFY( work_items_.fetch_sub( 1, std::memory_order_release ) >= 0 );
+}
 
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
 void shop::worker_thread::notify() noexcept { event_.signal(); }

@@ -19,6 +19,10 @@
 #include <boost/config_ex.hpp>
 
 #include <limits>
+
+#ifdef _MSC_VER
+#include <emmintrin.h>
+#endif
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -41,7 +45,7 @@ namespace detail
 
     void underflow_checked_dec( std::atomic<hardware_concurrency_t> & object ) noexcept
     {
-        BOOST_VERIFY( object.fetch_sub( 1, std::memory_order_release ) >/*=*/ 0 );
+        BOOST_VERIFY( object.fetch_sub( 1, std::memory_order_release ) > 0 );
     }
 } // detail
 

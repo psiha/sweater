@@ -15,7 +15,7 @@
 //------------------------------------------------------------------------------
 #pragma once
 
-#include "../hardware_concurrency.hpp"
+#include "../threading/hardware_concurrency.hpp"
 
 #include <boost/core/no_exceptions_support.hpp>
 
@@ -41,7 +41,7 @@ public:
 
     constexpr shop() noexcept {}
 
-    static constexpr hardware_concurrency_t number_of_workers() noexcept { return 1; }
+    static constexpr thrd_lite::hardware_concurrency_t number_of_workers() noexcept { return 1; }
 
     template <typename F>
     void spread_the_sweat( iterations_t const iterations, F && __restrict work, iterations_t /*const parallelizable_iterations_count TODO*/ = 1 ) noexcept( noexcept( std::declval< F >()( 0, 42 ) ) )

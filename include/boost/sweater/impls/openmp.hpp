@@ -17,7 +17,7 @@
 #define openmp_hpp__A03505C4_4323_437C_A38E_BF26BBCBD143
 #pragma once
 //------------------------------------------------------------------------------
-#include "../hardware_concurrency.hpp"
+#include "../threading/hardware_concurrency.hpp"
 
 #include <boost/config_ex.hpp>
 
@@ -44,7 +44,7 @@ struct openmp
 
     // http://openmp.org/mp-documents/OpenMP_Examples_4.0.1.pdf
 
-	static auto number_of_workers() noexcept { return static_cast<hardware_concurrency_t>( omp_get_max_threads() ); }
+	static auto number_of_workers() noexcept { return static_cast<thrd_lite::hardware_concurrency_t>( omp_get_max_threads() ); }
 
 	template <typename F>
 	static void spread_the_sweat( iterations_t const iterations, F & work, iterations_t /*const parallelizable_iterations_count TODO*/ = 1 ) noexcept
@@ -52,7 +52,7 @@ struct openmp
 		static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 		#pragma omp parallel
 		{
-			auto const number_of_workers( static_cast<hardware_concurrency_t>( omp_get_num_threads() ) );
+			auto const number_of_workers( static_cast<thrd_lite::hardware_concurrency_t>( omp_get_num_threads() ) );
 			auto const iterations_per_worker( iterations / number_of_workers + 1 );
 
 			#pragma omp for

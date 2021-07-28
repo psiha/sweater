@@ -74,6 +74,13 @@ set_source_files_properties(
 )
 endif()
 
+if ( ANDROID OR LINUX OR EMSCRIPTEN OR APPLE )
+set_source_files_properties(
+    ${src_root}/threading/semaphore.cpp
+    PROPERTIES HEADER_FILE_ONLY ON
+)
+endif()
+
 if ( WIN32 )
 set_source_files_properties(
     ${src_root}/threading/posix/thread.cpp

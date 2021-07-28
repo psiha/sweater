@@ -15,6 +15,13 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include "../cpp/spin_lock.hpp" // for nops
+#include "../hardware_concurrency.hpp"
+
+#include <boost/assert.hpp>
+
+#include <cstdint>
+
 #include <semaphore.h>
 //------------------------------------------------------------------------------
 namespace boost

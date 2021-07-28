@@ -17,7 +17,9 @@
 
 #include <boost/assert.hpp>
 
-#include <errno.h>
+#include <cerrno>
+#include <cstdint>
+
 #ifdef __ANDROID__
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -41,6 +43,7 @@ namespace
     auto const default_policy_priority_max        { ::sched_get_priority_max( SCHED_OTHER ) };
 #endif
     auto const default_policy_priority_range      { static_cast<std::uint8_t>( default_policy_priority_max - default_policy_priority_min ) };
+    [[ maybe_unused ]]
     auto const default_policy_priority_unchangable{ default_policy_priority_range == 0 };
 
     std::uint8_t round_divide( std::uint16_t const numerator, std::uint8_t const denominator ) noexcept
@@ -81,19 +84,19 @@ bool thread_impl::set_priority( priority const new_priority ) noexcept
     return ::setpriority( PRIO_PROCESS, get_id(), nice_value ) == 0;
 #else
     std::uint8_t const api_range            { static_cast<std::int8_t>( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) };
-    auto         const platform_range       { detail::default_policy_priority_range };
+    auto         const platform_range       { default_policy_priority_range };
     auto         const uninverted_nice_value{ static_cast<std::uint8_t>( - ( nice_value - static_cast<std::int8_t>( priority::idle ) ) ) };
-    int          const priority_value       { detail::default_policy_priority_min + detail::round_divide( uninverted_nice_value * platform_range, api_range ) }; // surely it will be hoisted
+    int          const priority_value       { default_policy_priority_min + round_divide( uninverted_nice_value * platform_range, api_range ) }; // surely it will be hoisted
 #   if defined( __APPLE__ )
-    BOOST_ASSERT( !detail::default_policy_priority_unchangable );
+    BOOST_ASSERT( !default_policy_priority_unchangable );
     ::sched_param scheduling_parameters;
     int           policy;
-    auto const handle{ thread.native_handle() };
+    auto const handle{ get_id() };
     BOOST_VERIFY( pthread_getschedparam( handle, &policy, &scheduling_parameters ) == 0 );
     scheduling_parameters.sched_priority = priority_value;
     return pthread_setschedparam( handle, policy, &scheduling_parameters ) == 0;
 #   else
-    return !detail::default_policy_priority_unchangable && ( pthread_setschedprio( thread.get_id(), priority_value ) == 0 );
+    return !default_policy_priority_unchangable && ( pthread_setschedprio( get_id(), priority_value ) == 0 );
 #   endif // Apple or
 #endif // Android or
 }
@@ -115,7 +118,12 @@ bool thread_impl::bind_to_cpu( [[ maybe_unused ]] affinity_mask const mask ) noe
 BOOST_ATTRIBUTES( BOOST_COLD )
 bool thread_impl::bind_to_cpu( native_handle_type const handle, affinity_mask const mask ) noexcept
 {
+#ifdef __linux__
     return sched_setaffinity( handle, sizeof( mask.value_ ), &mask.value_ ) == 0;
+#else // TODO Mach
+    (void)handle; (void)mask;
+    return 0;
+#endif
 }
 
 int BOOST_NOTHROW_LITE thread_impl::create( thread_procedure const start_routine, void * const arg ) noexcept

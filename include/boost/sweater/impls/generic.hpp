@@ -23,9 +23,7 @@
 #include "../threading/barrier.hpp"
 #include "../threading/hardware_concurrency.hpp"
 #include "../threading/cpp/spin_lock.hpp"
-#if BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
 #include "../threading/semaphore.hpp"
-#endif
 #include "../threading/thread.hpp"
 
 #include <boost/core/no_exceptions_support.hpp>
@@ -454,9 +452,9 @@ private:
     thrd_lite::semaphore work_semaphore_;
 #endif // Android
 #else // BOOST_SWEATER_EXACT_WORKER_SELECTION
-    using worker_thread = thread;
+    using worker_thread = thrd_lite::thread;
 
-    semaphore work_semaphore_;
+    thrd_lite::semaphore work_semaphore_;
 #endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
 
     std::atomic<hardware_concurrency_t> work_items_ = 0;

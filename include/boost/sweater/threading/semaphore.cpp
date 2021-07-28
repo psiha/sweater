@@ -87,7 +87,7 @@ void semaphore::wait( std::uint32_t const spin_count ) noexcept // TODO: dedupli
         {
             if ( value_.compare_exchange_weak( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) )
                 return;
-            BOOST_ASSUME( value > 0 );
+            //BOOST_ASSUME( value > 0 ); ...mrmlj...windows...concurrency?
         }
         else
         {

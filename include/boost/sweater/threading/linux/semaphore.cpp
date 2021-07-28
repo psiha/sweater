@@ -121,7 +121,7 @@ void futex_semaphore::wait( std::uint32_t const spin_count ) noexcept
         {
             if ( BOOST_LIKELY( try_decrement( value ) ) )
                 return;
-            BOOST_ASSUME( value > state::locked );
+            //BOOST_ASSUME( value > state::locked ); ...mrmlj...failed on Meizu Pro 6...check...
         }
         else
         {

@@ -16,7 +16,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include <boost/config.hpp>
-#if defined( __linux__ )
+#if defined( __linux__ ) || defined( __EMSCRIPTEN__ )
 #include "linux/semaphore.hpp"
 #elif defined( BOOST_HAS_PTHREADS )
 #include "posix/semaphore.hpp"

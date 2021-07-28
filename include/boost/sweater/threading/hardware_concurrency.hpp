@@ -62,6 +62,9 @@ hardware_concurrency_t get_hardware_concurrency_max() noexcept;
 extern struct hardware_concurrency_max_t
 {
     hardware_concurrency_t const value{ get_hardware_concurrency_max() };
+#ifdef __GNUC__
+    __attribute__(( pure ))
+#endif // GCC&co.
     operator hardware_concurrency_t() const noexcept { return value; }
 } const hardware_concurrency_max;
 
@@ -71,7 +74,7 @@ extern struct slow_thread_signals_t
 {
     slow_thread_signals_t() noexcept;
     bool const value;
-    __attribute__(( const )) operator bool() const noexcept { return value; }
+    __attribute__(( pure )) operator bool() const noexcept { return value; }
 } const slow_thread_signals;
 #else
 bool constexpr slow_thread_signals{ false };

@@ -66,6 +66,7 @@ public:
 
     class affinity_mask
     {
+#ifdef __linux__
     public:
         affinity_mask() noexcept { CPU_ZERO( &value_ ); }
 
@@ -73,6 +74,7 @@ public:
 
     private: friend class thread_impl;
         cpu_set_t value_;
+#endif // __linux__
     }; // class affinity_mask
 
     void               join  ()       noexcept;
