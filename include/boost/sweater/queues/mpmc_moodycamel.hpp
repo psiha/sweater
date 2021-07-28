@@ -3,10 +3,10 @@
 /// \file mpmc_moodycamel.hpp
 /// -------------------------
 ///
-/// MoodyCamel based implementation of the queue backend for the generic sweater
-/// implementation.
+/// MoodyCamel based implementation of the queue backend for the generic
+/// sweater implementation.
 ///
-/// Copyright (c) Domagoj Saric 2017 - 2020.
+/// Copyright (c) Domagoj Saric 2017 - 2021.
 ///
 /// Use, modification and distribution is subject to the
 /// Boost Software License, Version 1.0.
@@ -90,7 +90,7 @@ public:
     consumer_token_t consumer_token() noexcept { return consumer_token_t( queue_ ); }
     producer_token_t producer_token() noexcept { return producer_token_t( queue_ ); }
 
-    auto empty() const noexcept { return queue_.size_approx() == 0; }
+    auto empty() const noexcept { return depth() == 0; }
     auto depth() const noexcept { return queue_.size_approx(); }
 
 private:

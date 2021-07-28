@@ -32,7 +32,7 @@
 #   include <fcntl.h>
 #   include <sys/types.h>
 #   include <unistd.h>
-#endif
+#endif // BOOST_SWEATER_DOCKER_LIMITS
 
 #ifdef _MSC_VER
 #   include <yvals.h>
@@ -148,8 +148,8 @@ hardware_concurrency_max_t const hardware_concurrency_max
 ;
 
 
-#ifdef __ANDROID__0
-slow_thread_signals_t::slow_thread_signals_t()
+#ifdef __ANDROID__
+slow_thread_signals_t::slow_thread_signals_t() noexcept
     : value{ android_get_device_api_level() < 24 } {} // pre Android 7 Noughat
 
 slow_thread_signals_t const slow_thread_signals __attribute__(( init_priority( 101 ) ));

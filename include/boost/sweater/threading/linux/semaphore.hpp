@@ -40,7 +40,7 @@ namespace thrd_lite
 class futex_semaphore
 {
 private:
-    enum state { locked = 0, contested = - 1 };
+    enum state { locked = 0, contested = -1 };
 
 public:
     futex_semaphore() noexcept = default;

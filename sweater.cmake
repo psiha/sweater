@@ -32,6 +32,7 @@ source_group( "Queues" FILES ${sources_queues} )
 list( APPEND sweater_sources ${sources_queues} )
 
 set( sources_threading
+    ${src_root}/threading/barrier.cpp
     ${src_root}/threading/barrier.hpp
     ${src_root}/threading/hardware_concurrency.cpp
     ${src_root}/threading/hardware_concurrency.hpp

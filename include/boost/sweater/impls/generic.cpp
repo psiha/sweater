@@ -44,11 +44,13 @@ namespace events
 #   define WEAK
 #endif
 
-    WEAK void caller_stalled           ( std::uint8_t /*current_boost*/                                                                    ) noexcept {}
+    WEAK void caller_stalled           ( std::uint8_t /*current_work_stealing_division*/                                                   ) noexcept {}
     WEAK void caller_join_begin        ( bool /*spinning*/                                                                                 ) noexcept {}
     WEAK void caller_join_end          (                                                                                                   ) noexcept {}
     WEAK void caller_work_begin        (                                          std::uint32_t /*iterations*/                             ) noexcept {}
     WEAK void caller_work_end          (                                                                                                   ) noexcept {}
+    WEAK void caller_stolen_work_begin (                                                                                                   ) noexcept {}
+    WEAK void caller_stolen_work_end   ( hardware_concurrency_t /*stolen_items*/                                                           ) noexcept {}
     WEAK void worker_enqueue_begin     ( hardware_concurrency_t /*worker_index*/, std::uint32_t /*begin_iter*/, std::uint32_t /*end_iter*/ ) noexcept {}
     WEAK void worker_enqueue_end       ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
     WEAK void worker_work_begin        ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
@@ -79,11 +81,6 @@ std::uint32_t shop::worker_spin_count{ 100 * 1000 };
 std::uint32_t shop::caller_spin_count{ 100 * 1000 };
 #endif // BOOST_SWEATER_USE_CALLER_THREAD
 #endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-
-#if BOOST_SWEATER_CALLER_BOOST
-std::uint8_t shop::caller_boost     = 0;
-std::uint8_t shop::caller_boost_max = 10;
-#endif // BOOST_SWEATER_CALLER_BOOST
 
 #if BOOST_SWEATER_USE_PARALLELIZATION_COST
 std::uint8_t shop::min_parallel_iter_boost = min_parallel_iter_boost_weight;
@@ -157,11 +154,11 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
 #           ifdef __linux__
             parent.pool_[ worker_index ].thread_id_ = ::gettid();
 #           endif // linux
-            auto       & __restrict producer_token{                                parent.pool_[ worker_index ].token_                          };
+            auto       & __restrict producer_token{                                   parent.pool_[ worker_index ].token_                          };
 #           ifdef __ANDROID__
             auto       & __restrict work_event    { !thrd_lite::slow_thread_signals ? parent.pool_[ worker_index ].event_ : parent.work_semaphore_ };
 #           else
-            auto       & __restrict work_event    {                                parent.pool_[ worker_index ].event_                          };
+            auto       & __restrict work_event    {                                   parent.pool_[ worker_index ].event_                          };
 #           endif // Android
 #       else // BOOST_SWEATER_EXACT_WORKER_SELECTION
             auto       & __restrict work_event    { parent.work_semaphore_ };
@@ -200,7 +197,11 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
                 if ( BOOST_UNLIKELY( exit.load( std::memory_order_relaxed ) ) )
                     return;
                 events::worker_sleep_begin( worker_index );
+#           if BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
+                work_event.wait( worker_spin_count );
+#           else
                 work_event.wait();
+#           endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
                 events::worker_sleep_end  ( worker_index );
             }
         }
@@ -225,6 +226,8 @@ auto shop::number_of_worker_threads() const noexcept
 }
 
 shop::shop()
+    :
+    consumer_token_{ queue_.consumer_token() }
 {
 #ifdef __GNUC__ // compilers with init_priority attribute (see hardware_concurency.hpp)
     auto const local_hardware_concurrency( thrd_lite::hardware_concurrency_max );
@@ -236,14 +239,14 @@ shop::shop()
     ///                                   (01.05.2017.) (Domagoj Saric)
     auto const local_hardware_concurrency( thrd_lite::get_hardware_concurrency_max() );
 #endif // __GNUC__
-    create_pool( local_hardware_concurrency - ( BOOST_SWEATER_USE_CALLER_THREAD && !thrd_lite::slow_thread_signals ) );
+    create_pool( local_hardware_concurrency - BOOST_SWEATER_USE_CALLER_THREAD );
 }
 
 shop::~shop() noexcept { stop_and_destroy_pool(); }
 
 hardware_concurrency_t shop::number_of_workers() const noexcept
 {
-    auto const actual_number_of_workers{ number_of_worker_threads() + ( BOOST_SWEATER_USE_CALLER_THREAD && !thrd_lite::slow_thread_signals ) };
+    auto const actual_number_of_workers{ number_of_worker_threads() + BOOST_SWEATER_USE_CALLER_THREAD };
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     BOOST_ASSUME( actual_number_of_workers <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #endif
@@ -358,7 +361,7 @@ void shop::set_max_allowed_threads( hardware_concurrency_t const max_threads )
     BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue."    );
     BOOST_ASSERT_MSG( !hmp          , "Cannot change number of workers directly when HMP is enabled" );
     stop_and_destroy_pool();
-    create_pool( max_threads - ( BOOST_SWEATER_USE_CALLER_THREAD && !thrd_lite::slow_thread_signals ) );
+    create_pool( max_threads - BOOST_SWEATER_USE_CALLER_THREAD );
     BOOST_ASSERT( number_of_workers() == max_threads );
 }
 
@@ -367,7 +370,7 @@ hardware_concurrency_t shop::number_of_items() const noexcept
 #if 0
     return queue_.depth();
 #else
-    return work_items_.load( std::memory_order_seq_cst );
+    return work_items_.load( std::memory_order_acquire );
 #endif
 }
 
@@ -412,7 +415,7 @@ void shop::configure_hmp( hmp_clusters_info const config, std::uint8_t const num
 
     hmp = !thrd_lite::slow_thread_signals;
 
-    create_pool( number_of_cores - ( BOOST_SWEATER_USE_CALLER_THREAD && !thrd_lite::slow_thread_signals ) );
+    create_pool( number_of_cores - BOOST_SWEATER_USE_CALLER_THREAD );
 }
 #endif // BOOST_SWEATER_HMP
 
@@ -443,9 +446,6 @@ void shop::create_pool( hardware_concurrency_t const size )
 #if !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     p_workers.release();
 #endif // !BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-#if BOOST_SWEATER_CALLER_BOOST
-    caller_boost = 0;
-#endif // BOOST_SWEATER_CALLER_BOOST
     std::atomic_thread_fence( std::memory_order_seq_cst );
 }
 
@@ -486,42 +486,80 @@ void shop::perform_caller_work
     events::caller_work_end();
 }
 
+// Inter-spread work stealing (as another dynamic way of handling heterogenous
+// CPU configurations, unbalanced loads by other/background processes,
+// inconsistent/slow/unpredictable behaviour of OS thread signaling and
+// managment primitevs) is implemented by splitting/dividing per-core work
+// chunks/items or, IOW, producing more smaller/shorter work items.
+// This incurrs an overhead (produces more queue traffic) which is negligible
+// compared to practical runtime speedups and it (the queue based approach) is
+// required for a dispatcher which supports concurrent and recursive dispatches.
+std::uint8_t shop::spread_work_stealing_division    {  4 };
+std::uint8_t const spread_work_stealing_division_max{ 16 }; // has to be limited (among other reasons) not to overflow hardware_concurrency_t
+
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
 auto shop::dispatch_workers
 (
     hardware_concurrency_t               worker_index,
     iterations_t                         iteration,
     hardware_concurrency_t         const max_parts,
-    iterations_t                   const per_part_iterations,
+    iterations_t                   const iterations_per_part,
     iterations_t                   const parts_with_extra_iteration,
-    iterations_t                   const iterations, // total/max for the whole spread (not necessary all for this call)
+    iterations_t                   const iterations, // total/max for the whole spread (not necessarily all for this call)
     thrd_lite::barrier           &       completion_barrier,
     spread_work_template_t const &       work_part_template
 ) noexcept
 {
-    for ( hardware_concurrency_t work_part{ 0 }; work_part < max_parts && iteration != iterations; ++work_part )
+    BOOST_ASSUME( spread_work_stealing_division <= spread_work_stealing_division_max );
+    auto const slice_div
+    {
+        static_cast<std::uint8_t>
+        (
+            std::min<iterations_t>( spread_work_stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
+        )
+    };
+#ifdef BOOST_MSVC
+    auto const slices{ static_cast<work_t *>( alloca( slice_div * sizeof( work_t ) ) ) };
+#else
+    alignas( work_t ) char slices_storage[ slice_div * sizeof( work_t ) ];
+    auto const slices{ reinterpret_cast<work_t *>( slices_storage ) };
+#endif // BOOST_MSVC
+
+    for ( auto work_part{ 0U }; work_part < max_parts && iteration != iterations; ++work_part )
     {
         auto const start_iteration{ iteration };
         auto const extra_iteration{ work_part < parts_with_extra_iteration };
-        auto const end_iteration  { static_cast<iterations_t>( start_iteration + per_part_iterations + extra_iteration ) };
+        auto const   end_iteration{ static_cast<iterations_t>( start_iteration + iterations_per_part + extra_iteration ) };
         events::worker_enqueue_begin( worker_index, start_iteration, end_iteration );
-        BOOST_ASSERT( work_part_template.target_as<spread_work_base>().p_completion_barrier == &completion_barrier );
-        work_t work_chunk{ work_part_template };
-        auto & chunk_setup{ work_chunk.target_as<spread_work_base>() };
-        chunk_setup.start_iteration = start_iteration;
-        chunk_setup.  end_iteration =   end_iteration;
-        BOOST_ASSERT( chunk_setup.p_completion_barrier == &completion_barrier );
-        BOOST_ASSERT( chunk_setup.start_iteration < chunk_setup.end_iteration );
-        // Have to do incremental/'dynamic' 'number of work parts' counting
-        // as the rounding and load balancing logic can produce a smaller
-        // number than the simple number_of_work_parts calculation in the
-        // non-HMP case.
-        completion_barrier.add_expected_arrival();
-        work_added();
-        BOOST_VERIFY( pool_[ worker_index ].enqueue( std::move( work_chunk ), queue_ ) ); //...mrmlj...todo err handling
+        auto const slice_iter            { ( iterations_per_part + extra_iteration ) / slice_div };
+        auto       first_slice_extra_iter{ ( iterations_per_part + extra_iteration ) % slice_div };
+        hardware_concurrency_t number_of_slices{ 0 };
+        for ( auto iter{ start_iteration }; iter < end_iteration; )
+        {
+            BOOST_ASSUME( number_of_slices < slice_div );
+            auto & work_chunk { *new ( &slices[ number_of_slices++ ] ) work_t{ work_part_template } };
+            auto & chunk_setup{ work_chunk.target_as<spread_work_base>() };
+            chunk_setup.start_iteration = iter;
+            chunk_setup.  end_iteration = iter + first_slice_extra_iter + slice_iter;
+            BOOST_ASSERT( chunk_setup.p_completion_barrier == &completion_barrier );
+            BOOST_ASSERT( chunk_setup.start_iteration < chunk_setup.end_iteration );
+            first_slice_extra_iter = 0;
+            iter                   = chunk_setup.end_iteration;
+            // Have to do incremental/'dynamic' 'number of work parts' counting
+            // as the rounding and load balancing logic can produce a smaller
+            // number than the simple number_of_work_parts calculation in the
+            // non-HMP case.
+            completion_barrier.add_expected_arrival();
+            work_added();
+        }
+        BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_ ) ); //...mrmlj...todo err handling
         iteration = end_iteration;
         events::worker_enqueue_end( worker_index );
         ++worker_index;
+        for ( auto slice{ 0 }; slice < number_of_slices; ++slice )
+        {
+            slices[ slice ].~work_t();
+        }
     }
 
     return std::make_pair( worker_index, iteration );
@@ -588,10 +626,17 @@ bool BOOST_CC_REG shop::spread_work
     auto const actual_number_of_workers{ number_of_workers() };
     auto const free_workers            { std::max<int>( 0, actual_number_of_workers - items_in_shop ) };
     auto const max_work_parts          { free_workers ? free_workers : number_of_worker_threads() }; // prefer using any available worker - otherwise queue and wait
-    auto const use_caller_thread       { BOOST_SWEATER_USE_CALLER_THREAD && free_workers && ( !thrd_lite::slow_thread_signals || ( thrd_lite::slow_thread_signals && ( iterations <= parallelizable_iterations_count ) ) ) };
+    auto const queue_and_wait          { !free_workers };
+    auto const use_caller_thread
+    {
+        BOOST_SWEATER_USE_CALLER_THREAD &&
+        !queue_and_wait                 &&
+        // On slow_thread_signals devices use the caller thread for signaling the workers and then stealing work if time remains.
+        ( !thrd_lite::slow_thread_signals || ( thrd_lite::slow_thread_signals && ( iterations <= parallelizable_iterations_count ) ) )
+    };
 
 #if BOOST_SWEATER_USE_CALLER_THREAD
-    completion_barrier.use_spin_wait( use_caller_thread );
+    completion_barrier.use_spin_wait( !queue_and_wait );
 #endif // BOOST_SWEATER_USE_CALLER_THREAD
 
     hardware_concurrency_t dispatched_parts;
@@ -607,6 +652,11 @@ bool BOOST_CC_REG shop::spread_work
         BOOST_ASSERT_MSG( hmp_clusters.number_of_clusters, "HMP not configured" );
         BOOST_ASSUME( hmp_clusters.number_of_clusters <= hmp_clusters.max_clusters );
         BOOST_ASSUME( !thrd_lite::slow_thread_signals );
+
+        // Leftovers of the original (pre-work-stealing/pre-July 2021) HMP
+        // logic which 'cooperate good enough' with the work-stealing logic
+        // performed in/by dispatch_workers(). TODO: revisit this for a new
+        // approach tailored around work-stealing.
 
         std::uint8_t number_used_of_clusters{ 0 };
         iterations_t hmp_distributions[ hmp_clusters.max_clusters ];
@@ -652,11 +702,7 @@ bool BOOST_CC_REG shop::spread_work
         hardware_concurrency_t worker                     { 0 };
         for ( auto cluster{ 0 }; cluster < number_used_of_clusters; ++cluster )
         {
-#       if BOOST_SWEATER_CALLER_BOOST
-            auto const cluster_iterations        { std::min<iterations_t>( hmp_distributions[ cluster ], iterations - iteration ) }; // guard in case caller_boost is in effect
-#       else
-            auto const cluster_iterations        { hmp_distributions[ cluster ] };
-#       endif
+            auto const cluster_iterations        { hmp_distributions [ cluster ]      };
             auto       cluster_cores             { hmp_clusters.cores[ cluster ]      };
             auto       per_core_iterations       { cluster_iterations / cluster_cores };
             auto       parts_with_extra_iteration{ cluster_iterations % cluster_cores };
@@ -666,33 +712,14 @@ bool BOOST_CC_REG shop::spread_work
                 BOOST_ASSUME( iteration == 0 );
                 auto const extra_iteration{ parts_with_extra_iteration != 0 };
                 caller_thread_end_iteration  = per_core_iterations + extra_iteration;
-#           if BOOST_SWEATER_CALLER_BOOST
-                caller_thread_end_iteration += caller_thread_end_iteration * caller_boost / caller_boost_weight;
-                caller_thread_end_iteration  = std::min( caller_thread_end_iteration, cluster_iterations );
-#           endif // BOOST_SWEATER_CALLER_BOOST
                 iteration = caller_thread_end_iteration;
                 --cluster_cores;
-
-#           if BOOST_SWEATER_CALLER_BOOST
-                // caller boost readjustment
-                if ( cluster_cores ) // e.g. phones with one 'turbo-core'
-                {
-                    auto const dispatched_iterations{ cluster_iterations - caller_thread_end_iteration };
-                    per_core_iterations        = dispatched_iterations / cluster_cores;
-                    parts_with_extra_iteration = dispatched_iterations % cluster_cores;
-                }
-                else
-                {
-                    BOOST_ASSUME( caller_thread_end_iteration == cluster_iterations );
-                }
-#           else
                 parts_with_extra_iteration -= extra_iteration;
-#           endif // BOOST_SWEATER_CALLER_BOOST
             }
 
             std::tie( worker, iteration ) = dispatch_workers( worker, iteration, cluster_cores, per_core_iterations, parts_with_extra_iteration, iterations, completion_barrier, work_part_template );
         }
-        enqueue_succeeded = true;
+        enqueue_succeeded = true; //...mrmlj...
 
         if ( BOOST_LIKELY( use_caller_thread ) ) [[ likely ]]
         {
@@ -701,7 +728,7 @@ bool BOOST_CC_REG shop::spread_work
 
         dispatched_parts = worker;
     }
-    else
+    else // !HMP || items_in_shop
 #endif // BOOST_SWEATER_HMP
     {
         auto parallelizable_parts           { std::max<iterations_t>( 1, iterations / parallelizable_iterations_count ) };
@@ -712,7 +739,7 @@ bool BOOST_CC_REG shop::spread_work
         auto parts_with_extra_iteration{ iterations % number_of_work_parts };
 
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( number_of_dispatched_work_parts <= ( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - ( BOOST_SWEATER_USE_CALLER_THREAD && !thrd_lite::slow_thread_signals ) ) );
+        BOOST_ASSUME( number_of_dispatched_work_parts <= ( BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY - BOOST_SWEATER_USE_CALLER_THREAD ) );
 #   endif // BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 
         iterations_t iteration{ 0 };
@@ -721,32 +748,8 @@ bool BOOST_CC_REG shop::spread_work
         {
             auto const extra_iteration{ parts_with_extra_iteration != 0 };
             caller_thread_end_iteration  = iterations_per_part + extra_iteration;
-#       if BOOST_SWEATER_CALLER_BOOST
-            caller_thread_end_iteration += caller_thread_end_iteration * caller_boost / caller_boost_weight;
-            caller_thread_end_iteration  = std::min( caller_thread_end_iteration, iterations );
-#       endif // BOOST_SWEATER_CALLER_BOOST
             iteration                    = caller_thread_end_iteration;
-
-#       if BOOST_SWEATER_CALLER_BOOST
-            BOOST_ASSUME( free_workers ); // otherwise use_caller_thread would be false
-            if ( number_of_dispatched_work_parts )
-            {
-                auto const dispatched_iterations{ iterations - iteration };
-
-                parallelizable_parts            = std::max<hardware_concurrency_t>( 1, dispatched_iterations / parallelizable_iterations_count );
-                number_of_work_parts            = static_cast<hardware_concurrency_t>( std::min<iterations_t>( parallelizable_parts, free_workers - use_caller_thread ) );
-                number_of_dispatched_work_parts = number_of_work_parts;
-
-                iterations_per_part        = dispatched_iterations / number_of_dispatched_work_parts;
-                parts_with_extra_iteration = dispatched_iterations % number_of_dispatched_work_parts;
-            }
-            else
-            {
-                BOOST_ASSUME( iteration == iterations );
-            }
-#       else
-            parts_with_extra_iteration -= extra_iteration;
-#       endif // BOOST_SWEATER_CALLER_BOOST
+            parts_with_extra_iteration  -= extra_iteration;
         }
 
 #   if BOOST_SWEATER_EXACT_WORKER_SELECTION
@@ -761,6 +764,21 @@ bool BOOST_CC_REG shop::spread_work
         else
 #   endif
         { // Also serves as a slow_thread_signals fallback and items_in_shop 'handler'.
+            // Slice up the parts for work stealing
+            BOOST_ASSUME( spread_work_stealing_division <= spread_work_stealing_division_max );
+            BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
+            auto const slice_div
+            {
+                static_cast<std::uint8_t>
+                (
+                    std::min<iterations_t>( spread_work_stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
+                )
+            };
+            parts_with_extra_iteration      += ( iterations_per_part % slice_div ) * number_of_dispatched_work_parts;
+            iterations_per_part             /= slice_div;
+            number_of_dispatched_work_parts *= slice_div;
+            BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
+
             events::worker_bulk_enqueue_begin( number_of_dispatched_work_parts );
             /// \note MSVC does not support VLAs but has an alloca that returns (16
             /// byte) aligned memory. Clang's alloca is unaligned and it does not
@@ -776,7 +794,7 @@ bool BOOST_CC_REG shop::spread_work
             auto const dispatched_work_parts{ static_cast<work_t *>( alloca( number_of_dispatched_work_parts * sizeof( work_t ) ) ) };
 #       else
             alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
-            auto * const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) };
+            auto const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) };
 #       endif // BOOST_MSVC
 
             for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
@@ -789,12 +807,12 @@ bool BOOST_CC_REG shop::spread_work
                 auto & chunk_setup{ work_chunk.target_as<spread_work_base>() };
                 chunk_setup.start_iteration = start_iteration;
                 chunk_setup.  end_iteration =   end_iteration;
-                BOOST_ASSERT( chunk_setup.start_iteration < chunk_setup.end_iteration );
+                BOOST_ASSUME( chunk_setup.start_iteration < chunk_setup.end_iteration );
                 iteration = end_iteration;
             }
             BOOST_ASSUME( iteration == iterations );
 
-            work_items_.fetch_add( number_of_dispatched_work_parts, std::memory_order_acquire );
+            work_added( number_of_dispatched_work_parts );
             // Has to be initialized before enqueuing (to support spinning waits in workers -
             // where trivial work would get dequeued and executed (and 'arrived at') before
             // this thread could enter the if ( enqueue_succeeded ) block and initialize the
@@ -836,26 +854,61 @@ bool BOOST_CC_REG shop::spread_work
         dispatched_parts = number_of_dispatched_work_parts;
     } // !HMP
 
-    events::caller_join_begin( use_caller_thread );
-#if BOOST_SWEATER_USE_CALLER_THREAD
-    if ( use_caller_thread )
+    // Caller work stealing
+    if ( !queue_and_wait && !queue_.empty() )
     {
-        completion_barrier.spin_wait
-        (
-#       if BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-            caller_spin_count
-#       endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-#       if BOOST_SWEATER_CALLER_BOOST
-            , caller_boost, caller_boost_max
-#       endif // BOOST_SWEATER_CALLER_BOOST
-        );
+        events::caller_stolen_work_begin();
+        work_t work;
+        hardware_concurrency_t stolen_items{ 0 };
+        while ( true )
+        {
+            {
+                // Support concurrent spreads (tokens aren't thread-safe).
+                std::scoped_lock<thrd_lite::spin_lock> const token_lock{ consumer_token_mutex_ };
+                if ( !queue_.dequeue( work, consumer_token_ ) )
+                    break;
+            }
+            work();
+            work_completed();
+            ++stolen_items;
+        }
+        events::caller_stolen_work_end( stolen_items );
+    }
+
+#if BOOST_SWEATER_USE_CALLER_THREAD
+    if ( !queue_and_wait )
+    {
+        if ( completion_barrier.everyone_arrived() )
+        {
+            spread_work_stealing_division = std::max<std::uint8_t>( 1, spread_work_stealing_division - 1 );
+        }
+        else
+        {
+            events::caller_join_begin( use_caller_thread );
+            auto const stalled
+            {
+                completion_barrier.spin_wait
+                (
+#               if BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
+                    caller_spin_count
+#               endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
+                )
+            };
+            events::caller_join_end();
+            if ( stalled )
+            {
+                events::caller_stalled( spread_work_stealing_division );
+                spread_work_stealing_division = std::min<std::uint8_t>( spread_work_stealing_division + 1, spread_work_stealing_division_max );
+            }
+        }
     }
     else
 #endif // BOOST_SWEATER_USE_CALLER_THREAD
     {
+        events::caller_join_begin( use_caller_thread );
         completion_barrier.wait();
+        events::caller_join_end();
     }
-    events::caller_join_end();
 
     events::spread_end( dispatched_parts, use_caller_thread );
     return enqueue_succeeded;
@@ -881,19 +934,31 @@ void shop::wake_all_workers() noexcept
     }
 }
 
-void shop::work_added    () noexcept { BOOST_VERIFY( work_items_.fetch_add( 1, std::memory_order_acquire ) <  std::numeric_limits<hardware_concurrency_t>::max() ); }
-void shop::work_completed() noexcept { BOOST_VERIFY( work_items_.fetch_sub( 1, std::memory_order_release ) >= 0                                                  ); } // equal allowed because of late fetch_add in fire_and_forget
+void shop::work_added    ( hardware_concurrency_t const items ) noexcept { thrd_lite::detail:: overflow_checked_add( work_items_, items ); }
+void shop::work_completed(                                    ) noexcept { thrd_lite::detail::underflow_checked_dec( work_items_        ); } // TODO: may harmlessly fail check because of late fetch_add in fire_and_forget
 
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
 void shop::worker_thread::notify() noexcept { event_.signal(); }
 
-bool shop::worker_thread::enqueue( work_t && work, my_queue & queue ) noexcept
+bool shop::worker_thread::enqueue( work_t && __restrict work, my_queue & __restrict queue ) noexcept
 {
     BOOST_ASSUME( !thrd_lite::slow_thread_signals );
     bool success;
     {
         std::scoped_lock<thrd_lite::spin_lock> const token_lock{ token_mutex_ };
         success = queue.enqueue( std::move( work ), *token_ );
+    }
+    notify();
+    return success;
+}
+
+bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, hardware_concurrency_t const number_of_items, my_queue & __restrict queue ) noexcept
+{
+    BOOST_ASSUME( !thrd_lite::slow_thread_signals );
+    bool success;
+    {
+        std::scoped_lock<thrd_lite::spin_lock> const token_lock{ token_mutex_ };
+        success = queue.enqueue_bulk( *token_, p_work, number_of_items );
     }
     notify();
     return success;

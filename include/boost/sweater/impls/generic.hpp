@@ -26,6 +26,7 @@
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
 #include "../threading/semaphore.hpp"
 #endif
+#include "../threading/thread.hpp"
 
 #include <boost/core/no_exceptions_support.hpp>
 #include <boost/config_ex.hpp>
@@ -109,14 +110,7 @@ public:
 #endif // BOOST_SWEATER_USE_CALLER_THREAD
 #endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
 
-#if BOOST_SWEATER_CALLER_BOOST
-    static std::uint8_t caller_boost    ;
-    static std::uint8_t caller_boost_max;
-#else
-    static auto constexpr caller_boost     = 0;
-    static auto constexpr caller_boost_max = 0;
-#endif // BOOST_SWEATER_CALLER_BOOST
-    static auto constexpr caller_boost_weight = 128;
+    static std::uint8_t spread_work_stealing_division;
 
     static auto constexpr min_parallel_iter_boost_weight = 64;
 #if BOOST_SWEATER_USE_PARALLELIZATION_COST
@@ -424,14 +418,15 @@ private:
 #       endif
             }
         }
-        this->work_items_.fetch_add( enqueue_succeeded, std::memory_order_acquire );
+
+        this->work_added( enqueue_succeeded );
         return BOOST_LIKELY( enqueue_succeeded );
     }
 
     void wake_all_workers() noexcept;
 
-    void work_added    () noexcept;
-    void work_completed() noexcept;
+    void work_added    ( hardware_concurrency_t items = 1 ) noexcept;
+    void work_completed(                                  ) noexcept;
 
 private:
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
@@ -441,7 +436,8 @@ private:
 
         void notify() noexcept;
 
-        bool enqueue( work_t &&, my_queue & ) noexcept;
+        bool enqueue(                     work_t &&                                         , my_queue & ) noexcept;
+        bool enqueue( std::move_iterator< work_t * >, hardware_concurrency_t number_of_items, my_queue & ) noexcept;
 
         thrd_lite::semaphore                      event_;
         thrd_lite::spin_lock                      token_mutex_; // producer tokens are not thread safe (support concurrent spread_the_sweat calls)
@@ -479,6 +475,10 @@ private:
     /// https://github.com/Qarterd/Honeycomb/blob/master/src/common/Honey/Thread/Pool.cpp
     ///                                       (12.10.2016.) (Domagoj Saric)
     my_queue queue_;
+
+    // Caller work-stealing 'explicit' token (still a question whether worth it).
+    thrd_lite::spin_lock       consumer_token_mutex_;
+    my_queue::consumer_token_t consumer_token_;
 
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
 #   ifdef __ANDROID__

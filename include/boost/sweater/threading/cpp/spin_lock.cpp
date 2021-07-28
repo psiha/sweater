@@ -15,7 +15,10 @@
 //------------------------------------------------------------------------------
 #include "spin_lock.hpp"
 
+#include <boost/assert.hpp>
 #include <boost/config_ex.hpp>
+
+#include <limits>
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -24,8 +27,26 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
+namespace detail
+{
+    void overflow_checked_add( std::atomic<hardware_concurrency_t> & object, hardware_concurrency_t const value ) noexcept
+    {
+        BOOST_VERIFY( object.fetch_add( value, std::memory_order_acquire ) < std::numeric_limits<hardware_concurrency_t>::max() );
+    }
+
+    void overflow_checked_inc( std::atomic<hardware_concurrency_t> & object ) noexcept
+    {
+        overflow_checked_add( object, 1 );
+    }
+
+    void underflow_checked_dec( std::atomic<hardware_concurrency_t> & object ) noexcept
+    {
+        BOOST_VERIFY( object.fetch_sub( 1, std::memory_order_release ) >/*=*/ 0 );
+    }
+} // detail
+
 BOOST_ATTRIBUTES( BOOST_COLD )
-void nop() noexcept // lightweight spin nop
+void nop() noexcept // 'minimally-hot' spin nop
 {
     // TODO http://open-std.org/JTC1/SC22/WG21/docs/papers/2016/p0514r0.pdf
 #if   defined( __i386__ ) || defined( __x86_64__ )

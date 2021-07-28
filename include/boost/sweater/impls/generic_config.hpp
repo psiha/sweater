@@ -29,7 +29,7 @@
 // https://www.sisoftware.co.uk/2015/06/22/arm-big-little-the-trouble-with-heterogeneous-multi-processing-when-4-are-better-than-8-or-when-8-is-not-always-the-lucky-number
 // https://lwn.net/Articles/352286
 #if defined( __aarch64__ )
-#   define BOOST_SWEATER_HMP false
+#   define BOOST_SWEATER_HMP true
 #else
 #   define BOOST_SWEATER_HMP false
 #endif
@@ -51,14 +51,6 @@
 #   define BOOST_SWEATER_SPIN_BEFORE_SUSPENSION false
 #endif // Android
 #endif // BOOST_SWEATER_SPIN_BEFORE_SUSPENSION
-
-// Basic auto-tuning mechanism for caller-thread usage: account for overheads/
-// delays of worker-wakeup - give more more work to the caller to do to avoid
-// it wasting time waiting for workers to finish/join (requires
-// BOOST_SWEATER_USE_CALLER_THREAD).
-#ifndef BOOST_SWEATER_CALLER_BOOST
-#   define BOOST_SWEATER_CALLER_BOOST BOOST_SWEATER_HMP
-#endif // BOOST_SWEATER_CALLER_BOOST
 
 #ifndef BOOST_SWEATER_EVENTS
 #if defined( __GNUC__ )

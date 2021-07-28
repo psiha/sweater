@@ -77,25 +77,25 @@ void semaphore::signal( hardware_concurrency_t const count ) noexcept
 #endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
 }
 
-void semaphore::wait( std::uint32_t const spin_count ) noexcept
+void semaphore::wait( std::uint32_t const spin_count ) noexcept // TODO: deduplicate generic spinning code
 {
     // waiting for atomic_ref
-    auto value{ value_.load( std::memory_order_relaxed ) };
+    auto value{ value_.load( std::memory_order_acquire ) };
     for ( auto spin_try{ 0U }; spin_try < spin_count; ++spin_try )
     {
         if ( value > 0 )
         {
             if ( value_.compare_exchange_weak( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) )
                 return;
+            BOOST_ASSUME( value > 0 );
         }
         else
         {
             nops( 8 );
-            value = value_.load( std::memory_order_relaxed );
+            value = value_.load( std::memory_order_acquire );
         }
 
     }
-    BOOST_ASSUME( value <= 0 );
 
     wait();
 }

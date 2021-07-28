@@ -86,31 +86,33 @@ void futex_semaphore::wait() noexcept
                 return;
         }
 
-        waiters_.fetch_add( 1, std::memory_order_acquire );
+        detail::overflow_checked_inc( waiters_ );
         value = state::locked; try_decrement( value );
         futex( &value_, FUTEX_WAIT, state::contested );
-        waiters_.fetch_sub( 1, std::memory_order_release );
+        detail::underflow_checked_dec( waiters_ );
     }
 }
 
 void futex_semaphore::wait( std::uint32_t const spin_count ) noexcept
 {
     // waiting for atomic_ref
-    auto value{ value_.load( std::memory_order_relaxed ) };
-    for ( auto spin_try{ 0U }; spin_try < spin_count; ++spin_try )
+    auto value{ value_.load( std::memory_order_acquire ) };
+    for ( auto spin_try{ 0U }; spin_try < spin_count; )
     {
         if ( value > state::locked )
         {
-            if ( try_decrement( value ) )
+            if ( BOOST_LIKELY( try_decrement( value ) ) )
                 return;
+            BOOST_ASSUME( value > state::locked );
         }
         else
         {
             nops( 8 );
-            value = value_.load( std::memory_order_relaxed );
+            value = value_.load( std::memory_order_acquire );
+            ++spin_try;
         }
     }
-    BOOST_ASSUME( value <= state::locked );
+    // value could be > locked here (in case the change happened on the last try)
 
     wait();
 }

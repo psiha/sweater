@@ -66,7 +66,7 @@ extern struct hardware_concurrency_max_t
 } const hardware_concurrency_max;
 
 
-#ifdef __ANDROID__0
+#ifdef __ANDROID__
 extern struct slow_thread_signals_t
 {
     slow_thread_signals_t() noexcept;

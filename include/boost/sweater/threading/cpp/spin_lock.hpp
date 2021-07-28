@@ -15,6 +15,8 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include "../hardware_concurrency.hpp"
+
 #include <atomic>
 //------------------------------------------------------------------------------
 namespace boost
@@ -23,6 +25,13 @@ namespace boost
 namespace thrd_lite
 {
 //------------------------------------------------------------------------------
+
+namespace detail
+{
+    void  overflow_checked_add( std::atomic<hardware_concurrency_t> &, hardware_concurrency_t value ) noexcept;
+    void  overflow_checked_inc( std::atomic<hardware_concurrency_t> &                               ) noexcept;
+    void underflow_checked_dec( std::atomic<hardware_concurrency_t> &                               ) noexcept;
+} // namespace detail
 
 void nop() noexcept;
 void nops( std::uint8_t count ) noexcept;
