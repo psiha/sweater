@@ -92,7 +92,12 @@ namespace
         return -1;
     }
 
-    auto const docker_quota{ get_docker_limit() };
+    struct docker_quota_t // TODO extract a generalized 'prioritized value wrapper' template
+    {
+        docker_quota_t() noexcept : value{ get_docker_limit() } {}
+        int const value;
+        __attribute__(( pure )) operator int() const noexcept { return value; }
+    } const docker_quota __attribute__(( init_priority( 101 ) ));
 } // anonymous namespace
 
 hardware_concurrency_t get_hardware_concurrency_max() noexcept
