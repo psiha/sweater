@@ -127,7 +127,7 @@ hardware_concurrency_t hardware_concurrency_current() noexcept
     return static_cast<hardware_concurrency_t>
     (
 #   if defined( __EMSCRIPTEN_PTHREADS__ )
-        detail::get_hardware_concurrency_max()
+        get_hardware_concurrency_max()
 #   elif defined( __linux__ )
         get_nprocs()
 #   else
