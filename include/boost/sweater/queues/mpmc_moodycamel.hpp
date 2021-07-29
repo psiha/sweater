@@ -64,6 +64,13 @@ private:
 	    static constexpr size_t EXPLICIT_INITIAL_INDEX_SIZE = 4;
 	    static constexpr size_t IMPLICIT_INITIAL_INDEX_SIZE = 4;
 
+        static constexpr size_t INITIAL_IMPLICIT_PRODUCER_HASH_SIZE = 16;
+
+        static constexpr size_t EXPLICIT_CONSUMER_CONSUMPTION_QUOTA_BEFORE_ROTATE = 128;
+#   if !defined( __linux__ ) || defined( __ANDROID__ ) // leave the huge default for servers
+        static constexpr size_t MAX_SUBQUEUE_SIZE = 4096;
+#   endif
+
 #   ifndef BOOST_SWEATER_AUX_ALIGNED_MALLOC
         static void * malloc( std::size_t   const size ) noexcept { return boost::alignment::aligned_alloc( 16, size ); }
         static void   free  ( void        * const ptr  ) noexcept { return boost::alignment::aligned_free ( ptr      ); }

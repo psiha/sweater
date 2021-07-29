@@ -770,20 +770,25 @@ bool BOOST_CC_REG shop::spread_work
         else
 #   endif
         { // Also serves as a slow_thread_signals fallback and items_in_shop 'handler'.
-            // Slice up the parts for work stealing
-            BOOST_ASSUME( spread_work_stealing_division <= spread_work_stealing_division_max );
-            BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
-            auto const slice_div
+            if ( !items_in_shop )
             {
-                static_cast<std::uint8_t>
-                (
-                    std::min<iterations_t>( spread_work_stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
-                )
-            };
-            parts_with_extra_iteration      += ( iterations_per_part % slice_div ) * number_of_dispatched_work_parts;
-            iterations_per_part             /= slice_div;
-            number_of_dispatched_work_parts *= slice_div;
-            BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
+                // Slice up the parts for work stealing (unless there are other
+                // active spreads - there's work to steal so don't create
+                // unnecessary queue traffic).
+                BOOST_ASSUME( spread_work_stealing_division <= spread_work_stealing_division_max );
+                BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
+                auto const slice_div
+                {
+                    static_cast<std::uint8_t>
+                    (
+                        std::min<iterations_t>( spread_work_stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
+                    )
+                };
+                parts_with_extra_iteration      += ( iterations_per_part % slice_div ) * number_of_dispatched_work_parts;
+                iterations_per_part             /= slice_div;
+                number_of_dispatched_work_parts *= slice_div;
+                BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
+            }
 
             events::worker_bulk_enqueue_begin( number_of_dispatched_work_parts );
             /// \note MSVC does not support VLAs but has an alloca that returns (16
@@ -940,13 +945,9 @@ void shop::wake_all_workers() noexcept
     }
 }
 
-void shop::work_added    ( hardware_concurrency_t const items ) noexcept { thrd_lite::detail:: overflow_checked_add( work_items_, items ); }
-void shop::work_completed(                                    ) noexcept
-{
-    //thrd_lite::detail::underflow_checked_dec( work_items_ );
-    //...mrmlj...allowing equal to 0 (underflow) because of late fetch_add in fire_and_forget and concurrent invocation races(?)
-    BOOST_VERIFY( work_items_.fetch_sub( 1, std::memory_order_release ) >= 0 );
-}
+//...mrmlj...allowing equal to 0/max (underflow/overflow) because of late fetch_add in fire_and_forget and concurrent invocation races(?)
+void shop::work_added    ( hardware_concurrency_t const items ) noexcept { /*thrd_lite::detail:: overflow_checked_add( work_items_, items );*/ BOOST_VERIFY( work_items_.fetch_add( items, std::memory_order_acquire ) <= std::numeric_limits<hardware_concurrency_t>::max() ); }
+void shop::work_completed(                                    ) noexcept { /*thrd_lite::detail::underflow_checked_dec( work_items_        );*/ BOOST_VERIFY( work_items_.fetch_sub( 1    , std::memory_order_release ) >= 0                                                  ); }
 
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
 void shop::worker_thread::notify() noexcept { event_.signal(); }
