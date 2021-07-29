@@ -558,6 +558,7 @@ auto shop::dispatch_workers
             completion_barrier.add_expected_arrival();
             work_added();
         }
+        BOOST_ASSERT( number_of_slices );
         BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_ ) ); //...mrmlj...todo err handling
         iteration = end_iteration;
         events::worker_enqueue_end( worker_index );
@@ -769,6 +770,7 @@ bool BOOST_CC_REG shop::spread_work
         }
         else
 #   endif
+        if ( BOOST_LIKELY( number_of_dispatched_work_parts ) )
         { // Also serves as a slow_thread_signals fallback and items_in_shop 'handler'.
             if ( !items_in_shop )
             {
@@ -857,6 +859,14 @@ bool BOOST_CC_REG shop::spread_work
                 dispatched_work_parts[ work_part ].~work_t();
             }
         }
+        else // no dispatched parts
+        {
+            BOOST_ASSUME( BOOST_SWEATER_USE_CALLER_THREAD );
+            BOOST_ASSUME( caller_thread_end_iteration == iterations );
+            completion_barrier.initialize( 0 );
+            enqueue_succeeded = true;
+        }
+
         if ( caller_thread_end_iteration ) // use_caller_thread or enqueue failed
         {
             perform_caller_work( caller_thread_end_iteration, work_part_template, completion_barrier );
@@ -967,6 +977,7 @@ bool shop::worker_thread::enqueue( work_t && __restrict work, my_queue & __restr
 bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, hardware_concurrency_t const number_of_items, my_queue & __restrict queue ) noexcept
 {
     BOOST_ASSUME( !thrd_lite::slow_thread_signals );
+    BOOST_ASSERT( number_of_items                 );
     bool success;
     {
         std::scoped_lock<thrd_lite::spin_lock> const token_lock{ token_mutex_ };
