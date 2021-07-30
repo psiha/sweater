@@ -15,6 +15,8 @@
 //------------------------------------------------------------------------------
 #include "spin_lock.hpp"
 
+#include "../hardware_concurrency.hpp"
+
 #include <boost/assert.hpp>
 #include <boost/config_ex.hpp>
 
@@ -33,20 +35,29 @@ namespace thrd_lite
 
 namespace detail
 {
-    void overflow_checked_add( std::atomic<hardware_concurrency_t> & object, hardware_concurrency_t const value ) noexcept
+    template < typename T >
+    void overflow_checked_add( std::atomic<T> & object, T const value ) noexcept
     {
-        BOOST_VERIFY( object.fetch_add( value, std::memory_order_acquire ) < std::numeric_limits<hardware_concurrency_t>::max() );
+        BOOST_VERIFY( object.fetch_add( value, std::memory_order_acquire ) < std::numeric_limits<T>::max() );
     }
-
-    void overflow_checked_inc( std::atomic<hardware_concurrency_t> & object ) noexcept
+    template < typename T >
+    void overflow_checked_inc( std::atomic<T> & object ) noexcept
     {
-        overflow_checked_add( object, 1 );
+        overflow_checked_add( object, static_cast< T >( 1 ) );
     }
-
-    void underflow_checked_dec( std::atomic<hardware_concurrency_t> & object ) noexcept
+    template < typename T >
+    void underflow_checked_dec( std::atomic<T> & object ) noexcept
     {
         BOOST_VERIFY( object.fetch_sub( 1, std::memory_order_release ) > 0 );
     }
+
+    template void overflow_checked_add ( std::atomic<hardware_concurrency_t> &, hardware_concurrency_t ) noexcept;
+    template void overflow_checked_inc ( std::atomic<hardware_concurrency_t> &                         ) noexcept;
+    template void underflow_checked_dec( std::atomic<hardware_concurrency_t> &                         ) noexcept;
+
+    template void overflow_checked_add ( std::atomic<std::uint32_t> &, std::uint32_t ) noexcept;
+    template void overflow_checked_inc ( std::atomic<std::uint32_t> &                ) noexcept;
+    template void underflow_checked_dec( std::atomic<std::uint32_t> &                ) noexcept;
 } // detail
 
 BOOST_ATTRIBUTES( BOOST_COLD )

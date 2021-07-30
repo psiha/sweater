@@ -15,13 +15,11 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include "condvar.hpp"
+#include "mutex.hpp"
 #ifdef _WIN32
-#include "windows/condvar.hpp"
-#include "windows/mutex.hpp"
 #include "windows/thread.hpp"
 #else
-#include "posix/condvar.hpp"
-#include "posix/mutex.hpp"
 #include "posix/thread.hpp"
 #endif
 
@@ -30,7 +28,7 @@
 #include <boost/assert.hpp>
 #ifndef BOOST_NO_EXCEPTIONS
 #include <stdexcept>
-#endif
+#endif // BOOST_NO_EXCEPTIONS
 
 #include <memory>
 #include <mutex>
@@ -55,7 +53,7 @@ namespace detail
 class thread : public thread_impl
 {
 private:
-    class synchronized_invocation
+    class synchronized_invocation // TODO futex impl
     {
     public:
         synchronized_invocation( void const * const p_functor ) noexcept

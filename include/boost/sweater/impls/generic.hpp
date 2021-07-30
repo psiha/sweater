@@ -362,7 +362,7 @@ private:
             else
 #       endif
             {
-#           if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
+#       if !BOOST_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
                 enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
                 this->work_semaphore_.signal( 1 );
 #       endif

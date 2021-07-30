@@ -15,19 +15,19 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#include <boost/config.hpp>
-#if defined( __linux__ ) || defined( __EMSCRIPTEN__ )
-#include "linux/semaphore.hpp"
-#elif defined( BOOST_HAS_PTHREADS )
-#include "posix/semaphore.hpp"
-#else
-#include "condvar.hpp"
-#include "mutex.hpp"
+#include "futex.hpp"
 #include "hardware_concurrency.hpp"
 
 #include <atomic>
+#include <cstdint>
+#include <type_traits>
+
+#ifdef __APPLE__ // not futex for you!
+#include "condvar.hpp"
+#include "mutex.hpp"
+
 #include <mutex>
-#endif
+#endif // Apple
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -36,11 +36,13 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
-#if defined( __linux__ ) || defined( __EMSCRIPTEN__ )
-using semaphore = futex_semaphore;
-#elif defined( BOOST_HAS_PTHREADS )
-using semaphore = pthread_semaphore;
-#else
+// Here we only use global semaphore objects so there is no need for the
+// race-condition workaround described in the links below.
+// http://git.musl-libc.org/cgit/musl/commit/?id=88c4e720317845a8e01aee03f142ba82674cd23d
+// https://github.com/preshing/cpp11-on-multicore/blob/master/common/sema.h
+// https://stackoverflow.com/questions/36094115/c-low-level-semaphore-implementation
+// https://comp.programming.threads.narkive.com/IRKGW6HP/too-much-overhead-from-semaphores
+
 class semaphore
 {
 public:
@@ -54,14 +56,31 @@ public:
     void wait(                          ) noexcept;
     void wait( std::uint32_t spin_count ) noexcept;
 
+#if !defined( __APPLE__ ) /////////////////////////////////////////////////////
+
+private:
+    using signed_futex_value_t =  std::make_signed_t< futex::value_type >;
+    enum state : signed_futex_value_t { locked = 0, contested = -1 };
+
+    signed_futex_value_t load( std::memory_order ) const noexcept;
+
+    bool try_decrement( signed_futex_value_t & last_value ) noexcept;
+
+private:
+    futex                               value_   = { state::locked };
+    std::atomic<hardware_concurrency_t> waiters_ = 0                ;
+
+#else // generic impl for futexless platforms  ////////////////////////////////
+
 private:
     std::atomic<std::int32_t> value_      = 0; // atomic to support spin-waits
     hardware_concurrency_t    waiters_    = 0; // to enable detection when notify_all() can be used
     hardware_concurrency_t    to_release_ = 0;
     mutex                     mutex_    ;
     condition_variable        condition_;
+
+#endif // Apple ///////////////////////////////////////////////////////////////
 }; // class semaphore
-#endif
 
 //------------------------------------------------------------------------------
 } // namespace thrd_lite

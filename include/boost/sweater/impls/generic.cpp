@@ -861,10 +861,13 @@ bool BOOST_CC_REG shop::spread_work
         }
         else // no dispatched parts
         {
-            BOOST_ASSUME( BOOST_SWEATER_USE_CALLER_THREAD );
+#       if BOOST_SWEATER_USE_CALLER_THREAD
             BOOST_ASSUME( caller_thread_end_iteration == iterations );
             completion_barrier.initialize( 0 );
             enqueue_succeeded = true;
+#       else
+            BOOST_UNREACHABLE();
+#       endif
         }
 
         if ( caller_thread_end_iteration ) // use_caller_thread or enqueue failed
@@ -955,9 +958,9 @@ void shop::wake_all_workers() noexcept
     }
 }
 
-//...mrmlj...allowing equal to 0/max (underflow/overflow) because of late fetch_add in fire_and_forget and concurrent invocation races(?)
-void shop::work_added    ( hardware_concurrency_t const items ) noexcept { /*thrd_lite::detail:: overflow_checked_add( work_items_, items );*/ BOOST_VERIFY( work_items_.fetch_add( items, std::memory_order_acquire ) <= std::numeric_limits<hardware_concurrency_t>::max() ); }
-void shop::work_completed(                                    ) noexcept { /*thrd_lite::detail::underflow_checked_dec( work_items_        );*/ BOOST_VERIFY( work_items_.fetch_sub( 1    , std::memory_order_release ) >= 0                                                  ); }
+//...mrmlj...allowing underflow/overflow because of late fetch_add in fire_and_forget and concurrent invocation 'races'
+void shop::work_added    ( hardware_concurrency_t const items ) noexcept { /*thrd_lite::detail:: overflow_checked_add( work_items_, items );*/ work_items_.fetch_add( items, std::memory_order_acquire ); }
+void shop::work_completed(                                    ) noexcept { /*thrd_lite::detail::underflow_checked_dec( work_items_        );*/ work_items_.fetch_sub( 1    , std::memory_order_release ); }
 
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
 void shop::worker_thread::notify() noexcept { event_.signal(); }

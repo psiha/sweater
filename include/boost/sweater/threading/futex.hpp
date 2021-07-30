@@ -1,9 +1,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 ///
-/// \file semaphore.hpp
-/// -------------------
+/// \file futex.hpp
+/// ---------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2021.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -15,10 +15,9 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#include "../hardware_concurrency.hpp"
+#include "hardware_concurrency.hpp"
 
 #include <atomic>
-#include <cstdint>
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -27,39 +26,26 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
-// Here we only use global semaphore objects so there is no need for the
-// race-condition workaround described in the links below.
-// http://git.musl-libc.org/cgit/musl/commit/?id=88c4e720317845a8e01aee03f142ba82674cd23d
-// https://github.com/preshing/cpp11-on-multicore/blob/master/common/sema.h
-// https://stackoverflow.com/questions/36094115/c-low-level-semaphore-implementation
-// https://comp.programming.threads.narkive.com/IRKGW6HP/too-much-overhead-from-semaphores
-// TODO: futex barrier
-// https://github.com/forhappy/barriers/blob/master/futex-barrier.c
 // https://www.remlab.net/op/futex-misc.shtml
 // https://dept-info.labri.fr/~denis/Enseignement/2008-IR/Articles/01-futex.pdf
-class futex_semaphore
+
+struct futex : std::atomic
+<
+#ifdef _WIN32
+    hardware_concurrency_t
+#else
+    std::uint32_t
+#endif
+>
 {
-private:
-    enum state { locked = 0, contested = -1 };
+    using atomic_type = std::atomic< value_type >;
 
-public:
-    futex_semaphore() noexcept = default;
-#ifndef NDEBUG
-   ~futex_semaphore() noexcept;
-#endif // !NDEBUG
+    void wake_one(                                        ) const noexcept;
+    void wake    ( hardware_concurrency_t waiters_to_wake ) const noexcept;
+    void wake_all(                                        ) const noexcept;
 
-    void signal( hardware_concurrency_t count = 1 ) noexcept;
-
-    void wait(                          ) noexcept;
-    void wait( std::uint32_t spin_count ) noexcept;
-
-private:
-    bool try_decrement( std::int32_t & last_value ) noexcept;
-
-private:
-    std::atomic<std::int32_t          > value_   = state::locked;
-    std::atomic<hardware_concurrency_t> waiters_ = 0;
-}; // class futex_semaphore
+    void wait_if_equal( value_type desired_value ) const noexcept;
+}; // struct futex
 
 //------------------------------------------------------------------------------
 } // namespace thrd_lite

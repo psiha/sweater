@@ -1,9 +1,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 ///
-/// \file barrier.hpp
-/// -----------------
+/// \file futex.cpp
+/// ---------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2021.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -13,13 +13,11 @@
 ///
 ////////////////////////////////////////////////////////////////////////////////
 //------------------------------------------------------------------------------
-#pragma once
-//------------------------------------------------------------------------------
-#if defined( __APPLE__ )
-#include "generic_barrier.hpp"
-#else
-#include "futex_barrier.hpp"
-#endif
+#include "../futex.hpp"
+
+#include <cmath>
+
+#include <emscripten/threading.h>
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -28,11 +26,20 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
-#if defined( __APPLE__ )
-using barrier = generic_barrier;
-#else
-using barrier = futex_barrier;
-#endif
+namespace
+{
+    static_assert( sizeof( futex ) == 4 );
+    auto void_cast( futex const * p_futex ) noexcept { return reinterpret_cast<volatile void *>( const_cast< futex * >( p_futex ) ); }
+}
+
+void futex::wake_one(                                              ) const noexcept { wake( 1 ); }
+void futex::wake    ( hardware_concurrency_t const waiters_to_wake ) const noexcept { emscripten_futex_wake( void_cast( this ), waiters_to_wake ); }
+void futex::wake_all(                                              ) const noexcept { emscripten_futex_wake( void_cast( this ), INT_MAX         ); }
+
+void futex::wait_if_equal( value_type const desired_value ) const noexcept
+{
+    emscripten_futex_wait( void_cast( this ), desired_value, INFINITY );
+};
 
 //------------------------------------------------------------------------------
 } // namespace thrd_lite

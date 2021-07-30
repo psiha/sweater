@@ -15,8 +15,6 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#include "../hardware_concurrency.hpp"
-
 #include <atomic>
 //------------------------------------------------------------------------------
 namespace boost
@@ -28,9 +26,9 @@ namespace thrd_lite
 
 namespace detail
 {
-    void  overflow_checked_add( std::atomic<hardware_concurrency_t> &, hardware_concurrency_t value ) noexcept;
-    void  overflow_checked_inc( std::atomic<hardware_concurrency_t> &                               ) noexcept;
-    void underflow_checked_dec( std::atomic<hardware_concurrency_t> &                               ) noexcept;
+    template <typename T> void  overflow_checked_add( std::atomic<T> &, T value ) noexcept;
+    template <typename T> void  overflow_checked_inc( std::atomic<T> &          ) noexcept;
+    template <typename T> void underflow_checked_dec( std::atomic<T> &          ) noexcept;
 } // namespace detail
 
 void nop() noexcept;

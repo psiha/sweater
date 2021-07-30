@@ -1,9 +1,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 ///
-/// \file barrier.hpp
-/// -----------------
+/// \file futex_barrier.hpp
+/// -----------------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2021.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -15,11 +15,10 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#if defined( __APPLE__ )
-#include "generic_barrier.hpp"
-#else
-#include "futex_barrier.hpp"
-#endif
+#include "../impls/generic_config.hpp" //...mrmlj...spaghetti...
+
+#include "cpp/spin_lock.hpp"
+#include "futex.hpp"
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -28,11 +27,38 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
-#if defined( __APPLE__ )
-using barrier = generic_barrier;
-#else
-using barrier = futex_barrier;
-#endif
+class futex_barrier
+{
+public:
+    futex_barrier() noexcept;
+    futex_barrier( hardware_concurrency_t initial_value ) noexcept;
+   ~futex_barrier() noexcept;
+
+    void initialize( hardware_concurrency_t initial_value ) noexcept;
+
+    void add_expected_arrival() noexcept;
+
+    hardware_concurrency_t actives         () const noexcept;
+    bool                   everyone_arrived() const noexcept;
+
+#if BOOST_SWEATER_USE_CALLER_THREAD
+    void use_spin_wait( bool value ) noexcept;
+#endif // BOOST_SWEATER_USE_CALLER_THREAD
+
+    void arrive() noexcept;
+    void wait  () noexcept;
+
+#if BOOST_SWEATER_USE_CALLER_THREAD
+    bool spin_wait( std::uint32_t nop_spin_count = 0 ) noexcept;
+#endif // BOOST_SWEATER_USE_CALLER_THREAD
+
+private:
+    futex counter_{ 0 };
+    spin_lock safe_exit_lock_;
+#if BOOST_SWEATER_USE_CALLER_THREAD //...mrmlj...spaghetti...
+    bool  spin_wait_{ false };
+#endif // BOOST_SWEATER_USE_CALLER_THREAD
+}; // class futex_barrier
 
 //------------------------------------------------------------------------------
 } // namespace thrd_lite

@@ -32,16 +32,28 @@ source_group( "Queues" FILES ${sources_queues} )
 list( APPEND sweater_sources ${sources_queues} )
 
 set( sources_threading
-    ${src_root}/threading/barrier.cpp
     ${src_root}/threading/barrier.hpp
+    ${src_root}/threading/futex.hpp
+    ${src_root}/threading/futex_barrier.cpp
+    ${src_root}/threading/futex_barrier.hpp
+    ${src_root}/threading/futex_semaphore.cpp
+    ${src_root}/threading/generic_barrier.cpp
+    ${src_root}/threading/generic_barrier.hpp
+    ${src_root}/threading/generic_semaphore.cpp
     ${src_root}/threading/hardware_concurrency.cpp
     ${src_root}/threading/hardware_concurrency.hpp
-    ${src_root}/threading/semaphore.cpp
     ${src_root}/threading/semaphore.hpp
     ${src_root}/threading/thread.hpp
 )
 source_group( "ThrdLite" FILES ${sources_threading} )
 list( APPEND sweater_sources ${sources_threading} )
+
+if ( APPLE )
+set_source_files_properties( ${src_root}/threading/futex_barrier.cpp   ${src_root}/threading/futex_semaphore.cpp   PROPERTIES HEADER_FILE_ONLY ON )
+else()
+set_source_files_properties( ${src_root}/threading/generic_barrier.cpp ${src_root}/threading/generic_semaphore.cpp PROPERTIES HEADER_FILE_ONLY ON )
+endif()
+
 
 set( sources_threading_cpp
     ${src_root}/threading/cpp/spin_lock.cpp
@@ -50,12 +62,26 @@ set( sources_threading_cpp
 source_group( "ThrdLite/Cpp" FILES ${sources_threading_cpp} )
 list( APPEND sweater_sources ${sources_threading_cpp} )
 
+
+set( sources_threading_emscripten
+    ${src_root}/threading/emscripten/futex.cpp
+)
+source_group( "ThrdLite/Emscripten" FILES ${sources_threading_emscripten} )
+list( APPEND sweater_sources ${sources_threading_emscripten} )
+if ( NOT EMSCRIPTEN )
+set_source_files_properties( ${sources_threading_emscripten} PROPERTIES HEADER_FILE_ONLY ON )
+endif()
+
+
 set( sources_threading_linux
-    ${src_root}/threading/linux/semaphore.cpp
-    ${src_root}/threading/linux/semaphore.hpp
+    ${src_root}/threading/linux/futex.cpp
 )
 source_group( "ThrdLite/Linux" FILES ${sources_threading_linux} )
 list( APPEND sweater_sources ${sources_threading_linux} )
+if ( NOT ANDROID AND NOT LINUX )
+set_source_files_properties( ${sources_threading_linux} PROPERTIES HEADER_FILE_ONLY ON )
+endif()
+
 
 set( sources_threading_posix
     ${src_root}/threading/posix/condvar.hpp
@@ -66,33 +92,19 @@ set( sources_threading_posix
 )
 source_group( "ThrdLite/POSIX" FILES ${sources_threading_posix} )
 list( APPEND sweater_sources ${sources_threading_posix} )
-
-if ( NOT ANDROID AND NOT LINUX AND NOT EMSCRIPTEN )
-set_source_files_properties(
-    ${src_root}/threading/linux/semaphore.cpp
-    PROPERTIES HEADER_FILE_ONLY ON
-)
-endif()
-
-if ( ANDROID OR LINUX OR EMSCRIPTEN OR APPLE )
-set_source_files_properties(
-    ${src_root}/threading/semaphore.cpp
-    PROPERTIES HEADER_FILE_ONLY ON
-)
-endif()
-
 if ( WIN32 )
-set_source_files_properties(
-    ${src_root}/threading/posix/thread.cpp
-    ${src_root}/threading/posix/semaphore.cpp
-    PROPERTIES HEADER_FILE_ONLY ON
-)
+set_source_files_properties( ${sources_threading_posix} PROPERTIES HEADER_FILE_ONLY ON )
 endif()
+
 
 set( sources_threading_windows
     ${src_root}/threading/windows/condvar.hpp
+    ${src_root}/threading/windows/futex.cpp
     ${src_root}/threading/windows/mutex.hpp
     ${src_root}/threading/windows/thread.hpp
 )
 source_group( "ThrdLite/Windows" FILES ${sources_threading_windows} )
 list( APPEND sweater_sources ${sources_threading_windows} )
+if ( NOT WIN32 )
+set_source_files_properties( ${sources_threading_windows} PROPERTIES HEADER_FILE_ONLY ON )
+endif()

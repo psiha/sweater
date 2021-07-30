@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 ///
-/// \file semaphore.cpp
-/// -------------------
+/// \file futex_semaphore.cpp
+/// -------------------------
 ///
 /// (c) Copyright Domagoj Saric 2016 - 2021.
 ///
@@ -15,20 +15,10 @@
 //------------------------------------------------------------------------------
 #include "semaphore.hpp"
 
-#include "../cpp/spin_lock.hpp" // only for nops()
+#include "cpp/spin_lock.hpp" // only for nops()
 
 #include <boost/assert.hpp>
 #include <boost/config_ex.hpp>
-
-#if defined( __EMSCRIPTEN__ ) // TODO: extract and deduplicate this implementation
-#include <cmath>
-
-#include <emscripten/threading.h>
-#else
-#include <linux/futex.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-#endif // Emscripten / Linux
 //------------------------------------------------------------------------------
 namespace boost
 {
@@ -37,28 +27,8 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
-namespace
-{
-#if defined( __EMSCRIPTEN__ )
-
-	auto futex_wait( void * const addr, int const val ) noexcept { return emscripten_futex_wait( reinterpret_cast<volatile void *>( addr ), val, INFINITY ); }
-	auto futex_wake( void * const addr, int const val ) noexcept { return emscripten_futex_wake( reinterpret_cast<volatile void *>( addr ), val           ); }
-
-#elif defined( __linux__ )
-
-    void futex( void * const addr1, int const op, int const val1 ) noexcept
-    {
-        ::syscall( SYS_futex, addr1, op | FUTEX_PRIVATE_FLAG, val1, nullptr, nullptr, 0 );
-    }
-
-    auto futex_wait( void * const addr, int const val ) noexcept { return futex( addr, FUTEX_WAIT, val ); }
-	auto futex_wake( void * const addr, int const val ) noexcept { return futex( addr, FUTEX_WAKE, val ); }
-
-#endif
-} // anonymous namespace
-
 #ifndef NDEBUG
-futex_semaphore::~futex_semaphore() noexcept
+semaphore::~semaphore() noexcept
 {
 #if 0 // need not hold on early destruction (when workers exit before waiting)
     BOOST_ASSUME( value_   == 0 );
@@ -67,20 +37,23 @@ futex_semaphore::~futex_semaphore() noexcept
 }
 #endif // !NDEBUG
 
-void futex_semaphore::signal( hardware_concurrency_t const count /*= 1*/ ) noexcept
+void semaphore::signal( hardware_concurrency_t const count /*= 1*/ ) noexcept
 {
+    // https://softwareengineering.stackexchange.com/questions/340284/mutex-vs-semaphore-how-to-implement-them-not-in-terms-of-the-other
+
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION && !defined( __ANDROID__ )
     BOOST_ASSUME( count == 1 );
 #endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
     if ( BOOST_UNLIKELY( !count ) )
         return;
 
-    auto value{ value_.load( std::memory_order_relaxed ) };
+    auto value{ load( std::memory_order_relaxed ) };
     hardware_concurrency_t desired;
     do
     {
-        desired = value + count + ( value < state::locked );
-    } while ( !value_.compare_exchange_weak( value, desired, std::memory_order_acquire, std::memory_order_relaxed ) );
+        auto const is_contested{ value < state::locked };
+        desired = value + count + is_contested;
+    } while ( !value_.compare_exchange_weak( reinterpret_cast<futex::value_type &>( value ), desired, std::memory_order_acquire, std::memory_order_relaxed ) );
 
     if ( waiters_.load( std::memory_order_acquire ) )
     {
@@ -89,15 +62,15 @@ void futex_semaphore::signal( hardware_concurrency_t const count /*= 1*/ ) noexc
 #   else
         auto const to_wake{ count };
 #   endif
-        futex_wake( &value_, to_wake );
+        value_.wake( to_wake );
     }
 }
 
-void futex_semaphore::wait() noexcept
+void semaphore::wait() noexcept
 {
     for ( ; ; )
     {
-        auto value{ value_.load( std::memory_order_relaxed ) };
+        auto value{ load( std::memory_order_relaxed ) };
         while ( value > state::locked )
         {
             if ( try_decrement( value ) )
@@ -106,15 +79,15 @@ void futex_semaphore::wait() noexcept
 
         detail::overflow_checked_inc( waiters_ );
         value = state::locked; try_decrement( value );
-        futex_wait( &value_, state::contested );
+        value_.wait_if_equal( static_cast< futex::value_type >( state::contested ) );
         detail::underflow_checked_dec( waiters_ );
     }
 }
 
-void futex_semaphore::wait( std::uint32_t const spin_count ) noexcept
+void semaphore::wait( std::uint32_t const spin_count ) noexcept
 {
     // waiting for atomic_ref
-    auto value{ value_.load( std::memory_order_acquire ) };
+    auto value{ load( std::memory_order_acquire ) };
     for ( auto spin_try{ 0U }; spin_try < spin_count; )
     {
         if ( value > state::locked )
@@ -126,7 +99,7 @@ void futex_semaphore::wait( std::uint32_t const spin_count ) noexcept
         else
         {
             nops( 8 );
-            value = value_.load( std::memory_order_acquire );
+            value = static_cast<signed_futex_value_t>( value_.load( std::memory_order_acquire ) );
             ++spin_try;
         }
     }
@@ -135,9 +108,23 @@ void futex_semaphore::wait( std::uint32_t const spin_count ) noexcept
     wait();
 }
 
-bool futex_semaphore::try_decrement( std::int32_t & __restrict last_value ) noexcept
+semaphore::signed_futex_value_t semaphore::load( std::memory_order const memory_order ) const noexcept
 {
-    return BOOST_LIKELY( value_.compare_exchange_weak( last_value, last_value - 1, std::memory_order_acquire, std::memory_order_relaxed ) );
+    return static_cast<signed_futex_value_t>( value_.load( memory_order ) );
+}
+
+bool semaphore::try_decrement( signed_futex_value_t & __restrict last_value ) noexcept
+{
+    return BOOST_LIKELY
+    (
+        value_.compare_exchange_weak
+        (
+            reinterpret_cast<futex::value_type &>( last_value     ),
+            static_cast     <futex::value_type  >( last_value - 1 ),
+            std::memory_order_acquire,
+            std::memory_order_relaxed
+        )
+    );
 }
 
 //------------------------------------------------------------------------------
