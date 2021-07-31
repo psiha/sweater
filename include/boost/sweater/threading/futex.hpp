@@ -38,12 +38,6 @@ struct futex : std::atomic
 #endif
 >
 {
-#if defined( __EMSCRIPTEN__ ) && !defined( __EMSCRIPTEN_PTHREADS__ )
-    using atomic_type = std::uint32_t; // no std::atomic<>::value_type member alias in this case
-#else
-    using atomic_type = std::atomic< value_type >;
-#endif
-
     void wake_one(                                        ) const noexcept;
     void wake    ( hardware_concurrency_t waiters_to_wake ) const noexcept;
     void wake_all(                                        ) const noexcept;
