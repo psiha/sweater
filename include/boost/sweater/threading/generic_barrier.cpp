@@ -67,14 +67,12 @@ void generic_barrier::arrive() noexcept
         return;
     }
 #endif // BOOST_SWEATER_USE_CALLER_THREAD
-    bool everyone_arrived;
-    {
-        std::scoped_lock<mutex> lock{ mutex_ };
-        BOOST_ASSERT( counter_ > 0 );
-        everyone_arrived = ( counter_.fetch_sub( 1, std::memory_order_relaxed ) == 1 );
-    }
-    // WARNING: possible race here if event_ is used after this gets destroyed
-    // (goes out of scope in the waiting thread after counter_ reaches zero).
+    // Here we have to perform the notification while holding the lock to
+    // prevent event_ getting used after this gets destroyed (goes out of scope
+    // in the waiting thread immediately after counter_ reaches zero).
+    BOOST_ASSERT( counter_ > 0 );
+    std::scoped_lock<mutex> lock{ mutex_ };
+    bool const everyone_arrived{ counter_.fetch_sub( 1, std::memory_order_relaxed ) == 1 };
     if ( BOOST_UNLIKELY( everyone_arrived ) )
         event_.notify_one();
 }

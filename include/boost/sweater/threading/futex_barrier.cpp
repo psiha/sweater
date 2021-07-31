@@ -32,12 +32,9 @@ namespace thrd_lite
 
 futex_barrier::futex_barrier() noexcept : futex_barrier( 0 ) {}
 futex_barrier::futex_barrier( hardware_concurrency_t const initial_value ) noexcept : counter_{ initial_value } {}
-futex_barrier::~futex_barrier() noexcept
-{
-    BOOST_ASSERT( counter_ == 0 );
-    safe_exit_lock_.lock();
-}
-
+#ifndef NDEBUG
+futex_barrier::~futex_barrier() noexcept { BOOST_ASSERT( counter_ == 0 ); }
+#endif
 void futex_barrier::initialize( hardware_concurrency_t const initial_value ) noexcept
 {
     BOOST_ASSERT_MSG( counter_ == 0, "Already initialized" );
@@ -63,10 +60,13 @@ void futex_barrier::arrive() noexcept
         return;
     }
 #endif // BOOST_SWEATER_USE_CALLER_THREAD
-    std::scoped_lock<spin_lock> const exit_ock{ safe_exit_lock_ }; // workaround for the warning below - TODO: mechanism w/o an additional member
+    
     auto const everyone_arrived{ counter_.fetch_sub( 1, std::memory_order_release ) == 1 };
-    // WARNING: possible race here if this get accessed after it gets destroyed
-    // (goes out of scope in the waiting thread after counter_ reaches zero).
+    // Possible race here if this gets accessed after it gets destroyed
+    // (goes out of scope in the waiting thread after counter_ reaches zero) -
+    // with futexes this is however harmless as the memory pointed to by this
+    // is still valid (as in correctly mapped in the process - as a thread's
+    // stack space or even, case not used by Sweater, freed heap memory).
     if ( BOOST_UNLIKELY( everyone_arrived ) )
     {
         BOOST_ASSERT( counter_ == 0 );

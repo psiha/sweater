@@ -17,7 +17,6 @@
 //------------------------------------------------------------------------------
 #include "../impls/generic_config.hpp" //...mrmlj...spaghetti...
 
-#include "cpp/spin_lock.hpp"
 #include "futex.hpp"
 //------------------------------------------------------------------------------
 namespace boost
@@ -32,7 +31,9 @@ class futex_barrier
 public:
     futex_barrier() noexcept;
     futex_barrier( hardware_concurrency_t initial_value ) noexcept;
+#ifndef NDEBUG
    ~futex_barrier() noexcept;
+#endif // NDEBUG
 
     void initialize( hardware_concurrency_t initial_value ) noexcept;
 
@@ -53,8 +54,7 @@ public:
 #endif // BOOST_SWEATER_USE_CALLER_THREAD
 
 private:
-    futex counter_{ 0 };
-    spin_lock safe_exit_lock_;
+    futex counter_;
 #if BOOST_SWEATER_USE_CALLER_THREAD //...mrmlj...spaghetti...
     bool  spin_wait_{ false };
 #endif // BOOST_SWEATER_USE_CALLER_THREAD
