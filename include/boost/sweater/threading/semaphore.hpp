@@ -36,13 +36,6 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
-// Here we only use global semaphore objects so there is no need for the
-// race-condition workaround described in the links below.
-// http://git.musl-libc.org/cgit/musl/commit/?id=88c4e720317845a8e01aee03f142ba82674cd23d
-// https://github.com/preshing/cpp11-on-multicore/blob/master/common/sema.h
-// https://stackoverflow.com/questions/36094115/c-low-level-semaphore-implementation
-// https://comp.programming.threads.narkive.com/IRKGW6HP/too-much-overhead-from-semaphores
-
 class semaphore
 {
 public:
