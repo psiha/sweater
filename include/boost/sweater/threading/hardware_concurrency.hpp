@@ -22,17 +22,19 @@
 #       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 1
 #   elif defined( __ANDROID__ )
 #       if defined( __aarch64__ )
-#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 32 // SGS6 8, Meizu PRO 6 10 cores
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 20 // Meizu PRO 6 10 cores
 #       elif defined( __arm__ )
-#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // octa-low-v8-cores running as 32bit
+#       else // x86 or MIPS
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 4
 #       endif // arch
 #   elif defined( __APPLE__ )
-#       if defined( __aarch64__ )
-#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // iPad 2 Air 3, iPhone 8 6 cores
+#       if defined( __aarch64__ ) && defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ )
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // iPhone 12
 #       elif defined( __arm__ )
 #           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
 #       else
-#          define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0 // desktop or simulator
+#          define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 32 // desktop or simulator
 #       endif // arch
 #   elif defined(__WINDOWS_PHONE__)
 #	    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
@@ -50,7 +52,7 @@ namespace thrd_lite
 {
 //------------------------------------------------------------------------------
 
-#if defined( __arm__ ) || defined( __aarch64__ ) || defined( __ANDROID__ ) || defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ )
+#if defined( __arm__ ) || defined( __aarch64__ ) || defined( __ANDROID__ ) || defined( __APPLE__ )
 using hardware_concurrency_t = std::uint8_t;
 #else
 using hardware_concurrency_t = std::uint16_t; // e.g. Intel MIC
