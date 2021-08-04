@@ -3,7 +3,7 @@
 /// \file apple.hpp
 /// ---------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2018.
+/// (c) Copyright Domagoj Saric 2016 - 2021.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -21,7 +21,6 @@
 #include <boost/core/no_exceptions_support.hpp>
 #include <boost/config_ex.hpp>
 
-#include <algorithm>
 #include <cstdint>
 #include <future>
 #include <thread>
@@ -50,74 +49,31 @@ public:
     static auto number_of_workers() noexcept
     {
         BOOST_ASSERT_MSG( thrd_lite::hardware_concurrency_max == std::thread::hardware_concurrency(), "Hardware concurrency changed at runtime!?" );
-    #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+#   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
         BOOST_ASSUME( thrd_lite::hardware_concurrency_max <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
-    #endif
+#   endif
         return thrd_lite::hardware_concurrency_max;
     }
 
     template <typename F>
-    static void spread_the_sweat( iterations_t const iterations, F && work, iterations_t /*const parallelizable_iterations_count TODO*/ = 1 ) noexcept
+    static void spread_the_sweat( iterations_t const iterations, F && work, iterations_t /*parallelizable_iterations_count TODO*/ = 1 ) noexcept
     {
         static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
-
-        /// \note Stride the iteration count based on the number of workers
-        /// (otherwise dispatch_apply will make an indirect function call for
-        /// each iteration).
-        /// The iterations / number_of_workers is an integer division and can
-        /// thus be 'lossy' so extra steps need to be taken to account for this.
-        ///                                   (04.10.2016.) (Domagoj Saric)
-        auto              const number_of_workers    ( shop::number_of_workers() );
-        iterations_t      const iterations_per_worker( iterations / number_of_workers );
-        std::uint_fast8_t const extra_iterations     ( iterations % number_of_workers );
-        auto /*const*/ worker
-        (
-            [
-                &work, iterations_per_worker, extra_iterations
-            #ifndef NDEBUG
-                , iterations
-            #endif // !NDEBUG
-            ]
-            ( std::uint_fast8_t const worker_index ) noexcept
-            {
-                auto const extra_iters        ( std::min( worker_index, extra_iterations ) );
-                auto const plain_iters        ( worker_index - extra_iters                 );
-                auto const this_has_extra_iter( worker_index < extra_iterations            );
-                auto const start_iteration
-                (
-                    extra_iters * ( iterations_per_worker + 1 )
-                        +
-                    plain_iters *   iterations_per_worker
-                );
-                auto const stop_iteration( start_iteration + iterations_per_worker + this_has_extra_iter );
-                // Note: iterations variable is captured only if NDEBUG is not defined
-            #ifndef NDEBUG
-                BOOST_ASSERT( stop_iteration <= iterations );
-            #endif
-                BOOST_ASSERT_MSG( start_iteration < stop_iteration, "Sweater internal inconsistency: worker called with no work to do." );
-                work( start_iteration, stop_iteration );
-            }
-        );
 
         /// \note dispatch_apply delegates to dispatch_apply_f so we avoid the
         /// small overhead of an extra jmp and block construction (as opposed to
         /// just a trivial lambda construction).
         ///                                   (04.10.2016.) (Domagoj Saric)
-        /// \note The iteration_per_worker logic above does not fully cover the
-        /// cases where the number of iterations is less than the number of
-        /// workers (resulting in work being called with start_iteration >
-        /// stop_iteration) so we have to additionally clamp the iterations
-        /// parameter passed to dispatch_apply).
-        ///                                   (12.01.2017.) (Domagoj Saric)
         dispatch_apply_f
         (
-            std::min<iterations_t>( number_of_workers, iterations ),
+            iterations,
             high_priority_queue,
-            &worker,
-            []( void * const p_context, std::size_t const worker_index ) noexcept
+            const_cast<void *>( static_cast<void const *>( &work ) ),
+            []( void * const p_context, std::size_t const iter ) noexcept
             {
-                auto & __restrict the_worker( *static_cast<decltype( worker ) const *>( p_context ) );
-                the_worker( static_cast<std::uint_fast8_t>( worker_index ) );
+                auto & __restrict worker{ *static_cast<std::remove_reference_t<F> *>( p_context ) };
+                auto const iteration{ static_cast<iterations_t>( iter ) };
+                worker( iteration, iteration + 1 );
             }
         );
     }
@@ -140,11 +96,11 @@ public:
             new ( &context ) Functor( std::forward<F>( work ) );
             dispatch_async_f
             (
-                high_priority_queue,
+                default_queue,
                 context,
                 []( void * context ) noexcept
                 {
-                    auto & __restrict the_work( reinterpret_cast<Functor &>( context ) );
+                    auto & __restrict the_work{ reinterpret_cast<Functor &>( context ) };
                     the_work();
                 }
             );
@@ -156,18 +112,18 @@ public:
             /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
             ///                               (14.01.2016.) (Domagoj Saric)
             __block auto moveable_work( std::forward<F>( work ) );
-            dispatch_async( high_priority_queue, ^(){ moveable_work(); } );
+            dispatch_async( default_queue, ^(){ moveable_work(); } );
 #       else
             /// \note Still no block support in GCC.
             ///                               (10.06.2017.) (Domagoj Saric)
             auto const p_heap_work( new Functor( std::forward<F>( work ) ) );
             dispatch_async_f
             (
-                high_priority_queue,
+                default_queue,
                 p_heap_work,
                 []( void * const p_context ) noexcept
                 {
-                    auto & __restrict the_work( *static_cast<Functor const *>( p_context ) );
+                    auto & __restrict the_work{ *static_cast<Functor const *>( p_context ) };
                     the_work();
                     delete &the_work;
                 }

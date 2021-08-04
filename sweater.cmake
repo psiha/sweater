@@ -11,6 +11,8 @@
 set( src_root "${CMAKE_CURRENT_LIST_DIR}/include/boost/sweater" )
 
 set( sweater_sources
+    ${src_root}/spread_chunked.cpp
+    ${src_root}/spread_chunked.hpp
     ${src_root}/sweater.hpp
 )
 
