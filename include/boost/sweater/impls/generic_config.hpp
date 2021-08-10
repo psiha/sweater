@@ -25,6 +25,7 @@
 
 #ifndef BOOST_SWEATER_HMP // heterogeneous multi-core processing
 // https://android.googlesource.com/kernel/msm/+/android-msm-bullhead-3.10-marshmallow-dr/Documentation/scheduler/sched-hmp.txt
+// https://android.googlesource.com/kernel/common/+/experimental/android-4.14%5E1..experimental/android-4.14 Energy Aware Scheduling
 // https://www.kernel.org/doc/html/latest/scheduler/sched-energy.html
 // https://www.sisoftware.co.uk/2015/06/22/arm-big-little-the-trouble-with-heterogeneous-multi-processing-when-4-are-better-than-8-or-when-8-is-not-always-the-lucky-number
 // https://lwn.net/Articles/352286
@@ -36,7 +37,7 @@
 #endif // BOOST_SWEATER_HMP
 
 #ifndef BOOST_SWEATER_USE_PARALLELIZATION_COST
-#   define BOOST_SWEATER_USE_PARALLELIZATION_COST BOOST_SWEATER_HMP
+#   define BOOST_SWEATER_USE_PARALLELIZATION_COST false
 #endif // BOOST_SWEATER_USE_PARALLELIZATION_COST
 
 // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
