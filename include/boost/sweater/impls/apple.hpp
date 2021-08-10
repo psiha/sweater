@@ -16,6 +16,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include "../threading/hardware_concurrency.hpp"
+#include "../spread_chunked.hpp"
 
 #include <boost/assert.hpp>
 #include <boost/core/no_exceptions_support.hpp>
@@ -60,20 +61,39 @@ public:
     {
         static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
+        // "...make the number of iterations at least three times the total number of cores on the system."
+        // https://developer.apple.com/documentation/apple-silicon/tuning-your-code-s-performance-for-apple-silicon
+        // http://wanderingcoder.net/2021/02/25/libdispatch-douchebag
+        // ...so we make it 4 (to be turned into a parameter if needed later)
+        // but not larger (or simply <VAR>iterations</VAR>) to also mitigate
+        // GCD (internal dispatch_apply loop) overheads.
+        auto const number_of_chunks{ static_cast<iterations_t>( 4 * thrd_lite::hardware_concurrency_max ) };
+        auto /*const*/ worker
+        {
+            [
+                &work,
+                setup = chunked_spread{ iterations, number_of_chunks }
+            ]
+            ( std::size_t const chunk ) noexcept
+            {
+
+                auto const chunk_index{ static_cast<thrd_lite::hardware_concurrency_t>( chunk ) };
+                auto const range      { setup.chunk_range( chunk_index ) };
+                work( range.first, range.second );
+            }
+        };
         /// \note dispatch_apply delegates to dispatch_apply_f so we avoid the
-        /// small overhead of an extra jmp and block construction (as opposed to
-        /// just a trivial lambda construction).
+        /// extra layer.
         ///                                   (04.10.2016.) (Domagoj Saric)
         dispatch_apply_f
         (
-            iterations,
+            std::min( number_of_chunks, iterations ),
             high_priority_queue,
-            const_cast<void *>( static_cast<void const *>( &work ) ),
-            []( void * const p_context, std::size_t const iter ) noexcept
+            const_cast<void *>( static_cast<void const *>( &worker ) ),
+            []( void * const p_context, std::size_t const chunk ) noexcept
             {
-                auto & __restrict worker{ *static_cast<std::remove_reference_t<F> *>( p_context ) };
-                auto const iteration{ static_cast<iterations_t>( iter ) };
-                worker( iteration, iteration + 1 );
+                auto & __restrict the_worker{ *static_cast<decltype( worker ) *>( p_context ) };
+                the_worker( chunk );
             }
         );
     }
