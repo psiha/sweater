@@ -254,6 +254,9 @@ hardware_concurrency_t shop::number_of_workers() const noexcept
     return static_cast<hardware_concurrency_t>( actual_number_of_workers );
 }
 
+// https://web.archive.org/web/20161026022836/http://www.route32.net/2016/09/ticks-scheduling-and-confighz-overview.html
+// https://unix.stackexchange.com/questions/466722/how-to-change-the-length-of-time-slices-used-by-the-linux-cpu-scheduler
+
 BOOST_ATTRIBUTES( BOOST_MINSIZE )
 bool shop::set_priority( thrd_lite::priority const new_priority ) noexcept
 {
@@ -500,8 +503,9 @@ void shop::perform_caller_work
 // This incurrs an overhead (produces more queue traffic) which is negligible
 // compared to practical runtime speedups and it (the queue based approach) is
 // required for a dispatcher which supports concurrent and recursive dispatches.
-std::uint8_t shop::spread_work_stealing_division    {  4 };
+std::uint8_t const spread_work_stealing_division_min{  4 };
 std::uint8_t const spread_work_stealing_division_max{ 16 }; // has to be limited (among other reasons) not to overflow hardware_concurrency_t
+std::uint8_t shop::spread_work_stealing_division    { spread_work_stealing_division_min };
 
 #if BOOST_SWEATER_EXACT_WORKER_SELECTION
 auto shop::dispatch_workers
@@ -516,6 +520,7 @@ auto shop::dispatch_workers
     spread_work_template_t const &       work_part_template
 ) noexcept
 {
+    BOOST_ASSUME( spread_work_stealing_division >= spread_work_stealing_division_min );
     BOOST_ASSUME( spread_work_stealing_division <= spread_work_stealing_division_max );
     auto const slice_div
     {
@@ -621,12 +626,7 @@ bool BOOST_CC_REG shop::spread_work
         }
     }
 
-#if BOOST_SWEATER_USE_PARALLELIZATION_COST
-    parallelizable_iterations_count = parallelizable_iterations_count * min_parallel_iter_boost / min_parallel_iter_boost_weight;
-    parallelizable_iterations_count = std::max<iterations_t>( 1, parallelizable_iterations_count );
-    if ( thrd_lite::slow_thread_signals )
-        parallelizable_iterations_count = 1; //...mrmlj...!?
-#else
+#if !BOOST_SWEATER_USE_PARALLELIZATION_COST
     parallelizable_iterations_count = 1;
 #endif // BOOST_SWEATER_USE_PARALLELIZATION_COST
 
@@ -902,12 +902,10 @@ bool BOOST_CC_REG shop::spread_work
 #if BOOST_SWEATER_USE_CALLER_THREAD
     if ( !queue_and_wait )
     {
-        if ( completion_barrier.everyone_arrived() )
+        if ( !completion_barrier.everyone_arrived() )
         {
-            spread_work_stealing_division = std::max<std::uint8_t>( 1, spread_work_stealing_division - 1 );
-        }
-        else
-        {
+            // Increase work-splitting if the worker has to wait/stall (having no work to steal).
+            BOOST_ASSUME( dispatched_parts );
             events::caller_join_begin( use_caller_thread );
             auto const stalled
             {

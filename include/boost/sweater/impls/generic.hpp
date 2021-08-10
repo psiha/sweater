@@ -110,11 +110,6 @@ public:
 
     static std::uint8_t spread_work_stealing_division;
 
-    static auto constexpr min_parallel_iter_boost_weight = 64;
-#if BOOST_SWEATER_USE_PARALLELIZATION_COST
-    static std::uint8_t min_parallel_iter_boost;
-#endif // BOOST_SWEATER_USE_PARALLELIZATION_COST
-
 private:
     struct worker_traits : functionoid::default_traits
     {
