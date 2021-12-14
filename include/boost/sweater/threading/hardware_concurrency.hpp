@@ -22,7 +22,7 @@
 #       define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 1
 #   elif defined( __ANDROID__ )
 #       if defined( __aarch64__ )
-#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 20 // Meizu PRO 6 10 cores
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 12 // Meizu PRO 6 10 cores
 #       elif defined( __arm__ )
 #           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // octa-low-v8-cores running as 32bit
 #       else // x86 or MIPS

@@ -230,16 +230,23 @@ shop::shop()
     consumer_token_{ queue_.consumer_token() }
 {
 #ifdef __GNUC__ // compilers with init_priority attribute (see hardware_concurency.hpp)
-    auto const local_hardware_concurrency( thrd_lite::hardware_concurrency_max );
+    hardware_concurrency_t local_hardware_concurrency( thrd_lite::hardware_concurrency_max );
 #else
     /// \note Avoid the static-initialization-order-fiasco (for compilers
     /// not supporting the init_priority attribute) by not using the
     /// global hardware_concurrency_max variable (i.e. allow users to
     /// safely create plain global-variable sweat_shop singletons).
     ///                                   (01.05.2017.) (Domagoj Saric)
-    auto const local_hardware_concurrency( thrd_lite::get_hardware_concurrency_max() );
+    hardware_concurrency_t local_hardware_concurrency( thrd_lite::get_hardware_concurrency_max() );
 #endif // __GNUC__
-    BOOST_ASSERT( local_hardware_concurrency > 0 );
+#if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
+    /// \note Fail-safe for possible future devices that may overflow
+    /// BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY or for cases like running an
+    /// ARMv7 slice on modern ARMv8 hardware.
+    ///                                   (14.12.2021.) (Domagoj Saric)
+    local_hardware_concurrency = std::min<hardware_concurrency_t>( local_hardware_concurrency, BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
+#endif
+    BOOST_ASSUME( local_hardware_concurrency > 0 );
     create_pool( local_hardware_concurrency - BOOST_SWEATER_USE_CALLER_THREAD );
 }
 
@@ -247,7 +254,7 @@ shop::~shop() noexcept { stop_and_destroy_pool(); }
 
 hardware_concurrency_t shop::number_of_workers() const noexcept
 {
-    auto const actual_number_of_workers{ number_of_worker_threads() + BOOST_SWEATER_USE_CALLER_THREAD };
+    auto const actual_number_of_workers{ number_of_worker_threads() + ( BOOST_SWEATER_USE_CALLER_THREAD && !thrd_lite::slow_thread_signals ) };
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     BOOST_ASSUME( actual_number_of_workers <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #endif
@@ -329,7 +336,7 @@ bool shop::bind_worker
         int result{ 2 };
         spread_the_sweat
         (
-            number_of_workers(),
+            number_of_worker_threads(),
             [ &, target_handle = thread.get_id() ]( iterations_t, iterations_t ) noexcept
             {
                 auto const current{ pthread_self() };
@@ -371,7 +378,6 @@ void shop::set_max_allowed_threads( hardware_concurrency_t const max_threads )
     BOOST_ASSERT_MSG( !hmp          , "Cannot change number of workers directly when HMP is enabled" );
     stop_and_destroy_pool();
     create_pool( max_threads - BOOST_SWEATER_USE_CALLER_THREAD );
-    BOOST_ASSERT( number_of_workers() == max_threads );
 }
 
 hardware_concurrency_t shop::number_of_items() const noexcept
