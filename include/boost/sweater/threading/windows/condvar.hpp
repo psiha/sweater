@@ -41,8 +41,8 @@ public:
     using mutex_t = win32_slim_mutex;
     using lock_t  = std::unique_lock<mutex_t>;
 
-    win32_condition_variable(                                   ) noexcept : cv_{ CONDITION_VARIABLE_INIT } {}
-    win32_condition_variable( win32_condition_variable && other ) noexcept : cv_{ other.cv_ } { other.cv_ = { CONDITION_VARIABLE_INIT }; }
+    win32_condition_variable(                                   ) noexcept : cv_( CONDITION_VARIABLE_INIT ) {}
+    win32_condition_variable( win32_condition_variable && other ) noexcept : cv_{ other.cv_ } { other.cv_ = CONDITION_VARIABLE_INIT; }
     win32_condition_variable( win32_condition_variable const &  ) = delete ;
    ~win32_condition_variable(                                   ) = default;
 

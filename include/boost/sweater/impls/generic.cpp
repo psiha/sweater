@@ -270,7 +270,7 @@ bool shop::set_priority( thrd_lite::priority const new_priority ) noexcept
 #ifdef __EMSCRIPTEN__
     return new_priority == thrd_lite::priority::normal;
 #else // !Emscripten
-    auto const nice_value( static_cast<int>( new_priority ) );
+    [[ maybe_unused ]] auto const nice_value( static_cast<int>( new_priority ) );
     bool success( true );
     for ( auto & thread : pool_ )
     {

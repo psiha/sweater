@@ -22,7 +22,7 @@
 
 #include <limits>
 
-#ifdef _MSC_VER
+#if defined( _MSC_VER ) && !defined( __clang__ )
 #include <emmintrin.h>
 #endif
 //------------------------------------------------------------------------------

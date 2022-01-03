@@ -29,8 +29,8 @@ class win32_condition_variable;
 class win32_slim_mutex
 {
 public:
-    win32_slim_mutex(                           ) noexcept : lock_{ SRWLOCK_INIT } {}
-    win32_slim_mutex( win32_slim_mutex && other ) noexcept : lock_{ other.lock_ } { other.lock_ = { SRWLOCK_INIT }; }
+    win32_slim_mutex(                           ) noexcept : lock_( SRWLOCK_INIT ) {}
+    win32_slim_mutex( win32_slim_mutex && other ) noexcept : lock_{ other.lock_ } { other.lock_ = SRWLOCK_INIT; }
     win32_slim_mutex( win32_slim_mutex const &  ) = delete ;
    ~win32_slim_mutex(                           ) = default;
 
