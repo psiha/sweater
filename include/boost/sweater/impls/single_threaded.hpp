@@ -64,7 +64,7 @@ public:
     static auto dispatch( F && work )
     {
 #   if defined( __EMSCRIPTEN__ ) && !defined( __EMSCRIPTEN_PTHREADS__ )
-        using result_t = typename std::result_of<F()>::type;
+        using result_t = std::invoke_result_t< F >;
         std::promise< result_t > promise;
         std::future < result_t > future( promise.get_future() );
         fire_and_forget
