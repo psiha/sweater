@@ -41,8 +41,16 @@
 #endif
 
 #ifdef _MSC_VER
+#   include <version>
+#   if defined( _MSVC_STL_VERSION )
 #   include <yvals.h>
-#   pragma detect_mismatch( "Boost.Sweater implementation", _STRINGIZE( BOOST_SWEATER_IMPL ) )
+#   define BOOST_SWEATER_STRINGIZE _STRINGIZE
+#else // presumably clang-cl with libcpp
+#   include "boost/preprocessor/stringize.hpp"
+#   define BOOST_SWEATER_STRINGIZE BOOST_PP_STRINGIZE
+#endif
+#   pragma detect_mismatch( "Boost.Sweater implementation", BOOST_SWEATER_STRINGIZE( BOOST_SWEATER_IMPL ) )
+#   undef BOOST_SWEATER_STRINGIZE
 #endif // _MSC_VER
 //------------------------------------------------------------------------------
 namespace boost
