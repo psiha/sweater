@@ -46,7 +46,12 @@ public:
     void unlock  () noexcept;
 
 private:
-    std::atomic_flag flag_ = ATOMIC_FLAG_INIT;
+    std::atomic_flag flag_
+    {
+#if __cplusplus < 202002
+        ATOMIC_FLAG_INIT
+#endif
+    };
 }; // class spin_lock
 
 //------------------------------------------------------------------------------
