@@ -55,7 +55,7 @@ void semaphore::signal( hardware_concurrency_t const count /*= 1*/ ) noexcept
         return;
 
     auto value{ load( std::memory_order_relaxed ) };
-    hardware_concurrency_t desired;
+    futex::value_type desired;
     do
     {
         auto const is_contested{ value < state::locked };
