@@ -3,7 +3,7 @@
 /// \file futex_barrier.cpp
 /// -----------------------
 ///
-/// (c) Copyright Domagoj Saric 2021.
+/// (c) Copyright Domagoj Saric 2021 - 2022.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -69,7 +69,11 @@ void futex_barrier::arrive() noexcept
     // stack space or even, case not used by Sweater, freed heap memory).
     if ( BOOST_UNLIKELY( everyone_arrived ) )
     {
+#   if 0
+        // In case the above scenario happens this check can fail (counter_ can
+        // contain garbage).
         BOOST_ASSERT( counter_ == 0 );
+#   endif
         counter_.wake_one();
     }
 }
