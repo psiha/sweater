@@ -29,8 +29,9 @@
 #           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 4
 #       endif // arch
 #   elif defined( __APPLE__ )
-#       if defined( __aarch64__ ) && defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ )
-#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // iPhone 12
+#       include <TargetConditionals.h>
+#       if defined( __aarch64__ ) && defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ ) && !TARGET_OS_SIMULATOR
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // iPhone 13
 #       elif defined( __arm__ )
 #           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
 #       else
