@@ -3,7 +3,7 @@
 /// \file generic.cpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2022.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -50,7 +50,7 @@ namespace events
     WEAK void caller_work_begin        (                                          std::uint32_t /*iterations*/                             ) noexcept {}
     WEAK void caller_work_end          (                                                                                                   ) noexcept {}
     WEAK void caller_stolen_work_begin (                                                                                                   ) noexcept {}
-    WEAK void caller_stolen_work_end   ( hardware_concurrency_t /*stolen_items*/                                                           ) noexcept {}
+    WEAK void caller_stolen_work_end   ( std::uint32_t          /*stolen_items*/                                                           ) noexcept {}
     WEAK void worker_enqueue_begin     ( hardware_concurrency_t /*worker_index*/, std::uint32_t /*begin_iter*/, std::uint32_t /*end_iter*/ ) noexcept {}
     WEAK void worker_enqueue_end       ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
     WEAK void worker_work_begin        ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
@@ -889,7 +889,7 @@ bool BOOST_CC_REG shop::spread_work
     {
         events::caller_stolen_work_begin();
         work_t work;
-        hardware_concurrency_t stolen_items{ 0 };
+        std::uint32_t stolen_items{ 0 };
         while ( true )
         {
             {
