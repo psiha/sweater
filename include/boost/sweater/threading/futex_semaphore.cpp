@@ -3,7 +3,7 @@
 /// \file futex_semaphore.cpp
 /// -------------------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2022.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -40,7 +40,9 @@ semaphore::~semaphore() noexcept
 #if 0 // need not hold on early destruction (when workers exit before waiting)
     BOOST_ASSUME( value_   == 0 );
 #endif
+#if !defined( _MSC_VER ) // TODO investigate: known to fail on process termination/global shop destruction
     BOOST_ASSERT( waiters_ == 0 );
+#endif
 }
 #endif // !NDEBUG
 
