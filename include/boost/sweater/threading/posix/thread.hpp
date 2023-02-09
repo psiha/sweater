@@ -3,7 +3,7 @@
 /// \file thread.hpp
 /// ----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -33,7 +33,7 @@
 #    pragma GCC diagnostic ignored "-Wattributes"
 #endif // GCC
     __attribute__(( const, weak )) inline
-    pid_t gettid() { return syscall( SYS_gettid ); }
+    pid_t gettid() { return static_cast< pid_t >( syscall( SYS_gettid ) ); }
 #ifdef BOOST_GCC
 #    pragma GCC diagnostic pop
 #endif // GCC
@@ -86,7 +86,7 @@ public:
     bool set_priority( priority      ) noexcept;
     bool bind_to_cpu ( affinity_mask ) noexcept;
 
-    static bool bind_to_cpu( native_handle_type, affinity_mask ) noexcept;
+    static bool bind_to_cpu( pid_t, affinity_mask ) noexcept;
 
 protected:
     // https://stackoverflow.com/questions/43819314/default-member-initializer-needed-within-definition-of-enclosing-class-outside

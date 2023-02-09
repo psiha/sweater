@@ -3,7 +3,7 @@
 /// \file futex_barrier.cpp
 /// -----------------------
 ///
-/// (c) Copyright Domagoj Saric 2021 - 2022.
+/// (c) Copyright Domagoj Saric 2021 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -43,7 +43,7 @@ void futex_barrier::initialize( hardware_concurrency_t const initial_value ) noe
 
 void futex_barrier::add_expected_arrival() noexcept { detail::overflow_checked_add( counter_, futex::value_type{ 1 } ); }
 
-hardware_concurrency_t futex_barrier::actives         () const noexcept { return counter_.load( std::memory_order_acquire ); }
+hardware_concurrency_t futex_barrier::actives         () const noexcept { return static_cast<hardware_concurrency_t>( counter_.load( std::memory_order_acquire ) ); }
 bool                   futex_barrier::everyone_arrived() const noexcept { return actives() == 0; }
 
 #if BOOST_SWEATER_USE_CALLER_THREAD

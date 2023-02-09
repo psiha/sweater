@@ -3,7 +3,7 @@
 /// \file spread_chunked.cpp
 /// ------------------------
 ///
-/// (c) Copyright Domagoj Saric 2021.
+/// (c) Copyright Domagoj Saric 2021 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -38,10 +38,10 @@ chunked_spread::chunked_spread( iterations_t const iterations, iterations_t cons
 BOOST_NOINLINE
 std::pair<iterations_t, iterations_t> chunked_spread::chunk_range( hardware_concurrency_t const chunk_index ) const noexcept
 {
-    auto const extra_iters        { std::min( chunk_index, extra_iterations ) };
-    auto const plain_iters        { chunk_index - extra_iters                 };
-    auto const this_has_extra_iter{ chunk_index < extra_iterations            };
-    auto const start_iteration
+    auto         const extra_iters        { std::min( chunk_index, extra_iterations ) };
+    iterations_t const plain_iters        ( chunk_index - extra_iters                 );
+    auto         const this_has_extra_iter{ chunk_index < extra_iterations            };
+    auto         const start_iteration
     {
         extra_iters * ( iterations_per_chunk + 1 )
             +

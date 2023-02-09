@@ -3,7 +3,7 @@
 /// \file thread.cpp
 /// ----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -50,7 +50,7 @@ namespace
     {
         auto const integral_division      {   numerator / denominator                          };
         auto const at_least_half_remainder{ ( numerator % denominator ) >= ( denominator / 2 ) };
-        return integral_division + at_least_half_remainder;
+        return static_cast<std::uint8_t>( integral_division + at_least_half_remainder );
     }
 #endif // !__ANDROID__
 } // anonymous namespace
@@ -81,7 +81,7 @@ bool thread_impl::set_priority( priority const new_priority ) noexcept
     /// https://github.com/android/platform_frameworks_base/blob/master/core/jni/android_util_Process.cpp#L475
     /// https://android.googlesource.com/platform/frameworks/native/+/jb-dev/libs/utils/Threads.cpp#329
     ///                                   (03.05.2017.) (Domagoj Saric)
-    return ::setpriority( PRIO_PROCESS, get_id(), nice_value ) == 0;
+    return ::setpriority( PRIO_PROCESS, /*...mrmlj...TODO pthread ID != kernel thread ID*/static_cast<id_t>( get_id() ), nice_value ) == 0;
 #else
     std::uint8_t const api_range            { static_cast<std::int8_t>( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) };
     auto         const platform_range       { default_policy_priority_range };
@@ -116,12 +116,12 @@ bool thread_impl::bind_to_cpu( [[ maybe_unused ]] affinity_mask const mask ) noe
 }
 
 BOOST_ATTRIBUTES( BOOST_COLD )
-bool thread_impl::bind_to_cpu( native_handle_type const handle, affinity_mask const mask ) noexcept
+bool thread_impl::bind_to_cpu( pid_t const thread_id, affinity_mask const mask ) noexcept
 {
 #ifdef __linux__
-    return sched_setaffinity( handle, sizeof( mask.value_ ), &mask.value_ ) == 0;
+    return sched_setaffinity( thread_id, sizeof( mask.value_ ), &mask.value_ ) == 0;
 #else // TODO Mach
-    (void)handle; (void)mask;
+    (void)thread_id; (void)mask;
     return 0;
 #endif
 }

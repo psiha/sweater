@@ -3,7 +3,7 @@
 /// \file futex_semaphore.cpp
 /// -------------------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2022.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -61,7 +61,7 @@ void semaphore::signal( hardware_concurrency_t const count /*= 1*/ ) noexcept
     do
     {
         auto const is_contested{ value < state::locked };
-        desired = value + count + is_contested;
+        desired = futex::value_type( value + count + is_contested );
     } while ( !value_.compare_exchange_weak( reinterpret_cast<futex::value_type &>( value ), desired, std::memory_order_acquire, std::memory_order_relaxed ) );
 
     if ( waiters_.load( std::memory_order_acquire ) )

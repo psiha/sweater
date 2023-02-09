@@ -3,7 +3,7 @@
 /// \file generic.cpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2022.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -637,7 +637,7 @@ bool BOOST_CC_REG shop::spread_work
 #endif // BOOST_SWEATER_USE_PARALLELIZATION_COST
 
     auto const actual_number_of_workers{ number_of_workers() };
-    auto const free_workers            { std::max<int>( 0, actual_number_of_workers - items_in_shop ) };
+    auto const free_workers            { static_cast<hardware_concurrency_t>( std::max<int>( 0, actual_number_of_workers - items_in_shop ) ) };
     auto const max_work_parts          { free_workers ? free_workers : number_of_worker_threads() }; // prefer using any available worker - otherwise queue and wait
     auto const queue_and_wait          { !free_workers };
     auto const use_caller_thread
