@@ -3,7 +3,7 @@
 /// \file apple.hpp
 /// ---------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -47,7 +47,8 @@ public:
 
     // http://newosxbook.com/articles/GCD.html
     // http://www.idryman.org/blog/2012/08/05/grand-central-dispatch-vs-openmp
-    static auto number_of_workers() noexcept
+    [[ gnu::pure ]]
+    static thrd_lite::hardware_concurrency_t number_of_workers() noexcept
     {
         BOOST_ASSERT_MSG( thrd_lite::hardware_concurrency_max == std::thread::hardware_concurrency(), "Hardware concurrency changed at runtime!?" );
 #   if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
