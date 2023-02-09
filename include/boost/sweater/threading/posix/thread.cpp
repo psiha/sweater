@@ -77,11 +77,13 @@ bool thread_impl::set_priority( priority const new_priority ) noexcept
     /// _or_
     /// try the undocumented things the Java Process.setThreadPriority()
     /// function seems to be doing:
+    /// https://android.googlesource.com/platform/frameworks/native/+/jb-dev/libs/utils/Threads.cpp#329
     /// https://github.com/android/platform_frameworks_base/blob/master/core/java/android/os/Process.java#L634
     /// https://github.com/android/platform_frameworks_base/blob/master/core/jni/android_util_Process.cpp#L475
-    /// https://android.googlesource.com/platform/frameworks/native/+/jb-dev/libs/utils/Threads.cpp#329
-    ///                                   (03.05.2017.) (Domagoj Saric)
-    return ::setpriority( PRIO_PROCESS, /*...mrmlj...TODO pthread ID != kernel thread ID*/static_cast<id_t>( get_id() ), nice_value ) == 0;
+    /// which actually does not work (get_id() != kernel thread ID)
+    /// https://github.com/android/ndk/issues/1255.
+    ///                                   (09.02.2023.) (Domagoj Saric)
+    return ::setpriority( PRIO_PROCESS, static_cast<id_t>( get_id() ), nice_value ) == 0;
 #else
     std::uint8_t const api_range            { static_cast<std::int8_t>( priority::idle ) - static_cast<std::int8_t>( priority::time_critical ) };
     auto         const platform_range       { default_policy_priority_range };

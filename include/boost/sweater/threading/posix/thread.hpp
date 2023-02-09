@@ -77,9 +77,9 @@ public:
 #endif // __linux__
     }; // class affinity_mask
 
-    void               join  ()       noexcept;
-    void               detach()       noexcept;
-    native_handle_type get_id() const noexcept;
+    void join  ()       noexcept;
+    void detach()       noexcept;
+    id   get_id() const noexcept;
 
     static auto get_active_thread_id() noexcept BOOST_NOTHROW_LITE { return pthread_self(); }
 
