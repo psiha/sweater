@@ -254,7 +254,7 @@ shop::~shop() noexcept { stop_and_destroy_pool(); }
 
 hardware_concurrency_t shop::number_of_workers() const noexcept
 {
-    auto const actual_number_of_workers{ number_of_worker_threads() + ( BOOST_SWEATER_USE_CALLER_THREAD && !thrd_lite::slow_thread_signals ) };
+    auto const actual_number_of_workers{ number_of_worker_threads() + BOOST_SWEATER_USE_CALLER_THREAD };
 #if BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY
     BOOST_ASSUME( actual_number_of_workers <= BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY );
 #endif
@@ -640,13 +640,7 @@ bool BOOST_CC_REG shop::spread_work
     auto const free_workers            { static_cast<hardware_concurrency_t>( std::max<int>( 0, actual_number_of_workers - items_in_shop ) ) };
     auto const max_work_parts          { free_workers ? free_workers : number_of_worker_threads() }; // prefer using any available worker - otherwise queue and wait
     auto const queue_and_wait          { !free_workers };
-    auto const use_caller_thread
-    {
-        BOOST_SWEATER_USE_CALLER_THREAD &&
-        !queue_and_wait                 &&
-        // On slow_thread_signals devices use the caller thread for signaling the workers and then stealing work if time remains.
-        ( !thrd_lite::slow_thread_signals || ( thrd_lite::slow_thread_signals && ( iterations <= parallelizable_iterations_count ) ) )
-    };
+    auto const use_caller_thread       { BOOST_SWEATER_USE_CALLER_THREAD && !queue_and_wait };
 
 #if BOOST_SWEATER_USE_CALLER_THREAD
     completion_barrier.use_spin_wait( !queue_and_wait );

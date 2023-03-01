@@ -3,7 +3,7 @@
 /// \file generic.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
