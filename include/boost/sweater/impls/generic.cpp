@@ -585,7 +585,7 @@ auto shop::dispatch_workers
 #endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
 
 BOOST_NOINLINE
-bool BOOST_CC_REG shop::spread_work
+bool shop::spread_work
 (
     spread_work_template_t       work_part_template,
     iterations_t           const iterations,

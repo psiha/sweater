@@ -308,7 +308,7 @@ private:
     ) noexcept;
 #endif // BOOST_SWEATER_EXACT_WORKER_SELECTION
 
-    bool BOOST_CC_REG spread_work
+    bool spread_work
     (
         spread_work_template_t work_part_template,
         iterations_t           iterations,
