@@ -18,6 +18,9 @@
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+
+#include <climits>
+
 //------------------------------------------------------------------------------
 namespace boost
 {
