@@ -156,7 +156,12 @@ public:
     template <typename F>
     static auto dispatch( F && work )
     {
+#       if     __cplusplus >= 201703L
+        using result_t = typename std::invoke_result_t<F>;
+#       else
         using result_t = typename std::result_of<F()>::type;
+#       endif
+
         std::promise<result_t> promise;
         std::future<result_t> future( promise.get_future() );
         fire_and_forget
