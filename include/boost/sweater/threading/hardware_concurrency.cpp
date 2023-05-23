@@ -3,7 +3,7 @@
 /// \file hardware_concurrency.cpp
 /// ------------------------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -64,6 +64,7 @@ hardware_concurrency_t get_hardware_concurrency_max() noexcept { return 1; }
 
 namespace
 {
+    [[ maybe_unused ]]
     int read_int( char const * const file_path ) noexcept
     {
         auto const fd{ ::open( file_path, O_RDONLY, 0 ) };
@@ -71,6 +72,7 @@ namespace
             return -1;
         char value[ 64 ];
         BOOST_VERIFY( ::read( fd, value, sizeof( value ) ) < signed( sizeof( value ) ) );
+        BOOST_VERIFY( ::close( fd ) == 0 );
         return std::atoi( value );
     }
 
@@ -81,13 +83,25 @@ namespace
         // RAM limit /sys/fs/cgroup/memory.limit_in_bytes
         // swap limt /sys/fs/cgroup/memory.memsw.limit_in_bytes
 
+#   ifdef __aarch64__
+        // https://github.com/moby/moby/issues/20770#issuecomment-1559152307
+        auto const fd{ ::open( "/sys/fs/cgroup/cpu.max", O_RDONLY, 0 ) };
+        char value_pair[ 128 ]; value_pair[ 0 ] = 0;
+        BOOST_VERIFY( ::read( fd, value_pair, sizeof( value_pair ) ) < signed( sizeof( value_pair ) ) );
+        BOOST_VERIFY( ::close( fd ) == 0 );
+
+        char * cfs_period_ptr;
+        auto const cfs_quota { std::strtol( value_pair    , &cfs_period_ptr, 10 ) };
+        auto const cfs_period{ std::strtol( cfs_period_ptr, nullptr        , 10 ) };
+#   else
         auto const cfs_quota { read_int( "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"  ) };
         auto const cfs_period{ read_int( "/sys/fs/cgroup/cpu/cpu.cfs_period_us" ) };
+#   endif
         if ( ( cfs_quota > 0 ) && ( cfs_period > 0 ) )
         {
             // Docker allows non-whole core quota assignments - use some sort of
             // heurestical rounding.
-            return std::max( ( cfs_quota + cfs_period / 2 ) / cfs_period, 1 );
+            return std::max( static_cast<int>( ( cfs_quota + cfs_period / 2 ) / cfs_period ), 1 );
         }
         return -1;
     }
