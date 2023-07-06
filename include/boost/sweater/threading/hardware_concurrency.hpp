@@ -31,11 +31,11 @@
 #   elif defined( __APPLE__ )
 #       include <TargetConditionals.h>
 #       if defined( __aarch64__ ) && defined( __ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__ ) && !TARGET_OS_SIMULATOR
-#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 8 // iPhone 13
+#           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 24 // M2 Ultra running native iOS app via Catalyst
 #       elif defined( __arm__ )
 #           define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
 #       else
-#          define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 32 // desktop or simulator
+#          define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 0 // desktop or simulator
 #       endif // arch
 #   elif defined(__WINDOWS_PHONE__)
 #	    define BOOST_SWEATER_MAX_HARDWARE_CONCURRENCY 2
