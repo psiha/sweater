@@ -762,7 +762,7 @@ bool shop::spread_work
 #   if BOOST_SWEATER_EXACT_WORKER_SELECTION
         // When there are items_in_shop fallback to the shared queue (as
         // there is currently no tracking which queues/workers are taken).
-        if ( !thrd_lite::slow_thread_signals && !items_in_shop )
+        if ( !thrd_lite::slow_thread_signals && !items_in_shop ) [[ likely ]]
         {
             iteration = dispatch_workers( 0, iteration, number_of_dispatched_work_parts, iterations_per_part, parts_with_extra_iteration, iterations, completion_barrier, work_part_template ).second;
             BOOST_ASSUME( iteration <= iterations );
