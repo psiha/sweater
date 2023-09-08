@@ -16,6 +16,10 @@
 #pragma once
 //------------------------------------------------------------------------------
 #if defined( __APPLE__ )
+// TODO
+// https://developer.apple.com/forums/thread/707288
+// https://lists.apple.com/archives/darwin-dev/2018/Jul/msg00003.html
+// https://webkit.org/blog/6161/locking-in-webkit
 #include "generic_barrier.hpp"
 #else
 #include "futex_barrier.hpp"
