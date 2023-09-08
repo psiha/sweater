@@ -3,7 +3,7 @@
 /// \file generic_config.hpp
 /// ------------------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -29,8 +29,8 @@
 // https://www.kernel.org/doc/html/latest/scheduler/sched-energy.html
 // https://www.sisoftware.co.uk/2015/06/22/arm-big-little-the-trouble-with-heterogeneous-multi-processing-when-4-are-better-than-8-or-when-8-is-not-always-the-lucky-number
 // https://lwn.net/Articles/352286
-#if defined( __aarch64__ )
-#   define BOOST_SWEATER_HMP true
+#if ( defined( __ANDROID__ ) || defined( __APPLE__ ) ) && defined( __aarch64__ )
+#   define BOOST_SWEATER_HMP false // implicit balancing through work stealing works better
 #else
 #   define BOOST_SWEATER_HMP false
 #endif
