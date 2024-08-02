@@ -15,6 +15,8 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include <boost/assert.hpp>
+
 #include <pthread.h>
 //------------------------------------------------------------------------------
 namespace boost::thrd_lite
@@ -35,8 +37,8 @@ public:
     void acquire_rw() noexcept { BOOST_VERIFY( pthread_rwlock_wrlock( &lock_ ) == 0 ); }
     void release_rw() noexcept { release_ro(); }
 
-    bool try_acquire_ro() noexcept { return ::pthread_rwlock_tryrdlock( &lock_ ) == 0; }
-    bool try_acquire_rw() noexcept { return ::pthread_rwlock_trywrlock( &lock_ ) == 0; }
+    bool try_acquire_ro() noexcept { return pthread_rwlock_tryrdlock( &lock_ ) == 0; }
+    bool try_acquire_rw() noexcept { return pthread_rwlock_trywrlock( &lock_ ) == 0; }
 
 public: // std::shared_lock interface
     void   lock() noexcept { acquire_rw(); }
