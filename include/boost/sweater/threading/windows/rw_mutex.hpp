@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 ///
-/// \file rw_lock.hpp
-/// -----------------
+/// \file rw_mutex.hpp
+/// ------------------
 ///
 /// (c) Copyright Domagoj Saric 2024.
 ///
@@ -15,30 +15,28 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#include <boost/assert.hpp>
-
-#include <pthread.h>
+#include <windows.h>
 //------------------------------------------------------------------------------
 namespace boost::thrd_lite
 {
 //------------------------------------------------------------------------------
 
-class rw_lock
+class [[ clang::trivial_abi ]] rw_mutex
 {
 public:
-    rw_lock(                  ) noexcept { pthread_rwlock_init( &lock_, nullptr ); }
-    rw_lock( rw_lock && other ) noexcept : lock_{ other.lock_ } { pthread_rwlock_init( &other.lock_, nullptr ); }
-    rw_lock( rw_lock const &  ) = delete ;
-   ~rw_lock(                  ) noexcept { pthread_rwlock_destroy( &lock_ ); }
+    constexpr rw_mutex(                   ) noexcept : lock_( SRWLOCK_INIT ) {}
+    constexpr rw_mutex( rw_mutex && other ) noexcept : lock_{ other.lock_ } { other.lock_ = SRWLOCK_INIT; }
+              rw_mutex( rw_mutex const &  ) = delete ;
+             ~rw_mutex(                   ) = default;
 
-    void acquire_ro() noexcept { BOOST_VERIFY( pthread_rwlock_rdlock( &lock_ ) == 0 ); }
-    void release_ro() noexcept { BOOST_VERIFY( pthread_rwlock_unlock( &lock_ ) == 0 ); }
+    void acquire_ro() noexcept { ::AcquireSRWLockShared( &lock_ ); }
+    void release_ro() noexcept { ::ReleaseSRWLockShared( &lock_ ); }
 
-    void acquire_rw() noexcept { BOOST_VERIFY( pthread_rwlock_wrlock( &lock_ ) == 0 ); }
-    void release_rw() noexcept { release_ro(); }
+    void acquire_rw() noexcept { ::AcquireSRWLockExclusive( &lock_ ); }
+    void release_rw() noexcept { ::ReleaseSRWLockExclusive( &lock_ ); }
 
-    bool try_acquire_ro() noexcept { return pthread_rwlock_tryrdlock( &lock_ ) == 0; }
-    bool try_acquire_rw() noexcept { return pthread_rwlock_trywrlock( &lock_ ) == 0; }
+    bool try_acquire_ro() noexcept { return ::TryAcquireSRWLockShared   ( &lock_ ) != false; }
+    bool try_acquire_rw() noexcept { return ::TryAcquireSRWLockExclusive( &lock_ ) != false; }
 
 public: // std::shared_lock interface
     void   lock() noexcept { acquire_rw(); }
@@ -53,8 +51,8 @@ public: // std::shared_lock interface
     bool try_lock_shared() noexcept { return try_acquire_ro(); }
 
 private:
-    pthread_rwlock_t lock_;
-}; // class rw_lock
+    ::SRWLOCK lock_;
+}; // class rw_mutex
 
 //------------------------------------------------------------------------------
 } // namespace boost::thrd_lite
