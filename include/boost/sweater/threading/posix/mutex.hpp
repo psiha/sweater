@@ -3,7 +3,7 @@
 /// \file mutex.hpp
 /// ---------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2021.
+/// (c) Copyright Domagoj Saric 2016 - 2024.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -20,10 +20,7 @@
 
 #include <pthread.h>
 //------------------------------------------------------------------------------
-namespace boost
-{
-//------------------------------------------------------------------------------
-namespace thrd_lite
+namespace boost::thrd_lite
 {
 //------------------------------------------------------------------------------
 
@@ -53,7 +50,5 @@ private: friend class pthread_condition_variable;
 }; // class pthread_mutex
 
 //------------------------------------------------------------------------------
-} // namespace thrd_lite
-//------------------------------------------------------------------------------
-} // namespace boost
+} // namespace boost::thrd_lite
 //------------------------------------------------------------------------------
