@@ -15,6 +15,8 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include <boost/config_ex.hpp>
+
 #include <windows.h>
 //------------------------------------------------------------------------------
 namespace boost::thrd_lite
@@ -29,6 +31,14 @@ public:
               rw_mutex( rw_mutex const &  ) = delete ;
              ~rw_mutex(                   ) = default;
 
+    rw_mutex & operator=( rw_mutex && other ) noexcept
+    {
+        // this dummy operation makes sense only for dormant mutexes
+        BOOST_ASSUME( !this->locked() );
+        BOOST_ASSUME( !other.locked() );
+        return *this;
+    }
+
     void acquire_ro() noexcept { ::AcquireSRWLockShared( &lock_ ); }
     void release_ro() noexcept { ::ReleaseSRWLockShared( &lock_ ); }
 
@@ -37,6 +47,8 @@ public:
 
     bool try_acquire_ro() noexcept { return ::TryAcquireSRWLockShared   ( &lock_ ) != false; }
     bool try_acquire_rw() noexcept { return ::TryAcquireSRWLockExclusive( &lock_ ) != false; }
+
+    [[ gnu::pure ]] bool locked() const noexcept { return lock_.Ptr != nullptr; }
 
 public: // std::shared_lock interface
     void   lock() noexcept { acquire_rw(); }
