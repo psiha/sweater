@@ -3,7 +3,7 @@
 /// \file rw_mutex.hpp
 /// ------------------
 ///
-/// (c) Copyright Domagoj Saric 2024.
+/// (c) Copyright Domagoj Saric.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -27,7 +27,7 @@ class [[ clang::trivial_abi ]] rw_mutex
 {
 public:
     constexpr rw_mutex(                   ) noexcept : lock_( SRWLOCK_INIT ) {}
-    constexpr rw_mutex( rw_mutex && other ) noexcept : lock_{ other.lock_ } { other.lock_ = SRWLOCK_INIT; }
+    constexpr rw_mutex( rw_mutex && other ) noexcept : rw_mutex{} { BOOST_ASSUME( !other.locked() ); }
               rw_mutex( rw_mutex const &  ) = delete ;
              ~rw_mutex(                   ) = default;
 
