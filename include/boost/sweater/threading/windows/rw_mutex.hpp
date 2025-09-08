@@ -15,6 +15,7 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include <boost/assert.hpp>
 #include <boost/config_ex.hpp>
 
 #include <windows.h>
@@ -29,7 +30,9 @@ public:
     constexpr rw_mutex(                   ) noexcept : lock_( SRWLOCK_INIT ) {}
     constexpr rw_mutex( rw_mutex && other ) noexcept : rw_mutex{} { BOOST_ASSUME( !other.locked() ); }
               rw_mutex( rw_mutex const &  ) = delete ;
-             ~rw_mutex(                   ) = default;
+#ifndef NDEBUG
+    ~rw_mutex() { BOOST_ASSERT( !locked() ); }
+#endif
 
     rw_mutex & operator=( rw_mutex && other ) noexcept
     {
