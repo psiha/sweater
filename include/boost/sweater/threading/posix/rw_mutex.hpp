@@ -3,7 +3,7 @@
 /// \file rw_mutex.hpp
 /// ------------------
 ///
-/// (c) Copyright Domagoj Saric 2024.
+/// (c) Copyright Domagoj Saric 2024 - 2025.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -25,6 +25,11 @@
 namespace boost::thrd_lite
 {
 //------------------------------------------------------------------------------
+
+// https://probablydance.com/2019/12/30/measuring-mutexes-spinlocks-and-how-bad-the-linux-scheduler-really-is
+// https://www.realworldtech.com/forum/?threadid=189711&curpostid=189723 No nuances, just buggy code (was: related to Spinlock implementation and the Linux Scheduler)
+// https://github.com/markwaterman/MutexShootout
+// https://github.com/nicowilliams/ctp RCU
 
 class [[ clang::trivial_abi ]] rw_mutex
 {
