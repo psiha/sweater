@@ -42,14 +42,14 @@ public:
         return *this;
     }
 
-    void acquire_ro() noexcept { ::AcquireSRWLockShared( &lock_ ); }
-    void release_ro() noexcept { ::ReleaseSRWLockShared( &lock_ ); }
+    void acquire_ro() noexcept { verify_deadlock(); ::AcquireSRWLockShared( &lock_ ); }
+    void release_ro() noexcept {                    ::ReleaseSRWLockShared( &lock_ ); }
 
-    void acquire_rw() noexcept { ::AcquireSRWLockExclusive( &lock_ ); }
-    void release_rw() noexcept { ::ReleaseSRWLockExclusive( &lock_ ); }
+    void acquire_rw() noexcept { verify_deadlock(); ::AcquireSRWLockExclusive( &lock_ ); BOOST_ASSERT( active_writer_ = ::GetCurrentThreadId() ); }
+    void release_rw() noexcept {                    ::ReleaseSRWLockExclusive( &lock_ ); BOOST_ASSERT( !( active_writer_ = 0 ) ); }
 
-    bool try_acquire_ro() noexcept { return ::TryAcquireSRWLockShared   ( &lock_ ) != false; }
-    bool try_acquire_rw() noexcept { return ::TryAcquireSRWLockExclusive( &lock_ ) != false; }
+    bool try_acquire_ro() noexcept { verify_deadlock(); return ::TryAcquireSRWLockShared   ( &lock_ ) != false; }
+    bool try_acquire_rw() noexcept { verify_deadlock(); return ::TryAcquireSRWLockExclusive( &lock_ ) != false; }
 
     [[ gnu::pure ]] bool locked() const noexcept { return lock_.Ptr != nullptr; }
 
@@ -66,7 +66,15 @@ public: // std::shared_lock interface
     bool try_lock_shared() noexcept { return try_acquire_ro(); }
 
 private:
+    void verify_deadlock() const noexcept {
+        BOOST_ASSERT( !locked() || ( active_writer_ != ::GetCurrentThreadId() ) );
+    }
+    // https://stackoverflow.com/questions/13206414/why-slim-reader-writer-exclusive-lock-outperforms-the-shared-lock/13216189#13216189
+    // https://news.ycombinator.com/item?id=39581664 Bug in reader/writer locks in Windows API
     ::SRWLOCK lock_;
+#ifndef NDEBUG
+    DWORD active_writer_{};
+#endif
 }; // class rw_mutex
 
 //------------------------------------------------------------------------------
