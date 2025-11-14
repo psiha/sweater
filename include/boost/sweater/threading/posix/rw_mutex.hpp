@@ -30,11 +30,21 @@ namespace boost::thrd_lite
 // https://www.realworldtech.com/forum/?threadid=189711&curpostid=189723 No nuances, just buggy code (was: related to Spinlock implementation and the Linux Scheduler)
 // https://github.com/markwaterman/MutexShootout
 // https://github.com/nicowilliams/ctp RCU
+// https://arxiv.org/abs/1109.2638 Light-weight Locks
+// https://arxiv.org/abs/1810.01553 Biased Locking for Reader-Writer Locks
 
-class [[ clang::trivial_abi ]] rw_mutex
+class
+#ifdef PTHREAD_RWLOCK_INITIALIZER
+    // if a dynamic initializer is required we cannot be sure that the type is trivially moveable (ie destruction can be skipped)
+    // (on OSX deadlock was observed when trying to use a single statically
+    // initialized pthread_rwlock_t instance as an initializer for the
+    // rw_mutex::lock_ member)
+    [[ clang::trivial_abi ]]
+#endif
+rw_mutex
 {
 public:
-    rw_mutex() noexcept = default;
+    rw_mutex() noexcept;
    ~rw_mutex() noexcept { BOOST_VERIFY( pthread_rwlock_destroy( &lock_ ) == 0 ); }
 
     explicit // allow copy so as to enable use of compiler generated constructors/functions for types that contain rw_mutex members
@@ -81,12 +91,19 @@ public: // std::shared_lock interface
     bool try_lock_shared() noexcept { return try_acquire_ro(); }
 
 private:
-    inline static pthread_rwlock_t initialzer;
-    [[ gnu::constructor( 101 ) ]]
-    static void init_initializer() noexcept { BOOST_VERIFY( pthread_rwlock_init( &initialzer, nullptr ) == 0 ); }
-
-    pthread_rwlock_t lock_{ initialzer };
+    pthread_rwlock_t lock_; // this is yuge on OSX (200 bytes)
 }; // class rw_mutex
+
+inline rw_mutex::rw_mutex() noexcept
+{
+#ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
+    lock_ = PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP;
+#elifdef PTHREAD_RWLOCK_INITIALIZER
+    lock_ = PTHREAD_RWLOCK_INITIALIZER;
+#else
+    BOOST_VERIFY( pthread_rwlock_init( &lock_, nullptr ) == 0 ); }
+#endif
+}
 
 //------------------------------------------------------------------------------
 } // namespace boost::thrd_lite
