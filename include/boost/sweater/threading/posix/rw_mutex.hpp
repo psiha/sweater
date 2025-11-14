@@ -3,7 +3,7 @@
 /// \file rw_mutex.hpp
 /// ------------------
 ///
-/// (c) Copyright Domagoj Saric 2024 - 2025.
+/// (c) Copyright Domagoj Saric 2024 - 2026.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -34,10 +34,12 @@ namespace boost::thrd_lite
 class [[ clang::trivial_abi ]] rw_mutex
 {
 public:
-    rw_mutex(                   ) noexcept { BOOST_VERIFY( pthread_rwlock_init( &lock_, nullptr ) == 0 ); }
-    rw_mutex( rw_mutex && other ) noexcept : lock_{ other.lock_ } { BOOST_VERIFY( pthread_rwlock_init( &other.lock_, nullptr ) == 0 ); } // OSX: move not supported while locked
-    rw_mutex( rw_mutex const &  ) = delete ;
-   ~rw_mutex(                   ) noexcept { BOOST_VERIFY( pthread_rwlock_destroy( &lock_ ) == 0 ); }
+    rw_mutex() noexcept { BOOST_VERIFY( pthread_rwlock_init( &lock_, nullptr ) == 0 ); }
+   ~rw_mutex() noexcept { BOOST_VERIFY( pthread_rwlock_destroy( &lock_ ) == 0 ); }
+
+    explicit // allow copy so as to enable use compiler generated constructors/functions for types that contain rw_mutex members
+    rw_mutex( [[ maybe_unused ]] rw_mutex const &  other ) noexcept : rw_mutex{} { BOOST_VERIFY_MSG( std::memcmp( &other.lock_, &lock_, sizeof( lock_ ) ) == 0, "Copy allowed only for dormant mutexes" ); }
+    rw_mutex( [[ maybe_unused ]] rw_mutex       && other ) noexcept : rw_mutex{} { BOOST_VERIFY_MSG( std::memcmp( &other.lock_, &lock_, sizeof( lock_ ) ) == 0, "Relocation allowed only for dormant mutexes" ); }
 
     rw_mutex & operator=( [[ maybe_unused ]] rw_mutex && other ) noexcept
     {
