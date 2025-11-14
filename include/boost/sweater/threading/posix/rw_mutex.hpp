@@ -38,17 +38,12 @@ public:
    ~rw_mutex() noexcept { BOOST_VERIFY( pthread_rwlock_destroy( &lock_ ) == 0 ); }
 
     explicit // allow copy so as to enable use compiler generated constructors/functions for types that contain rw_mutex members
-    rw_mutex( [[ maybe_unused ]] rw_mutex const &  other ) noexcept : rw_mutex{} { BOOST_VERIFY_MSG( std::memcmp( &other.lock_, &lock_, sizeof( lock_ ) ) == 0, "Copy allowed only for dormant mutexes" ); }
-    rw_mutex( [[ maybe_unused ]] rw_mutex       && other ) noexcept : rw_mutex{} { BOOST_VERIFY_MSG( std::memcmp( &other.lock_, &lock_, sizeof( lock_ ) ) == 0, "Relocation allowed only for dormant mutexes" ); }
+    rw_mutex( [[ maybe_unused ]] rw_mutex const &  other ) noexcept : rw_mutex{} { BOOST_ASSERT_MSG( !other.is_locked(), "Copy allowed only for dormant mutexes" ); }
+    rw_mutex( [[ maybe_unused ]] rw_mutex       && other ) noexcept : rw_mutex{} { BOOST_ASSERT_MSG( !other.is_locked(), "Relocation allowed only for dormant mutexes" ); }
 
     rw_mutex & operator=( [[ maybe_unused ]] rw_mutex && other ) noexcept
     {
-#   ifndef NDEBUG
-        // this operation makes sense only for dormant mutexes
-        rw_mutex dormant;
-        BOOST_ASSERT( std::memcmp(  this , &dormant, sizeof( *this ) ) == 0 );
-        BOOST_ASSERT( std::memcmp( &other, &dormant, sizeof( *this ) ) == 0 );
-#   endif
+        BOOST_ASSERT_MSG( !is_locked() && !other.is_locked(), "Relocation allowed only for dormant mutexes" );
         return *this;
     }
 
@@ -60,6 +55,18 @@ public:
 
     bool try_acquire_ro() noexcept { return pthread_rwlock_tryrdlock( &lock_ ) == 0; }
     bool try_acquire_rw() noexcept { return pthread_rwlock_trywrlock( &lock_ ) == 0; }
+
+    // debugging aid
+    bool is_locked() const noexcept
+    {
+        auto & mtbl{ const_cast<rw_mutex &>( *this ) };
+        if ( mtbl.try_lock() ) // covers RO and RW locks
+        {
+            mtbl.unlock();
+            return false;
+        }
+        return true;
+    }
 
 public: // std::shared_lock interface
     void   lock() noexcept { acquire_rw(); }
