@@ -34,10 +34,10 @@ namespace boost::thrd_lite
 class [[ clang::trivial_abi ]] rw_mutex
 {
 public:
-    rw_mutex() noexcept { BOOST_VERIFY( pthread_rwlock_init( &lock_, nullptr ) == 0 ); }
+    rw_mutex() noexcept = default;
    ~rw_mutex() noexcept { BOOST_VERIFY( pthread_rwlock_destroy( &lock_ ) == 0 ); }
 
-    explicit // allow copy so as to enable use compiler generated constructors/functions for types that contain rw_mutex members
+    explicit // allow copy so as to enable use of compiler generated constructors/functions for types that contain rw_mutex members
     rw_mutex( [[ maybe_unused ]] rw_mutex const &  other ) noexcept : rw_mutex{} { BOOST_ASSERT_MSG( !other.is_locked(), "Copy allowed only for dormant mutexes" ); }
     rw_mutex( [[ maybe_unused ]] rw_mutex       && other ) noexcept : rw_mutex{} { BOOST_ASSERT_MSG( !other.is_locked(), "Relocation allowed only for dormant mutexes" ); }
 
@@ -81,7 +81,11 @@ public: // std::shared_lock interface
     bool try_lock_shared() noexcept { return try_acquire_ro(); }
 
 private:
-    pthread_rwlock_t lock_;
+    inline static pthread_rwlock_t initialzer;
+    [[ gnu::constructor( 101 ) ]]
+    static void init_initializer() noexcept { BOOST_VERIFY( pthread_rwlock_init( &initialzer, nullptr ) == 0 ); }
+
+    pthread_rwlock_t lock_{ initialzer };
 }; // class rw_mutex
 
 //------------------------------------------------------------------------------
