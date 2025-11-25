@@ -51,6 +51,7 @@ private:
 class [[ clang::trivial_abi ]] rw_lock
 {
 public:
+    constexpr rw_lock() noexcept = default;
     rw_lock( rw_mutex & mutex ) noexcept : p_mutex_{ &mutex } {                 p_mutex_->acquire_rw(); }
    ~rw_lock(                  ) noexcept                      { if ( p_mutex_ ) p_mutex_->release_rw(); }
     rw_lock( rw_lock const &  ) = delete;
