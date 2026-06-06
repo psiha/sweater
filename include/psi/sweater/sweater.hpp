@@ -40,18 +40,24 @@
 #	include "impls/generic.hpp"
 #endif
 
+// Detect linker-level ODR mismatches between TUs compiled with different impls.
+// Use a literal-string #if/#elif chain because #pragma detect_mismatch requires
+// a compile-time string literal — macro-stringize does not expand reliably inside
+// #pragma arguments on all compilers (e.g. clang-cl ignores the expansion).
 #ifdef _MSC_VER
-#   include <version>
-#   if defined( _MSVC_STL_VERSION )
-#   include <yvals.h>
-#   define PSI_SWEATER_STRINGIZE _STRINGIZE
-#else // presumably clang-cl with libcpp
-#   include <boost/preprocessor/stringize.hpp>
-#   define PSI_SWEATER_STRINGIZE BOOST_PP_STRINGIZE
-#endif
-#   pragma detect_mismatch( "Boost.Sweater implementation", PSI_SWEATER_STRINGIZE( PSI_SWEATER_IMPL ) )
-#   undef PSI_SWEATER_STRINGIZE
+#   if   PSI_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
+#       pragma detect_mismatch( "psi::sweater implementation", "single_threaded" )
+#   elif defined( __APPLE__ )
+#       pragma detect_mismatch( "psi::sweater implementation", "apple"           )
+#   elif defined( _WIN32 )
+#       pragma detect_mismatch( "psi::sweater implementation", "windows"         )
+#   elif defined( _OPENMP )
+#       pragma detect_mismatch( "psi::sweater implementation", "openmp"          )
+#   else
+#       pragma detect_mismatch( "psi::sweater implementation", "generic"         )
+#   endif
 #endif // _MSC_VER
+
 //------------------------------------------------------------------------------
 namespace psi::sweater
 {

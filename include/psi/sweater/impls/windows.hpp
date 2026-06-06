@@ -210,8 +210,6 @@ public:
         return future;
     }
 
-    // No-ops — the default system thread pool manages its own priorities.
-    static bool set_priority( thrd_lite::priority ) noexcept { return true; }
 }; // class shop
 
 //------------------------------------------------------------------------------
