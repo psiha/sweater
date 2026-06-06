@@ -8,9 +8,10 @@
 #  See http://www.boost.org for most recent version.
 #############################################################################
 
-set( src_root "${CMAKE_CURRENT_LIST_DIR}/include/boost/sweater" )
+set( src_root "${CMAKE_CURRENT_LIST_DIR}/include/psi/sweater" )
 
 set( sweater_sources
+    ${src_root}/detail/config.hpp
     ${src_root}/spread_chunked.cpp
     ${src_root}/spread_chunked.hpp
     ${src_root}/sweater.hpp
@@ -20,12 +21,18 @@ set( sources_impls
     ${src_root}/impls/apple.hpp
     ${src_root}/impls/generic.cpp
     ${src_root}/impls/generic.hpp
+    ${src_root}/impls/generic_config.hpp
     ${src_root}/impls/openmp.hpp
     ${src_root}/impls/single_threaded.hpp
     ${src_root}/impls/windows.hpp
 )
 source_group( "Impls" FILES ${sources_impls} )
 list( APPEND sweater_sources ${sources_impls} )
+if ( WIN32 OR APPLE )
+    # Windows and Apple use native impls (windows.hpp / apple.hpp); the generic
+    # thread pool's .cpp is excluded from compilation on those platforms.
+    set_source_files_properties( ${src_root}/impls/generic.cpp PROPERTIES HEADER_FILE_ONLY ON )
+endif()
 
 set( sources_queues
     ${src_root}/queues/mpmc_moodycamel.hpp
