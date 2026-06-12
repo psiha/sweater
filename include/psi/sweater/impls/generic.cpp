@@ -61,6 +61,8 @@ namespace events
     WEAK void spread_recursive_call    ( hardware_concurrency_t /*worker_index*/, hardware_concurrency_t /*items_in_shop*/                 ) noexcept {}
     WEAK void spread_end               ( hardware_concurrency_t /*dispatched_parts*/, bool /*caller_used*/                                 ) noexcept {}
 
+    WEAK void worker_thread_init       ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
+
 #undef WEAK
 } // namespace events
 
@@ -163,6 +165,10 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
             auto consumer_token{ queue.consumer_token() };
 
             work_t work;
+
+            // One-shot per-worker init hook (weak no-op unless a consumer
+            // overrides it — e.g. rama installs mimalloc's mi_thread_init).
+            events::worker_thread_init( worker_index );
 
             for ( ; ; )
             {

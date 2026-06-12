@@ -15,6 +15,8 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include "../../detail/config.hpp" // PSI_UNLIKELY, BOOST_ASSUME (via boost/config_ex)
+
 #include <pthread.h>
 
 #if defined( __linux )

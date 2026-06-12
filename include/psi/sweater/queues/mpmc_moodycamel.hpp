@@ -22,7 +22,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 // https://svn.boost.org/trac/boost/ticket/12880
-#if defined( _WIN64 ) || defined( __APPLE__ ) || defined( __aarch64__ ) || defined( LP64 )
+#if defined( _WIN64 ) || defined( __APPLE__ ) || defined( __aarch64__ ) || defined( __LP64__ )
 #   define PSI_SWEATER_AUX_ALIGNED_MALLOC
 #endif
 

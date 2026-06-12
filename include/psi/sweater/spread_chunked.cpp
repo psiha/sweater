@@ -16,6 +16,7 @@
 #include "spread_chunked.hpp"
 
 #include <boost/assert.hpp>
+#include <boost/config.hpp>
 //------------------------------------------------------------------------------
 namespace psi::sweater
 {

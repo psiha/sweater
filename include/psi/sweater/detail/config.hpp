@@ -17,6 +17,8 @@
 #pragma once
 //------------------------------------------------------------------------------
 
+#include <boost/config_ex.hpp> // BOOST_ASSUME, BOOST_LIKELY/UNLIKELY, BOOST_NOINLINE, ...
+
 // ── Branch prediction hints ───────────────────────────────────────────────────
 #if __has_builtin( __builtin_expect )
 #   define PSI_LIKELY(x)   __builtin_expect( !!(x), 1 )

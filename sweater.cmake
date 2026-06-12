@@ -51,7 +51,9 @@ set( sources_threading
     ${src_root}/threading/generic_semaphore.cpp
     ${src_root}/threading/hardware_concurrency.cpp
     ${src_root}/threading/hardware_concurrency.hpp
-    ${src_root}/threading/rw_lock.hpp
+    ${src_root}/threading/condvar.hpp
+    ${src_root}/threading/mutex.hpp
+    ${src_root}/threading/rw_mutex.hpp
     ${src_root}/threading/semaphore.hpp
     ${src_root}/threading/thread.hpp
 )
@@ -96,7 +98,7 @@ endif()
 set( sources_threading_posix
     ${src_root}/threading/posix/condvar.hpp
     ${src_root}/threading/posix/mutex.hpp
-    ${src_root}/threading/posix/rw_lock.hpp
+    ${src_root}/threading/posix/rw_mutex.hpp
     ${src_root}/threading/posix/semaphore.hpp
     ${src_root}/threading/posix/thread.cpp
     ${src_root}/threading/posix/thread.hpp
@@ -112,11 +114,94 @@ set( sources_threading_windows
     ${src_root}/threading/windows/condvar.hpp
     ${src_root}/threading/windows/futex.cpp
     ${src_root}/threading/windows/mutex.hpp
-    ${src_root}/threading/windows/rw_lock.hpp
+    ${src_root}/threading/windows/rw_mutex.hpp
     ${src_root}/threading/windows/thread.hpp
 )
 source_group( "ThrdLite/Windows" FILES ${sources_threading_windows} )
 list( APPEND sweater_sources ${sources_threading_windows} )
 if ( NOT WIN32 )
     set_source_files_properties( ${sources_threading_windows} PROPERTIES HEADER_FILE_ONLY ON )
+endif()
+
+
+#############################################################################
+## Target
+#############################################################################
+#
+# Windows and Apple select native, fully header-only implementations
+# (windows.hpp / apple.hpp) — there is nothing to precompile, so psi::sweater
+# is an INTERFACE library there. Every other platform uses the `generic`
+# thread-pool implementation whose translation units (shop ctor/dtor/worker
+# loop, the chunked-spread arithmetic, and the futex/thread/barrier/semaphore
+# backends) ARE compiled — classic source-by-source — into a STATIC library.
+# The per-file HEADER_FILE_ONLY properties set above naturally exclude the
+# wrong-platform TUs from the compile.
+
+if ( WIN32 OR APPLE )
+    set( _sweater_header_only TRUE  )
+    set( _sweater_scope       INTERFACE )
+else()
+    set( _sweater_header_only FALSE )
+    set( _sweater_scope       PUBLIC )
+endif()
+
+if ( _sweater_header_only )
+    # Header-only: an INTERFACE library carrying just the include path. The
+    # sources are deliberately NOT attached — INTERFACE sources propagate into
+    # (and would be compiled by) every consumer, which is exactly the
+    # generic-infrastructure compilation we must avoid on the native-impl OSes.
+    add_library( psi_sweater INTERFACE )
+else()
+    add_library( psi_sweater STATIC ${sweater_sources} )
+endif()
+add_library( psi::sweater ALIAS psi_sweater )
+
+target_include_directories( psi_sweater ${_sweater_scope} "${CMAKE_CURRENT_LIST_DIR}/include" )
+
+# Boost (header-only here: config_ex, assert, container, core, ...). Supplied by
+# the host project as the Boost::boost INTERFACE target; CPM-provided in the
+# standalone build. Linked here (rather than by the consumer) so the INTERFACE
+# vs PUBLIC scope stays correct for both library kinds.
+if ( TARGET Boost::boost )
+    target_link_libraries( psi_sweater ${_sweater_scope} Boost::boost )
+endif()
+
+# ── generic-impl backing dependencies ────────────────────────────────────────
+# Only the generic implementation pulls Boost.Functionoid (the type-erased
+# work_t backend) and the moodycamel concurrentqueue (the MPMC work queue);
+# both are #included from headers reachable by consumers, hence PUBLIC.
+if ( NOT _sweater_header_only )
+    # Boost.Functionoid: prefer a checkout the host project already provides —
+    # a CPM/FetchContent population (functionoid_SOURCE_DIR) or a sibling
+    # submodule (host layout: deps/psiha/functionoid) — else fetch it.
+    set( _sweater_functionoid_sibling "${CMAKE_CURRENT_LIST_DIR}/../functionoid/include" )
+    if ( functionoid_SOURCE_DIR AND EXISTS "${functionoid_SOURCE_DIR}/include/boost/functionoid/functionoid.hpp" )
+        target_include_directories( psi_sweater PUBLIC "${functionoid_SOURCE_DIR}/include" )
+    elseif ( EXISTS "${_sweater_functionoid_sibling}/boost/functionoid/functionoid.hpp" )
+        target_include_directories( psi_sweater PUBLIC "${_sweater_functionoid_sibling}" )
+    else()
+        include( FetchContent )
+        FetchContent_Declare( functionoid
+            GIT_REPOSITORY https://github.com/psiha/functionoid.git
+            GIT_TAG        master
+        )
+        FetchContent_MakeAvailable( functionoid )
+        target_include_directories( psi_sweater PUBLIC "${functionoid_SOURCE_DIR}/include" )
+    endif()
+
+    # moodycamel concurrentqueue. The sweater includes it as
+    # <concurrentqueue/concurrentqueue.h> (the installed-package layout), so the
+    # populated dir is named `concurrentqueue` and its PARENT is put on the
+    # include path (moodycamel's own target exposes the un-prefixed header).
+    if ( NOT TARGET concurrentqueue AND NOT concurrentqueue_POPULATED )
+        include( FetchContent )
+        FetchContent_Declare( concurrentqueue
+            GIT_REPOSITORY https://github.com/cameron314/concurrentqueue.git
+            GIT_TAG        d655418bb644b7f85159d94c591d7d983949fb81
+            GIT_SHALLOW    FALSE
+            SOURCE_DIR     ${CMAKE_BINARY_DIR}/_deps/cq/concurrentqueue
+        )
+        FetchContent_MakeAvailable( concurrentqueue )
+    endif()
+    target_include_directories( psi_sweater PUBLIC ${CMAKE_BINARY_DIR}/_deps/cq )
 endif()

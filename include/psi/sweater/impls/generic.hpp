@@ -3,7 +3,7 @@
 /// \file generic.hpp
 /// -----------------
 ///
-/// (c) Copyright Domagoj Saric 2016 - 2025.
+/// (c) Copyright Domagoj Saric 2016 - 2023.
 ///
 ///  Use, modification and distribution are subject to the
 ///  Boost Software License, Version 1.0. (See accompanying file
@@ -26,23 +26,17 @@
 #include "../threading/semaphore.hpp"
 #include "../threading/thread.hpp"
 
+#include <boost/core/no_exceptions_support.hpp>
+#include <boost/config_ex.hpp>
 #if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
-// Fixed-capacity pool for embedded/mobile targets with a bounded core count.
-// Use std::inplace_vector (C++26 / P0843) when available; otherwise the
-// caller must supply their own fixed-size container via a PSI_SWEATER_POOL_T
-// specialisation.  Desktop targets use MAX == 0 → std::span (heap-allocated).
-#  if defined(__cpp_lib_inplace_vector)
-#    include <inplace_vector>
-#  else
-#    include <psi/vm/containers/fc_vector.hpp>
-#  endif
+#include <boost/container/static_vector.hpp>
 #endif // PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
+#include <boost/functionoid/functionoid.hpp>
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <functional>   // std::move_only_function
 #include <future>
 #include <iterator>
 #include <limits>
@@ -58,12 +52,22 @@
 #include <system_error>
 #endif // disabled
 //------------------------------------------------------------------------------
-namespace psi::sweater::queues
-{ template <typename Work> class mpmc_moodycamel; }
+
+// This impl owns its worker threads and so offers a per-worker thread-init hook
+// (events::worker_thread_init, a weak no-op a consumer may override with a
+// strong definition — same mechanism as the other generic-impl event hooks).
+// Impls that run on OS-managed threads we do not create (apple/GCD, windows
+// thread pool) do not define this — callers must do per-task init there.
+#define PSI_SWEATER_HAS_WORKER_INIT_HOOK 1
+
+//------------------------------------------------------------------------------
+namespace psi::sweater::queues { template <typename Work> class mpmc_moodycamel; }
 //------------------------------------------------------------------------------
 namespace psi::sweater::generic
 {
 //------------------------------------------------------------------------------
+
+namespace functionoid = boost::functionoid;
 
 using hardware_concurrency_t = thrd_lite::hardware_concurrency_t;
 
@@ -112,25 +116,41 @@ public:
     static std::uint8_t spread_work_stealing_division;
 
 private:
-    // Work items are noexcept move-only callables (no copy needed in the fast path).
-    using work_t = std::move_only_function<void() noexcept>;
+    struct worker_traits : functionoid::default_traits
+    {
+        static constexpr auto copyable    = functionoid::support_level::na     ;
+        static constexpr auto moveable    = functionoid::support_level::nofail ;
+        static constexpr auto destructor  = functionoid::support_level::trivial;
+        static constexpr auto is_noexcept = true;
+        static constexpr auto rtti        = false;
+    }; // struct worker_traits
 
-    using my_queue = queues::mpmc_moodycamel<work_t>;
+    // TODO
+    // http://www.1024cores.net/home/lock-free-algorithms/eventcounts
+    // https://github.com/facebook/folly/blob/master/folly/experimental/EventCount.h
 
-    // ── Spread-work support ──────────────────────────────────────────────────
-    // A spread_work_entry is a trivially-copyable plain-data struct so that
-    // spread_work() can stamp iteration ranges into copies without wrapping
-    // in a non-copyable move_only_function first.
-    struct spread_work_entry
+    struct spread_work_base
     {
         void const         * p_work              ;
         iterations_t         start_iteration     ;
         iterations_t         end_iteration       ;
         thrd_lite::barrier * p_completion_barrier;
-        void (*invoke)( spread_work_entry const & ) noexcept;
+#   if PSI_SWEATER_EXACT_WORKER_SELECTION && !defined( _WIN32 ) && !defined( NDEBUG ) && 0 //...mrmlj...only for debugging and overflows work_t's SBO storage
+        worker_thread      * p_thread;
+#   endif // PSI_SWEATER_EXACT_WORKER_SELECTION
+    }; // struct spread_work_base
 
-        void operator()() noexcept { invoke( *this ); }
-    }; // struct spread_work_entry
+    using work_t = functionoid::callable<void(), worker_traits>;
+
+    using my_queue = queues::mpmc_moodycamel<work_t>;
+
+    struct spread_worker_template_traits : worker_traits
+    {
+        static constexpr auto copyable = functionoid::support_level::trivial;
+        static constexpr auto moveable = functionoid::support_level::nofail ;
+    }; // struct worker_traits
+
+    using spread_work_template_t = functionoid::callable<void(), spread_worker_template_traits>;
 
     auto number_of_worker_threads() const noexcept;
 
@@ -150,31 +170,44 @@ public:
     {
         static_assert( noexcept( work( iterations, iterations ) ), "F must be noexcept" );
 
-        auto invoke_fn = []( spread_work_entry const & e ) noexcept
+        struct spread_wrapper : spread_work_base
         {
-            BOOST_ASSUME( e.start_iteration < e.end_iteration );
-            auto & __restrict typed_work{ *static_cast<std::decay_t<F> *>( const_cast<void *>( e.p_work ) ) };
-            typed_work( e.start_iteration, e.end_iteration );
-            e.p_completion_barrier->arrive();
-        };
-
-        spread_work_entry tmpl{
-            .p_work               = &work,
-            .start_iteration      = 0,
-            .end_iteration        = 0,
-            .p_completion_barrier = nullptr,
-            .invoke               = invoke_fn
-        };
-
-        static_assert( std::is_standard_layout_v<spread_work_entry> );
-        return spread_work( tmpl, iterations, parallelizable_iterations_count );
+            void operator()() noexcept
+            {
+#           if PSI_SWEATER_EXACT_WORKER_SELECTION && !defined( _WIN32 ) && !defined( NDEBUG ) && 0 //...mrmlj...todo
+                auto const tid{ ::gettid() };
+                BOOST_ASSERT( tid == p_thread->thread_id );
+#           endif // PSI_SWEATER_EXACT_WORKER_SELECTION
+                BOOST_ASSUME( start_iteration < end_iteration );
+                auto & __restrict work{ *static_cast<std::decay_t<F> *>( const_cast< void * >( p_work ) ) };
+                work( start_iteration, end_iteration );
+                p_completion_barrier->arrive();
+#           ifndef NDEBUG
+                p_work               = nullptr;
+                p_completion_barrier = nullptr;
+                start_iteration = end_iteration = static_cast<iterations_t>( -1 );
+#           endif // !NDEBUG
+            }
+        }; // struct spread_wrapper
+        static_assert( std::is_standard_layout_v<spread_wrapper> ); // required for correctness of work_t::target_as() usage
+#   ifdef BOOST_GCC
+#       pragma GCC diagnostic push
+#       pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#   endif // GCC
+#   ifndef BOOST_MSVC // 16.7 ICE
+        BOOST_ASSERT( spread_work_template_t{ spread_wrapper{{ .p_work = &work }} }.target_as<spread_work_base>().p_work == &work );
+#   endif // BOOST_MSVC
+        return spread_work( spread_wrapper{{ .p_work = &work }}, iterations, parallelizable_iterations_count );
+#   ifdef BOOST_GCC
+#       pragma GCC diagnostic pop
+#   endif // GCC
     }
 
     template <typename F>
     bool fire_and_forget( F && work ) noexcept( noexcept( std::is_nothrow_constructible_v<std::remove_reference_t<F>, F &&> ) )
     {
-        static_assert( noexcept( std::declval<std::remove_reference_t<F> &>()() ), "Fire and forget work has to be noexcept" );
-        return enqueue_work( work_t{ std::forward<F>( work ) } );
+        using Functor = std::remove_reference_t<F>;
+        return create_fire_and_destroy<Functor>( std::forward<F>( work ) );
     }
 
     template <typename F>
@@ -184,19 +217,28 @@ public:
         using Functor = std::remove_reference_t<F>;
         struct future_wrapper
         {
+            // Note: Clang v8 and v9 think that result_t is unused
+        #ifdef __clang__
+        #   pragma clang diagnostic push
+        #   pragma clang diagnostic ignored "-Wunused-local-typedef"
+        #endif
             using result_t  = decltype( std::declval<Functor &>()() );
+        #ifdef __clang__
+        #   pragma clang diagnostic pop
+        #endif
             using promise_t = std::promise<result_t>;
             using future_t  = std::future <result_t>;
 
             future_wrapper( F && work_source, future_t & future )
-                : work( std::forward<F>( work_source ) )
+                :
+                work( std::forward<F>( work_source ) )
             {
                 future = promise.get_future();
             }
 
             void operator()() noexcept
             {
-                try
+                BOOST_TRY
                 {
                     if constexpr ( std::is_same_v<result_t, void> )
                     {
@@ -208,10 +250,11 @@ public:
                         promise.set_value( work() );
                     }
                 }
-                catch( ... )
+                BOOST_CATCH( ... )
                 {
                     promise.set_exception( std::current_exception() );
                 }
+                BOOST_CATCH_END
             }
 
             Functor   work   ;
@@ -219,7 +262,7 @@ public:
         }; // struct future_wrapper
 
         typename future_wrapper::future_t future;
-        auto const dispatch_succeeded( enqueue_work( work_t{ future_wrapper{ std::forward<F>( work ), future } } ) );
+        auto const dispatch_succeeded( this->create_fire_and_destroy<future_wrapper>( std::forward<F>( work ), future ) );
         if ( PSI_UNLIKELY( !dispatch_succeeded ) )
         {
             typename future_wrapper::promise_t failed_promise;
@@ -245,17 +288,15 @@ public:
 #endif // PSI_SWEATER_HMP
 
 private:
-    bool enqueue_work( work_t && work ) noexcept;
-
     void create_pool( hardware_concurrency_t size );
 
     void stop_and_destroy_pool() noexcept;
 
     void perform_caller_work
     (
-        iterations_t                    iterations,
-        spread_work_entry const       & work_template,
-        thrd_lite::barrier            & completion_barrier
+        iterations_t                   iterations,
+        spread_work_template_t const & work_part_template,
+        thrd_lite::barrier           & completion_barrier
     ) noexcept;
 
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
@@ -266,18 +307,124 @@ private:
         hardware_concurrency_t         max_parts,
         iterations_t                   per_part_iterations,
         iterations_t                   parts_with_extra_iteration,
-        iterations_t                   iterations,
+        iterations_t                   iterations, // total/max for the whole spread (not necessary all for this call)
         thrd_lite::barrier           & completion_barrier,
-        spread_work_entry const      & work_template
+        spread_work_template_t const & work_part_template
     ) noexcept;
 #endif // PSI_SWEATER_EXACT_WORKER_SELECTION
 
     bool spread_work
     (
-        spread_work_entry work_template,
-        iterations_t      iterations,
-        iterations_t      parallelizable_iterations_count
+        spread_work_template_t work_part_template,
+        iterations_t           iterations,
+        iterations_t           parallelizable_iterations_count
     ) noexcept;
+
+    template <typename Functor, typename ... Args>
+    bool create_fire_and_destroy( Args && ... args ) noexcept
+    (
+        std::is_nothrow_constructible_v<Functor, Args && ...> &&
+        !work_t::requires_allocation<Functor>
+    )
+    {
+        static_assert( noexcept( std::declval<Functor &>()() ), "Fire and forget work has to be noexcept" );
+
+        bool enqueue_succeeded;
+        if constexpr( work_t::requires_allocation<Functor> )
+        {
+            struct self_destructed_work
+            {
+                self_destructed_work( Args && ... args ) : p_functor( new Functor{ std::forward<Args>( args )... } ) {}
+                self_destructed_work( self_destructed_work && other ) noexcept : p_functor( other.p_functor ) { other.p_functor = nullptr; BOOST_ASSERT( p_functor ); }
+                self_destructed_work( self_destructed_work const & ) = delete;
+                void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
+                {
+                    BOOST_ASSERT( p_functor );
+                    struct destructor
+                    {
+                        Functor * const p_work;
+                        ~destructor() noexcept { delete p_work; }
+                    } const eh_safe_destructor{ p_functor };
+                    (*p_functor)();
+                #ifndef NDEBUG
+                    p_functor = nullptr;
+                #endif // NDEBUG
+                } // void operator()
+                Functor * __restrict p_functor = nullptr;
+            }; // struct self_destructed_work
+            static_assert( std::is_trivially_destructible_v<self_destructed_work> );
+
+#       if PSI_SWEATER_EXACT_WORKER_SELECTION
+            if ( !thrd_lite::slow_thread_signals )
+            {
+                enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+            }
+            else
+#       endif
+            {
+#       if !PSI_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
+                enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
+                this->work_semaphore_.signal( 1 );
+#       endif
+            }
+        }
+        else
+        {
+            struct self_destructed_work
+            {
+                self_destructed_work( Args && ... args ) { new ( storage ) Functor{ std::forward<Args>( args )... }; }
+                self_destructed_work( self_destructed_work && other ) noexcept
+                (
+#               if BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1928 ) )
+                    true
+#               else
+                    std::is_nothrow_move_constructible_v<Functor>
+#               endif // VS 16.8 workarounds
+                )
+                {
+                    auto & source( reinterpret_cast<Functor &>( other.storage ) );
+                    new ( storage ) Functor( std::move( source ) );
+                    source.~Functor();
+                }
+                self_destructed_work( self_destructed_work const & ) = delete;
+                void operator()()
+#               if !BOOST_WORKAROUND( BOOST_MSVC, BOOST_TESTED_AT( 1928 ) )
+                    noexcept( noexcept( std::declval<Functor &>()() ) )
+#               endif // VS 16.8 workarounds
+                {
+                    auto & work( reinterpret_cast<Functor &>( storage ) );
+                    struct destructor
+                    {
+                        Functor & work;
+                        ~destructor() noexcept { work.~Functor(); }
+                    } eh_safe_destructor{ work };
+                    work();
+                } // void operator()
+                alignas( alignof( Functor ) ) char storage[ sizeof( Functor ) ];
+            }; // struct self_destructed_work
+#       if PSI_SWEATER_EXACT_WORKER_SELECTION
+            if ( !thrd_lite::slow_thread_signals )
+            {
+                enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+            }
+            else
+#       endif
+            {
+#       if !PSI_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
+                enqueue_succeeded = this->queue_.enqueue( self_destructed_work{ std::forward<Args>( args )... } );
+                this->work_semaphore_.signal( 1 );
+#       endif
+            }
+        }
+
+        this->work_added( enqueue_succeeded );
+        return PSI_LIKELY( enqueue_succeeded );
+    }
+
+    void wake_all_workers() noexcept;
+
+    void work_added    ( hardware_concurrency_t items = 1 ) noexcept;
+    void work_completed(                                  ) noexcept;
 
 private:
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
@@ -299,6 +446,9 @@ private:
     }; // struct worker_thread
 
 #if defined( __ANDROID__ )
+    // Partial fix attempt for slow thread synchronization on older Android
+    // versions (it seems to be related to the OS version rather than the
+    // kernel version).
     thrd_lite::semaphore work_semaphore_;
 #endif // Android
 #else // PSI_SWEATER_EXACT_WORKER_SELECTION
@@ -310,6 +460,18 @@ private:
     std::atomic<hardware_concurrency_t> work_items_ = 0;
     std::atomic<bool                  > brexit_     = false;
 
+    /// \todo Further queue refinements.
+    /// http://ithare.com/implementing-queues-for-event-driven-programs
+    /// https://en.wikipedia.org/wiki/Work_stealing
+    /// http://www.drdobbs.com/parallel/writing-lock-free-code-a-corrected-queue/210604448
+    /// https://github.com/cameron314/readerwriterqueue
+    /// http://moodycamel.com/blog/2013/a-fast-lock-free-queue-for-c++
+    /// http://stackoverflow.com/questions/1164023/is-there-a-production-ready-lock-free-queue-or-hash-implementation-in-c#14936831
+    /// https://github.com/facebook/folly/blob/master/folly/docs/ProducerConsumerQueue.md
+    /// https://github.com/facebook/folly/blob/master/folly/MPMCQueue.h
+    /// http://landenlabs.com/code/ring/ring.html
+    /// https://github.com/Qarterd/Honeycomb/blob/master/src/common/Honey/Thread/Pool.cpp
+    ///                                       (12.10.2016.) (Domagoj Saric)
     my_queue queue_;
 
     // Caller work-stealing 'explicit' token (still a question whether worth it).
@@ -322,18 +484,25 @@ private:
 #   else
 #       define NUM_THREAD_CORRECTIONS PSI_SWEATER_USE_CALLER_THREAD
 #   endif
-    static constexpr auto pool_capacity = PSI_SWEATER_MAX_HARDWARE_CONCURRENCY - NUM_THREAD_CORRECTIONS;
+    using pool_threads_t = container::static_vector<worker_thread, PSI_SWEATER_MAX_HARDWARE_CONCURRENCY - NUM_THREAD_CORRECTIONS>;
 #   undef NUM_THREAD_CORRECTIONS
-#   if defined(__cpp_lib_inplace_vector)
-    using pool_threads_t = std::inplace_vector<worker_thread, pool_capacity>;
-#   else
-    using pool_threads_t = psi::vm::fc_vector<worker_thread, pool_capacity>;
-#   endif
 #else
     using pool_threads_t = std::span<worker_thread>;
 #endif
     pool_threads_t pool_;
 }; // class shop
+
+namespace events
+{
+    /// Invoked once on each pool worker thread, on that thread, just before it
+    /// begins processing work. A weak no-op by default (defined in generic.cpp,
+    /// like the instrumentation hooks alongside it); a consumer may override it
+    /// with a strong definition to perform per-thread initialisation the pool
+    /// is unaware of — e.g. mimalloc's mi_thread_init() so a worker whose first
+    /// allocation is an in-place realloc does not dereference a not-yet-
+    /// initialised (NULL) thread heap.
+    void worker_thread_init( hardware_concurrency_t worker_index ) noexcept;
+} // namespace events
 
 //------------------------------------------------------------------------------
 } // namespace psi::sweater::generic

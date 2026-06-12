@@ -111,12 +111,12 @@ public:
             (
                 []( void * context ) noexcept -> ret_t
                 {
-#               ifdef (defined(__GNUC__) && !defined(__clang__))
+#               if defined(__GNUC__) && !defined(__clang__)
 #                   pragma GCC diagnostic push
 #                   pragma GCC diagnostic ignored "-Wstrict-aliasing"
 #               endif // GCC
                     auto & tiny_functor( reinterpret_cast<Functor &>( context ) );
-#               ifdef (defined(__GNUC__) && !defined(__clang__))
+#               if defined(__GNUC__) && !defined(__clang__)
 #                   pragma GCC diagnostic pop
 #               endif // GCC
                     tiny_functor();
