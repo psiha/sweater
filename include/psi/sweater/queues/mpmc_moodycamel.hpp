@@ -17,8 +17,6 @@
 ///
 ////////////////////////////////////////////////////////////////////////////////
 //------------------------------------------------------------------------------
-#ifndef mpmc_moodycamel_hpp__2418E6BF_4795_42B2_8FE8_4733F52FFC89
-#define mpmc_moodycamel_hpp__2418E6BF_4795_42B2_8FE8_4733F52FFC89
 #pragma once
 //------------------------------------------------------------------------------
 // https://svn.boost.org/trac/boost/ticket/12880
@@ -123,4 +121,3 @@ private:
 
 #undef PSI_SWEATER_AUX_ALIGNED_MALLOC
 
-#endif // mpmc_moodycamel_hpp
