@@ -31,7 +31,7 @@
 #if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
 #include <boost/container/static_vector.hpp>
 #endif // PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
-#include <boost/functionoid/functionoid.hpp>
+#include <psi/functionoid/functionoid.hpp>
 
 #include <atomic>
 #include <cstddef>
@@ -66,8 +66,6 @@ namespace psi::sweater::queues { template <typename Work> class mpmc_moodycamel;
 namespace psi::sweater::generic
 {
 //------------------------------------------------------------------------------
-
-namespace functionoid = boost::functionoid;
 
 using hardware_concurrency_t = thrd_lite::hardware_concurrency_t;
 
@@ -116,11 +114,11 @@ public:
     static std::uint8_t spread_work_stealing_division;
 
 private:
-    struct worker_traits : functionoid::default_traits
+    struct worker_traits : psi::functionoid::default_traits
     {
-        static constexpr auto copyable    = functionoid::support_level::na     ;
-        static constexpr auto moveable    = functionoid::support_level::nofail ;
-        static constexpr auto destructor  = functionoid::support_level::trivial;
+        static constexpr auto copyable    = psi::functionoid::support_level::na     ;
+        static constexpr auto moveable    = psi::functionoid::support_level::nofail ;
+        static constexpr auto destructor  = psi::functionoid::support_level::trivial;
         static constexpr auto is_noexcept = true;
         static constexpr auto rtti        = false;
     }; // struct worker_traits
@@ -140,17 +138,17 @@ private:
 #   endif // PSI_SWEATER_EXACT_WORKER_SELECTION
     }; // struct spread_work_base
 
-    using work_t = functionoid::callable<void(), worker_traits>;
+    using work_t = psi::functionoid::callable<void(), worker_traits>;
 
     using my_queue = queues::mpmc_moodycamel<work_t>;
 
     struct spread_worker_template_traits : worker_traits
     {
-        static constexpr auto copyable = functionoid::support_level::trivial;
-        static constexpr auto moveable = functionoid::support_level::nofail ;
+        static constexpr auto copyable = psi::functionoid::support_level::trivial;
+        static constexpr auto moveable = psi::functionoid::support_level::nofail ;
     }; // struct worker_traits
 
-    using spread_work_template_t = functionoid::callable<void(), spread_worker_template_traits>;
+    using spread_work_template_t = psi::functionoid::callable<void(), spread_worker_template_traits>;
 
     auto number_of_worker_threads() const noexcept;
 
