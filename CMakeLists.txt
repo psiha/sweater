@@ -71,28 +71,10 @@ include( ${CMAKE_CURRENT_LIST_DIR}/sweater.cmake )
 
 
 ###################
-## Smoke test (standalone builds only)
+## Testing (standalone)
 ###################
 
 if ( PROJECT_IS_TOP_LEVEL )
     enable_testing()
-    file( WRITE "${CMAKE_CURRENT_BINARY_DIR}/sweater_smoke.cpp"
-"#include <psi/sweater/sweater.hpp>\n\
-#include <atomic>\n\
-#include <cstdio>\n\
-int main()\n\
-{\n\
-    std::atomic<int> sum{ 0 };\n\
-    psi::sweater::shop work_shop;\n\
-    work_shop.spread_the_sweat( 1000, [&]( auto const start, auto const end ) noexcept\n\
-    {\n\
-        for ( auto i{ start }; i < end; ++i ) { sum.fetch_add( 1, std::memory_order_relaxed ); }\n\
-    } );\n\
-    std::printf( \"sum=%d\\n\", sum.load() );\n\
-    return sum.load() == 1000 ? 0 : 1;\n\
-}\n"
-    )
-    add_executable( sweater_smoke "${CMAKE_CURRENT_BINARY_DIR}/sweater_smoke.cpp" )
-    target_link_libraries( sweater_smoke PRIVATE psi::sweater )
-    add_test( NAME sweater_smoke COMMAND $<TARGET_FILE:sweater_smoke> )
+    add_subdirectory( test )
 endif()
