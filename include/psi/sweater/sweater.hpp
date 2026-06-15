@@ -19,6 +19,8 @@
 
 #include <chrono>
 
+#include "dispatch_tracking.hpp"
+
 #  if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
 #   define PSI_SWEATER_IMPL single_threaded
 #	include "impls/single_threaded.hpp"
