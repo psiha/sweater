@@ -17,6 +17,7 @@
 //------------------------------------------------------------------------------
 #include "../threading/hardware_concurrency.hpp"
 #include "../spread_chunked.hpp"
+#include "../dispatch_tracking.hpp"
 
 #include <boost/assert.hpp>
 #include <cstdint>
@@ -106,12 +107,17 @@ public:
         {
             void * context;
             new ( &context ) Functor( std::forward<F>( work ) );
+            detail::in_flight_inc();
             dispatch_async_f
             (
                 default_queue,
                 context,
                 []( void * context ) noexcept
                 {
+                    struct in_flight_guard
+                    {
+                        ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                    } const guard{};
                     auto & __restrict the_work{ reinterpret_cast<Functor &>( context ) };
                     the_work();
                 }
@@ -123,18 +129,30 @@ public:
             /// \note "ObjC++ attempts to copy lambdas, preventing capture of
             /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
             ///                               (14.01.2016.) (Domagoj Saric)
+            detail::in_flight_inc();
             __block auto moveable_work( std::forward<F>( work ) );
-            dispatch_async( default_queue, ^(){ moveable_work(); } );
+            dispatch_async( default_queue, ^(){
+                struct in_flight_guard
+                {
+                    ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                } const guard{};
+                moveable_work();
+            } );
 #       else
             /// \note Still no block support in GCC.
             ///                               (10.06.2017.) (Domagoj Saric)
             auto const p_heap_work( new Functor( std::forward<F>( work ) ) );
+            detail::in_flight_inc();
             dispatch_async_f
             (
                 default_queue,
                 p_heap_work,
                 []( void * const p_context ) noexcept
                 {
+                    struct in_flight_guard
+                    {
+                        ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                    } const guard{};
                     auto & __restrict the_work{ *static_cast<Functor const *>( p_context ) };
                     the_work();
                     delete &the_work;
