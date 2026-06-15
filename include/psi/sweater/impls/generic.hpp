@@ -413,7 +413,6 @@ private:
 #               endif // VS 16.8 workarounds
                 {
                     auto & work( reinterpret_cast<Functor &>( storage ) );
-                    detail::in_flight_inc();
                     struct in_flight_guard
                     {
                         ~in_flight_guard() noexcept { detail::in_flight_dec(); }
