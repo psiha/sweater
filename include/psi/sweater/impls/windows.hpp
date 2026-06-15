@@ -137,10 +137,10 @@ public:
             // Small trivially-copyable functor — pack directly into the context pointer.
             void * ctx{ nullptr };
             new ( &ctx ) Functor( std::forward<F>( work ) );
+            detail::in_flight_inc();
             auto const submitted{ TrySubmitThreadpoolCallback(
                 []( PTP_CALLBACK_INSTANCE, PVOID ctx ) noexcept
                 {
-                    detail::in_flight_inc();
                     struct in_flight_guard
                     {
                         ~in_flight_guard() noexcept { detail::in_flight_dec(); }
@@ -152,9 +152,13 @@ public:
             ) != FALSE };
             if ( PSI_UNLIKELY( !submitted ) )
             {
+                struct in_flight_guard
+                {
+                    ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                } const guard{};
                 reinterpret_cast<Functor &>( ctx )(); // run inline on pool exhaustion
             }
-            return submitted;
+            return true;
         }
         else
         {
@@ -163,10 +167,10 @@ public:
             if ( PSI_UNLIKELY( !p ) )
                 return false;
 
+            detail::in_flight_inc();
             auto const submitted{ TrySubmitThreadpoolCallback(
                 []( PTP_CALLBACK_INSTANCE, PVOID ctx ) noexcept
                 {
-                    detail::in_flight_inc();
                     struct in_flight_guard
                     {
                         ~in_flight_guard() noexcept { detail::in_flight_dec(); }
@@ -180,10 +184,14 @@ public:
             ) != FALSE };
             if ( PSI_UNLIKELY( !submitted ) )
             {
-                ( *p )(); // run inline on pool exhaustion
+                struct in_flight_guard
+                {
+                    ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                } const guard{};
+                ( *p )();
                 delete p;
             }
-            return submitted;
+            return true;
         }
     }
 

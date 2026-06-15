@@ -356,7 +356,6 @@ private:
                 void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
                 {
                     BOOST_ASSERT( p_functor );
-                    detail::in_flight_inc();
                     struct in_flight_guard
                     {
                         ~in_flight_guard() noexcept { detail::in_flight_dec(); }
