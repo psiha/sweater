@@ -20,6 +20,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include "../detail/config.hpp"
+#include "../dispatch_tracking.hpp"
 #include "../spread_chunked.hpp"
 #include "../threading/hardware_concurrency.hpp"
 
@@ -139,6 +140,11 @@ public:
             auto const submitted{ TrySubmitThreadpoolCallback(
                 []( PTP_CALLBACK_INSTANCE, PVOID ctx ) noexcept
                 {
+                    detail::in_flight_inc();
+                    struct in_flight_guard
+                    {
+                        ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                    } const guard{};
                     reinterpret_cast<Functor &>( ctx )();
                 },
                 ctx,
@@ -160,6 +166,11 @@ public:
             auto const submitted{ TrySubmitThreadpoolCallback(
                 []( PTP_CALLBACK_INSTANCE, PVOID ctx ) noexcept
                 {
+                    detail::in_flight_inc();
+                    struct in_flight_guard
+                    {
+                        ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                    } const guard{};
                     auto * const pf{ static_cast<Functor *>( ctx ) };
                     ( *pf )();
                     delete pf;
@@ -174,6 +185,25 @@ public:
             }
             return submitted;
         }
+    }
+
+    /// Run `work` then `after` sequentially on a thread-pool worker.
+    template <typename Work, typename After>
+    static bool fire_with_after( Work && work, After && after ) noexcept
+    (
+        noexcept( std::is_nothrow_constructible_v<std::remove_reference_t<Work>, Work &&> ) &&
+        noexcept( std::is_nothrow_constructible_v<std::remove_reference_t<After>, After &&> ) &&
+        noexcept( std::declval<Work &>()() ) &&
+        noexcept( std::declval<After &>()() )
+    )
+    {
+        return fire_and_forget(
+            [w = std::forward<Work>( work ), a = std::forward<After>( after )]() mutable noexcept
+            {
+                w();
+                a();
+            }
+        );
     }
 
     template <typename F>

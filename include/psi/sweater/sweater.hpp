@@ -17,9 +17,14 @@
 //------------------------------------------------------------------------------
 #include "threading/hardware_concurrency.hpp"
 
+#include <chrono>
+
 #  if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
 #   define PSI_SWEATER_IMPL single_threaded
 #	include "impls/single_threaded.hpp"
+#elif defined( PSI_SWEATER_USE_LIBUV ) && !defined( PSI_SWEATER_IMPL )
+#   define PSI_SWEATER_IMPL libuv
+#	include "impls/libuv.hpp"
 #elif defined( __APPLE__ ) && !defined( PSI_SWEATER_IMPL )
 #   define PSI_SWEATER_IMPL apple
 #	include "impls/apple.hpp"
@@ -52,6 +57,18 @@ namespace psi::sweater
 //------------------------------------------------------------------------------
 
 using namespace PSI_SWEATER_IMPL;
+
+[[ nodiscard ]] inline std::size_t in_flight_count() noexcept
+{
+    return detail::in_flight_count();
+}
+
+[[ nodiscard ]] inline bool wait_until_idle(
+    std::chrono::steady_clock::duration timeout = std::chrono::minutes{ 5 }
+) noexcept
+{
+    return detail::wait_until_idle( timeout );
+}
 
 //------------------------------------------------------------------------------
 } // namespace psi::sweater

@@ -18,6 +18,7 @@
 #include "generic_config.hpp"
 
 #include "../queues/mpmc_moodycamel.hpp"
+#include "../dispatch_tracking.hpp"
 #include "../threading/barrier.hpp"
 #include "../threading/hardware_concurrency.hpp"
 #include "../threading/cpp/spin_lock.hpp"
@@ -206,6 +207,25 @@ public:
         return create_fire_and_destroy<Functor>( std::forward<F>( work ) );
     }
 
+    /// Run `work` then `after` sequentially on a worker thread.
+    template <typename Work, typename After>
+    bool fire_with_after( Work && work, After && after ) noexcept
+    (
+        noexcept( std::is_nothrow_constructible_v<std::remove_reference_t<Work>, Work &&> ) &&
+        noexcept( std::is_nothrow_constructible_v<std::remove_reference_t<After>, After &&> ) &&
+        noexcept( std::declval<Work &>()() ) &&
+        noexcept( std::declval<After &>()() )
+    )
+    {
+        return fire_and_forget(
+            [w = std::forward<Work>( work ), a = std::forward<After>( after )]() mutable noexcept
+            {
+                w();
+                a();
+            }
+        );
+    }
+
     template <typename F>
     auto dispatch( F && work )
     {
@@ -336,12 +356,17 @@ private:
                 void operator()() noexcept( noexcept( std::declval<Functor &>()() ) )
                 {
                     BOOST_ASSERT( p_functor );
+                    detail::in_flight_inc();
+                    struct in_flight_guard
+                    {
+                        ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                    } const guard{};
                     struct destructor
                     {
                         Functor * const p_work;
                         ~destructor() noexcept { delete p_work; }
                     } const eh_safe_destructor{ p_functor };
-                    (*p_functor)();
+                    ( *p_functor )();
                 #ifndef NDEBUG
                     p_functor = nullptr;
                 #endif // NDEBUG
@@ -389,6 +414,11 @@ private:
 #               endif // VS 16.8 workarounds
                 {
                     auto & work( reinterpret_cast<Functor &>( storage ) );
+                    detail::in_flight_inc();
+                    struct in_flight_guard
+                    {
+                        ~in_flight_guard() noexcept { detail::in_flight_dec(); }
+                    } const guard{};
                     struct destructor
                     {
                         Functor & work;

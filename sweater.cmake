@@ -12,6 +12,7 @@ set( src_root "${CMAKE_CURRENT_LIST_DIR}/include/psi/sweater" )
 
 set( sweater_sources
     ${src_root}/detail/config.hpp
+    ${src_root}/dispatch_tracking.hpp
     ${src_root}/spread_chunked.cpp
     ${src_root}/spread_chunked.hpp
     ${src_root}/sweater.hpp
@@ -22,6 +23,7 @@ set( sources_impls
     ${src_root}/impls/generic.cpp
     ${src_root}/impls/generic.hpp
     ${src_root}/impls/generic_config.hpp
+    ${src_root}/impls/libuv.hpp
     ${src_root}/impls/openmp.hpp
     ${src_root}/impls/single_threaded.hpp
     ${src_root}/impls/windows.hpp
