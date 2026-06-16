@@ -173,11 +173,11 @@ endif()
 # work_t backend) and the moodycamel concurrentqueue (the MPMC work queue);
 # both are #included from headers reachable by consumers, hence PUBLIC.
 if ( NOT _sweater_header_only )
-    # Boost.Functionoid: prefer psi::functionoid from functionoid.cmake, else
+    # Psi.Functionoid: prefer Psi::Functionoid from functionoid.cmake, else
     # a CPM/FetchContent population (functionoid_SOURCE_DIR) or a sibling
     # submodule (host layout: deps/psiha/functionoid) — else fetch it.
-    if ( TARGET psi::functionoid )
-        target_link_libraries( psi_sweater ${_sweater_scope} psi::functionoid )
+    if ( TARGET Psi::Functionoid )
+        target_link_libraries( psi_sweater ${_sweater_scope} Psi::Functionoid )
     else()
     set( _sweater_functionoid_sibling "${CMAKE_CURRENT_LIST_DIR}/../functionoid/include" )
     if ( functionoid_SOURCE_DIR AND EXISTS "${functionoid_SOURCE_DIR}/include/psi/functionoid/functionoid.hpp" )
