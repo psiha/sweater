@@ -16,9 +16,11 @@
 
 #include <boost/assert.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <future>
+#include <latch>
 #include <type_traits>
 #include <utility>
 
@@ -47,15 +49,101 @@ public:
         return thrd_lite::hardware_concurrency_max;
     }
 
+    /// GCD dispatch_apply / Windows TP equivalent — synchronous parallel loop.
+    /// Chunks via `chunked_spread`, queues each chunk on the libuv thread pool,
+    /// and blocks until all chunks finish. `count_down` runs in the pool work
+    /// callback so this is safe when called from a pool worker; if the bound
+    /// loop is not set or only one chunk is needed, falls back to serial.
     template <typename F>
-    static bool spread_the_sweat( iterations_t const iterations, F && work, iterations_t /*parallelizable_count*/ = 1 ) noexcept
+    bool spread_the_sweat( iterations_t const iterations, F && work, iterations_t /*parallelizable_count*/ = 1 ) noexcept
     {
         static_assert( noexcept( work( iterations_t{ 0 }, iterations ) ), "F must be noexcept" );
-        if ( iterations == 0 )
+
+        if ( PSI_UNLIKELY( iterations == 0 ) )
         {
             return true;
         }
-        work( iterations_t{ 0 }, iterations );
+
+        if ( PSI_UNLIKELY( !loop_ ) )
+        {
+            work( iterations_t{ 0 }, iterations );
+            return true;
+        }
+
+        auto const num_workers{ number_of_workers() };
+        auto const num_chunks { static_cast<iterations_t>(
+            std::min( iterations, static_cast<iterations_t>( 4 * num_workers ) )
+        ) };
+
+        if ( PSI_UNLIKELY( num_chunks <= 1 ) )
+        {
+            work( iterations_t{ 0 }, iterations );
+            return true;
+        }
+
+        struct chunk_ctx
+        {
+            void const   * p_work;
+            iterations_t   start;
+            iterations_t   end;
+            std::latch   * p_latch;
+            void (*invoke)( void const *, iterations_t, iterations_t ) noexcept;
+        };
+        static_assert( std::is_trivially_destructible_v<chunk_ctx> );
+
+        void (*const invoke_fn)( void const *, iterations_t, iterations_t ) noexcept =
+            []( void const * pw, iterations_t s, iterations_t e ) noexcept
+            {
+                ( *static_cast<std::decay_t<F> const *>( pw ) )( s, e );
+            };
+
+        std::latch sync{ static_cast<std::ptrdiff_t>( num_chunks ) };
+
+        chunked_spread const setup{ iterations, num_chunks };
+        for ( iterations_t i{ 0 }; i < num_chunks; ++i )
+        {
+            auto const [start, end]{ setup.chunk_range( static_cast<hardware_concurrency_t>( i ) ) };
+
+            struct req_bundle
+            {
+                chunk_ctx  ctx;
+                uv_work_t  req{};
+            };
+
+            auto * const bundle{ new ( std::nothrow ) req_bundle{
+                chunk_ctx{ &work, start, end, &sync, invoke_fn }
+            } };
+            if ( PSI_UNLIKELY( !bundle ) )
+            {
+                work( start, end );
+                sync.count_down();
+                continue;
+            }
+
+            bundle->req.data = bundle;
+            if ( PSI_UNLIKELY( uv_queue_work(
+                     loop_,
+                     &bundle->req,
+                     []( uv_work_t * const req ) noexcept
+                     {
+                         auto * const self{ static_cast<req_bundle *>( req->data ) };
+                         auto & c{ self->ctx };
+                         c.invoke( c.p_work, c.start, c.end );
+                         c.p_latch->count_down();
+                     },
+                     []( uv_work_t * const req, int /*status*/ ) noexcept
+                     {
+                         delete static_cast<req_bundle *>( req->data );
+                     }
+                 ) != 0 ) )
+            {
+                work( start, end );
+                sync.count_down();
+                delete bundle;
+            }
+        }
+
+        sync.wait();
         return true;
     }
 
