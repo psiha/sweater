@@ -15,6 +15,8 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include <psi/sweater/threading/read_recursion_registry.hpp>
+
 #include <boost/assert.hpp>
 
 #include <pthread.h>
@@ -57,14 +59,28 @@ public:
         return *this;
     }
 
-    void acquire_ro() noexcept { BOOST_VERIFY( pthread_rwlock_rdlock( &lock_ ) == 0 ); }
-    void release_ro() noexcept { BOOST_VERIFY( pthread_rwlock_unlock( &lock_ ) == 0 ); }
+    // Read side, instrumented (debug only) to catch recursive read-acquisition -- a
+    // documented hang on this non-recursive primitive (see read_recursion_registry.hpp).
+    // The raw os_acquire_ro/os_release_ro below are the un-instrumented OS calls, used
+    // by the reentrant rrw_mutex (which legitimately recurses and tracks its own depth).
+    void acquire_ro() noexcept { detail::on_ro_acquire( this ); os_acquire_ro(); }
+    void release_ro() noexcept { os_release_ro(); detail::on_ro_release( this ); }
 
     void acquire_rw() noexcept { BOOST_VERIFY( pthread_rwlock_wrlock( &lock_ ) == 0 ); }
-    void release_rw() noexcept { release_ro(); }
+    void release_rw() noexcept { os_release_ro(); } // raw: a write hold is not read-tracked
 
-    bool try_acquire_ro() noexcept { return pthread_rwlock_tryrdlock( &lock_ ) == 0; }
+    bool try_acquire_ro() noexcept { if ( !os_try_acquire_ro() ) { return false; } detail::on_ro_acquire( this ); return true; }
     bool try_acquire_rw() noexcept { return pthread_rwlock_trywrlock( &lock_ ) == 0; }
+
+protected:
+    // Raw, un-instrumented OS read lock/unlock (pthread treats unlock uniformly for the
+    // shared and exclusive sides). The reentrant rrw_mutex calls these on the outermost
+    // acquire / last release so its own recursion bookkeeping is the single source of
+    // truth (and the non-recursive recursion assert above never fires for it).
+    void os_acquire_ro() noexcept { BOOST_VERIFY( pthread_rwlock_rdlock   ( &lock_ ) == 0 ); }
+    void os_release_ro() noexcept { BOOST_VERIFY( pthread_rwlock_unlock   ( &lock_ ) == 0 ); }
+    bool os_try_acquire_ro() noexcept { return pthread_rwlock_tryrdlock( &lock_ ) == 0; }
+public:
 
     // debugging aid
     bool is_locked() const noexcept

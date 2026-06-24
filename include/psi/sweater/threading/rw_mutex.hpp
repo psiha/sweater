@@ -28,24 +28,33 @@ namespace psi::thrd_lite
 {
 //------------------------------------------------------------------------------
 
-class [[ clang::trivial_abi ]] ro_lock
+// RAII read guard, templated on the mutex type so a single definition serves both the
+// non-recursive rw_mutex (`ro_lock`) and the reentrant rrw_mutex (`rro_lock`, see
+// rrw_mutex.hpp). It stores Mutex* (not rw_mutex*) so acquire_ro/release_ro dispatch to
+// the most-derived overrides -- a base rw_mutex* would slice past rrw_mutex's reentrant
+// ones. The ctor is annotated may-throw-on-bad-alloc because the reentrant acquire_ro
+// allocates to track the hold (it is plain noexcept for the non-recursive rw_mutex).
+template <class Mutex>
+class [[ clang::trivial_abi ]] basic_ro_lock
 {
 public:
-    constexpr ro_lock() noexcept = default;
-    ro_lock( rw_mutex & mutex ) noexcept : p_mutex_{ &mutex } {                 p_mutex_->acquire_ro(); }
-   ~ro_lock(                  ) noexcept                      { if ( p_mutex_ ) p_mutex_->release_ro(); }
-    ro_lock( ro_lock const &  ) = delete;
-    ro_lock( ro_lock && other ) noexcept : p_mutex_{ std::exchange( other.p_mutex_, nullptr ) } {}
+    constexpr basic_ro_lock() noexcept = default;
+    basic_ro_lock( Mutex & mutex ) PSI_NOEXCEPT_EXCEPT_BADALLOC : p_mutex_{ &mutex } {                 p_mutex_->acquire_ro(); }
+   ~basic_ro_lock(              ) noexcept                                          { if ( p_mutex_ ) p_mutex_->release_ro(); }
+    basic_ro_lock( basic_ro_lock const &  ) = delete;
+    basic_ro_lock( basic_ro_lock && other ) noexcept : p_mutex_{ std::exchange( other.p_mutex_, nullptr ) } {}
 
-    ro_lock & operator=( ro_lock && other ) noexcept
+    basic_ro_lock & operator=( basic_ro_lock && other ) noexcept
     {
         std::destroy_at( this );
         return *std::construct_at( this, std::move( other ) );
     }
 
 private:
-    rw_mutex * p_mutex_{};
-}; // class ro_lock
+    Mutex * p_mutex_{};
+}; // class basic_ro_lock
+
+using ro_lock = basic_ro_lock<rw_mutex>;
 
 
 class [[ clang::trivial_abi ]] rw_lock

@@ -15,6 +15,8 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
+#include <psi/sweater/threading/read_recursion_registry.hpp>
+
 #include <boost/assert.hpp>
 #include <windows.h>
 //------------------------------------------------------------------------------
@@ -41,14 +43,28 @@ public:
         return *this;
     }
 
-    void acquire_ro() noexcept { verify_deadlock(); ::AcquireSRWLockShared( &lock_ ); }
-    void release_ro() noexcept {                    ::ReleaseSRWLockShared( &lock_ ); }
+    // Read side, instrumented (debug only): verify_deadlock() catches read-while-holding
+    // the exclusive lock, on_ro_acquire() catches recursive read-acquisition -- both are
+    // documented hangs on this non-recursive primitive (see read_recursion_registry.hpp).
+    // The raw os_acquire_ro/os_release_ro below are the un-instrumented OS calls, used by
+    // the reentrant rrw_mutex (which legitimately recurses and tracks its own depth).
+    void acquire_ro() noexcept { verify_deadlock(); detail::on_ro_acquire( this ); os_acquire_ro(); }
+    void release_ro() noexcept { os_release_ro(); detail::on_ro_release( this ); }
 
     void acquire_rw() noexcept { verify_deadlock(); ::AcquireSRWLockExclusive( &lock_ ); BOOST_ASSERT( active_writer_ = ::GetCurrentThreadId() ); }
     void release_rw() noexcept {                    ::ReleaseSRWLockExclusive( &lock_ ); BOOST_ASSERT( !( active_writer_ = 0 ) ); }
 
-    bool try_acquire_ro() noexcept { verify_deadlock(); return ::TryAcquireSRWLockShared   ( &lock_ ) != false; }
+    bool try_acquire_ro() noexcept { verify_deadlock(); if ( !os_try_acquire_ro() ) { return false; } detail::on_ro_acquire( this ); return true; }
     bool try_acquire_rw() noexcept { verify_deadlock(); return ::TryAcquireSRWLockExclusive( &lock_ ) != false; }
+
+protected:
+    // Raw, un-instrumented OS shared lock/unlock. The reentrant rrw_mutex calls these on
+    // the outermost acquire / last release so its own recursion bookkeeping is the single
+    // source of truth (and the non-recursive recursion assert above never fires for it).
+    void os_acquire_ro() noexcept { ::AcquireSRWLockShared( &lock_ ); }
+    void os_release_ro() noexcept { ::ReleaseSRWLockShared( &lock_ ); }
+    bool os_try_acquire_ro() noexcept { return ::TryAcquireSRWLockShared( &lock_ ) != false; }
+public:
 
     [[ gnu::pure ]] bool locked() const noexcept { return lock_.Ptr != nullptr; }
 
