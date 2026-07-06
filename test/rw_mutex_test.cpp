@@ -103,7 +103,22 @@ TEST( RWMutex, StdLockInterop )
     }
     {
         std::unique_lock const writer{ m };
-        EXPECT_FALSE( m.try_lock_shared() );
+        // probe from another thread: a same-thread read attempt while holding the
+        // exclusive side is the documented deadlock rw_mutex ASSERTS on in debug builds
+        std::atomic<bool> read_excluded{ false };
+        std::thread other{ [&]
+        {
+            if ( m.try_lock_shared() )
+            {
+                m.unlock_shared();
+            }
+            else
+            {
+                read_excluded = true;
+            }
+        } };
+        other.join();
+        EXPECT_TRUE( read_excluded.load() );
     }
     {
         std::unique_lock writer{ m, std::try_to_lock };
