@@ -64,12 +64,22 @@ public:
     // The raw os_acquire_ro/os_release_ro below are the un-instrumented OS calls, used
     // by the reentrant rrw_mutex (which legitimately recurses and tracks its own depth).
     void acquire_ro() noexcept { detail::on_ro_acquire( this ); os_acquire_ro(); }
-    void release_ro() noexcept { os_release_ro(); detail::on_ro_release( this ); }
+    // Registry first: a release without a matching acquire then fails the debug assert
+    // before reaching the OS unlock (which would already be UB at that point).
+    void release_ro() noexcept { detail::on_ro_release( this ); os_release_ro(); }
 
     void acquire_rw() noexcept { BOOST_VERIFY( pthread_rwlock_wrlock( &lock_ ) == 0 ); }
     void release_rw() noexcept { os_release_ro(); } // raw: a write hold is not read-tracked
 
-    bool try_acquire_ro() noexcept { if ( !os_try_acquire_ro() ) { return false; } detail::on_ro_acquire( this ); return true; }
+    bool try_acquire_ro() noexcept
+    {
+        if ( !os_try_acquire_ro() )
+        {
+            return false;
+        }
+        detail::on_ro_acquire( this );
+        return true;
+    }
     bool try_acquire_rw() noexcept { return pthread_rwlock_trywrlock( &lock_ ) == 0; }
 
 protected:
@@ -80,6 +90,12 @@ protected:
     void os_acquire_ro() noexcept { BOOST_VERIFY( pthread_rwlock_rdlock   ( &lock_ ) == 0 ); }
     void os_release_ro() noexcept { BOOST_VERIFY( pthread_rwlock_unlock   ( &lock_ ) == 0 ); }
     bool os_try_acquire_ro() noexcept { return pthread_rwlock_tryrdlock( &lock_ ) == 0; }
+
+    // Uniform hook for the derived reentrant rrw_mutex (see the Windows backend, which
+    // detects lock acquisition while this thread holds the exclusive side). pthread does
+    // not expose the write owner, and pthread_rwlock_rdlock itself returns EDEADLK for
+    // that case on conforming implementations, so this backend has nothing extra to check.
+    void verify_deadlock() const noexcept {}
 public:
 
     // debugging aid

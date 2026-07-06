@@ -77,6 +77,23 @@ namespace psi::thrd_lite
 // neither cost: each thread's table is private memory. C++ has no per-object
 // thread_local, so the table is a thread_local keyed by mutex identity (see
 // read_recursion_registry), shared by all rrw_mutex instances of a given HeldVec type.
+// This is also how mainstream reentrant read locks do it: .NET ReaderWriterLockSlim
+// (recursion mode) keeps a per-thread linked list of per-lock counts, Java
+// ReentrantReadWriteLock keeps per-thread hold counters in a ThreadLocal.
+//
+// Considered alternative: SRWLOCK-style intrusive nodes on the caller's stack (no
+// separate container at all). That does not transplant here: SRWLOCK's wait blocks only
+// need to live for the DURATION OF THE BLOCKING WAIT, so a local in the waiting frame
+// suffices. A reentrancy record must live for the DURATION OF THE HOLD, so the node
+// would have to be embedded in the guard object -- which (a) leaves the raw
+// acquire_ro()/lock_shared() (std::shared_lock-compatible) API with nowhere to put it,
+// and (b) since guards are movable and routinely stored/returned (long-lived pins),
+// every guard move would have to re-link a per-thread list. And it would not remove the
+// search either: "is this mutex already held by this thread" is still a walk over the
+// thread's live holds. The registry walk is over that same live-hold set -- typically a
+// handful of entries, contiguous in private per-thread memory, allocation-free with an
+// SBO HeldVec -- so the intrusive variant saves nothing and costs API and move
+// complexity.
 //
 // Correctness rests on acquire/release being balanced on the SAME thread per mutex.
 //
@@ -105,13 +122,42 @@ basic_rrw_mutex : public rw_mutex
 public:
     using rw_mutex::rw_mutex;
 
-    void acquire_ro() PSI_NOEXCEPT_EXCEPT_BADALLOC { if ( registry().enter( this ) ) { os_acquire_ro(); } }
-    void release_ro() noexcept                     { if ( registry().leave( this ) ) { os_release_ro(); } }
+    void acquire_ro() PSI_NOEXCEPT_EXCEPT_BADALLOC
+    {
+        verify_deadlock(); // read-while-holding-the-exclusive-side still deadlocks: only *read* recursion is handled
+        if ( registry().enter( this ) )
+        {
+            os_acquire_ro();
+        }
+    }
+    void release_ro() noexcept
+    {
+        if ( registry().leave( this ) )
+        {
+            os_release_ro();
+        }
+    }
 
     bool try_acquire_ro() PSI_NOEXCEPT_EXCEPT_BADALLOC
     {
-        if ( registry().bump_if_held( this ) ) { return true; } // reentrant try: already held -> succeed
-        if ( os_try_acquire_ro() ) { registry().note_first( this ); return true; }
+        verify_deadlock();
+        if ( registry().bump_if_held( this ) ) // reentrant try: already held -> succeed
+        {
+            return true;
+        }
+        if ( os_try_acquire_ro() )
+        {
+            try
+            {
+                registry().note_first( this );
+            }
+            catch ( ... ) // never leak the OS read lock if hold-tracking allocation fails
+            {
+                os_release_ro();
+                throw;
+            }
+            return true;
+        }
         return false;
     }
 

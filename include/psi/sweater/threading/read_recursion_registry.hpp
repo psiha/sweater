@@ -64,7 +64,11 @@ public:
     {
         for ( auto & e : held_ )
         {
-            if ( e.mutex == m ) { ++e.depth; return false; }
+            if ( e.mutex == m )
+            {
+                ++e.depth;
+                return false;
+            }
         }
         held_.emplace_back( m, std::uint32_t{ 1 } );
         return true;
@@ -78,7 +82,12 @@ public:
         {
             if ( held_[ i ].mutex == m )
             {
-                if ( --held_[ i ].depth == 0 ) { held_[ i ] = held_.back(); held_.pop_back(); return true; }
+                if ( --held_[ i ].depth == 0 )
+                {
+                    held_[ i ] = held_.back();
+                    held_.pop_back();
+                    return true;
+                }
                 return false;
             }
         }
@@ -94,7 +103,11 @@ public:
     {
         for ( auto & e : held_ )
         {
-            if ( e.mutex == m ) { ++e.depth; return true; }
+            if ( e.mutex == m )
+            {
+                ++e.depth;
+                return true;
+            }
         }
         return false;
     }

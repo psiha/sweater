@@ -32,14 +32,15 @@ namespace psi::thrd_lite
 // non-recursive rw_mutex (`ro_lock`) and the reentrant rrw_mutex (`rro_lock`, see
 // rrw_mutex.hpp). It stores Mutex* (not rw_mutex*) so acquire_ro/release_ro dispatch to
 // the most-derived overrides -- a base rw_mutex* would slice past rrw_mutex's reentrant
-// ones. The ctor is annotated may-throw-on-bad-alloc because the reentrant acquire_ro
-// allocates to track the hold (it is plain noexcept for the non-recursive rw_mutex).
+// ones. The ctor forwards the mutex's own exception specification: plain noexcept for
+// the non-recursive rw_mutex, may-throw-on-bad-alloc for the reentrant rrw_mutex (whose
+// acquire_ro allocates to track the hold).
 template <class Mutex>
 class [[ clang::trivial_abi ]] basic_ro_lock
 {
 public:
     constexpr basic_ro_lock() noexcept = default;
-    basic_ro_lock( Mutex & mutex ) PSI_NOEXCEPT_EXCEPT_BADALLOC : p_mutex_{ &mutex } {                 p_mutex_->acquire_ro(); }
+    basic_ro_lock( Mutex & mutex ) noexcept( noexcept( mutex.acquire_ro() ) ) : p_mutex_{ &mutex } {                 p_mutex_->acquire_ro(); }
    ~basic_ro_lock(              ) noexcept                                          { if ( p_mutex_ ) p_mutex_->release_ro(); }
     basic_ro_lock( basic_ro_lock const &  ) = delete;
     basic_ro_lock( basic_ro_lock && other ) noexcept : p_mutex_{ std::exchange( other.p_mutex_, nullptr ) } {}
