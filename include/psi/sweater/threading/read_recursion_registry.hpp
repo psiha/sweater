@@ -112,8 +112,14 @@ public:
         return false;
     }
 
+    // Guarantee capacity for one more hold so a subsequent note_first cannot fail. Called
+    // BEFORE the OS try-acquire: any allocation failure then happens while no OS lock is
+    // held, so nothing can leak.
+    void reserve_one() PSI_NOEXCEPT_EXCEPT_BADALLOC { held_.reserve( held_.size() + 1 ); }
+
     // Record a fresh (depth 1) hold after a successful OS try-acquire by this thread.
-    void note_first( void const * const m ) PSI_NOEXCEPT_EXCEPT_BADALLOC { held_.emplace_back( m, std::uint32_t{ 1 } ); }
+    // Requires a preceding reserve_one() -- with capacity guaranteed the push cannot throw.
+    void note_first( void const * const m ) noexcept { held_.emplace_back( m, std::uint32_t{ 1 } ); }
 
     [[ nodiscard ]] static read_recursion_registry & tls() noexcept
     {

@@ -16,6 +16,11 @@ endfunction()
 
 sweater_add_smoke_test( sweater_smoke_test )
 
+add_executable( sweater_rrw_mutex_test rrw_mutex_test.cpp )
+target_link_libraries( sweater_rrw_mutex_test PRIVATE GTest::gtest_main psi::sweater )
+set_target_properties( sweater_rrw_mutex_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
+add_test( NAME sweater_rrw_mutex_test COMMAND sweater_rrw_mutex_test )
+
 # Libuv backend tests — only when libuv headers + library are available.
 find_path( SWEATER_LIBUV_INCLUDE_DIR NAMES uv.h )
 find_library( SWEATER_LIBUV_LIBRARY NAMES uv libuv )
