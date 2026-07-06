@@ -45,7 +45,9 @@ public:
 private:
     std::atomic_flag flag_
     {
-#if __cplusplus < 202002
+    // exact feature test (P0883): MSVC reports __cplusplus as 199711 without
+    // /Zc:__cplusplus, and its C++20 STL rejects the (empty-braces) ATOMIC_FLAG_INIT
+#ifndef __cpp_lib_atomic_value_initialization
         ATOMIC_FLAG_INIT
 #endif
     };

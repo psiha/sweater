@@ -4,22 +4,26 @@ if ( NOT PROJECT_IS_TOP_LEVEL )
     return()
 endif()
 
+if ( CMAKE_CXX_COMPILER_ID MATCHES "Clang" )
+    # googletest 1.15 trips clang 21's new -Wcharacter-conversion (promoted to an error
+    # by the config_ex -Werror defaults); directory-scoped so it covers the gtest build
+    # and the gtest headers included by the tests below.
+    add_compile_options( -Wno-character-conversion )
+endif()
+
 CPMAddPackage( "gh:google/googletest@1.15.2" )
 include( GoogleTest )
 
-function( sweater_add_smoke_test target_name )
-    add_executable( ${target_name} smoke_test.cpp )
+function( sweater_add_test target_name source )
+    add_executable( ${target_name} ${source} )
     target_link_libraries( ${target_name} PRIVATE GTest::gtest_main psi::sweater )
     set_target_properties( ${target_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
     add_test( NAME ${target_name} COMMAND ${target_name} )
 endfunction()
 
-sweater_add_smoke_test( sweater_smoke_test )
-
-add_executable( sweater_rrw_mutex_test rrw_mutex_test.cpp )
-target_link_libraries( sweater_rrw_mutex_test PRIVATE GTest::gtest_main psi::sweater )
-set_target_properties( sweater_rrw_mutex_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
-add_test( NAME sweater_rrw_mutex_test COMMAND sweater_rrw_mutex_test )
+sweater_add_test( sweater_smoke_test     smoke_test.cpp     )
+sweater_add_test( sweater_rw_mutex_test  rw_mutex_test.cpp  )
+sweater_add_test( sweater_rrw_mutex_test rrw_mutex_test.cpp )
 
 # Libuv backend tests — only when libuv headers + library are available.
 find_path( SWEATER_LIBUV_INCLUDE_DIR NAMES uv.h )

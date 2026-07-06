@@ -130,32 +130,24 @@ endif()
 ## Target
 #############################################################################
 #
-# Windows and Apple select native, fully header-only implementations
-# (windows.hpp / apple.hpp) — there is nothing to precompile, so psi::sweater
-# is an INTERFACE library there. Every other platform uses the `generic`
-# thread-pool implementation whose translation units (shop ctor/dtor/worker
-# loop, the chunked-spread arithmetic, and the futex/thread/barrier/semaphore
-# backends) ARE compiled — classic source-by-source — into a STATIC library.
-# The per-file HEADER_FILE_ONLY properties set above naturally exclude the
-# wrong-platform TUs from the compile.
+# Windows and Apple select native thread-pool implementations (windows.hpp /
+# apple.hpp) so the generic implementation's TUs are excluded there; every
+# other platform compiles the `generic` implementation (shop ctor/dtor/worker
+# loop plus the futex/thread/barrier/semaphore backends). The per-file
+# HEADER_FILE_ONLY properties set above exclude the wrong-platform TUs from
+# the compile; the platform-independent support TUs (hardware_concurrency,
+# chunked-spread arithmetic) compile everywhere.
 
-if ( WIN32 OR APPLE )
-    set( _sweater_header_only TRUE  )
-    set( _sweater_scope       INTERFACE )
-else()
-    set( _sweater_header_only FALSE )
-    set( _sweater_scope       PUBLIC )
-endif()
-
-if ( _sweater_header_only )
-    # Header-only: an INTERFACE library carrying just the include path. The
-    # sources are deliberately NOT attached — INTERFACE sources propagate into
-    # (and would be compiled by) every consumer, which is exactly the
-    # generic-infrastructure compilation we must avoid on the native-impl OSes.
-    add_library( psi_sweater INTERFACE )
-else()
-    add_library( psi_sweater STATIC ${sweater_sources} )
-endif()
+# A STATIC library on every platform. Keeping the native-impl OSes (Windows / Apple)
+# from compiling the generic thread-pool infrastructure is the job of the per-platform
+# HEADER_FILE_ONLY exclusions above (generic.cpp, futex vs generic barrier/semaphore,
+# wrong-OS backends) -- NOT of dropping the library kind to INTERFACE: the
+# platform-independent support TUs (hardware_concurrency.cpp, spread_chunked.cpp, the
+# platform futex backend) are needed everywhere, and an INTERFACE library silently left
+# them uncompiled (undefined symbols for any standalone consumer on Windows / Apple).
+set( _sweater_header_only FALSE  )
+set( _sweater_scope       PUBLIC )
+add_library( psi_sweater STATIC ${sweater_sources} )
 add_library( psi::sweater ALIAS psi_sweater )
 
 target_include_directories( psi_sweater ${_sweater_scope} "${CMAKE_CURRENT_LIST_DIR}/include" )

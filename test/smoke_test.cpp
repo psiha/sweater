@@ -24,7 +24,7 @@ TEST( SweaterSmoke, SpreadTheSweat )
 TEST( SweaterSmoke, DispatchReturnsValue )
 {
     psi::sweater::shop work_shop;
-    auto const future{ work_shop.dispatch( []() noexcept -> int { return 42; } ) };
+    auto future{ work_shop.dispatch( []() noexcept -> int { return 42; } ) }; // non-const: std::future::get() (native impls) is mutable
     EXPECT_EQ( future.get(), 42 );
 }
 

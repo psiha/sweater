@@ -35,8 +35,8 @@
 #endif // PSI_SWEATER_DOCKER_LIMITS
 
 #ifdef _MSC_VER
-#   include <yvals.h>
-#   pragma detect_mismatch( "PSI_SWEATER_MAX_HARDWARE_CONCURRENCY", _STRINGIZE( PSI_SWEATER_MAX_HARDWARE_CONCURRENCY ) )
+#   include <boost/preprocessor/stringize.hpp> // current MS STL yvals.h no longer provides _STRINGIZE
+#   pragma detect_mismatch( "PSI_SWEATER_MAX_HARDWARE_CONCURRENCY", BOOST_PP_STRINGIZE( PSI_SWEATER_MAX_HARDWARE_CONCURRENCY ) )
 #endif // _MSC_VER
 
 #include <cstdint>
