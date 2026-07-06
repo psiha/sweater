@@ -145,17 +145,13 @@ public:
         {
             return true;
         }
+        // Pre-reserve the hold slot: the post-acquire bookkeeping below is then noexcept,
+        // so a hold-tracking allocation failure can only happen while no OS lock is held
+        // (a bad_alloc after a successful OS try-acquire would otherwise leak the lock).
+        registry().reserve_one();
         if ( os_try_acquire_ro() )
         {
-            try
-            {
-                registry().note_first( this );
-            }
-            catch ( ... ) // never leak the OS read lock if hold-tracking allocation fails
-            {
-                os_release_ro();
-                throw;
-            }
+            registry().note_first( this );
             return true;
         }
         return false;

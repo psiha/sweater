@@ -18,6 +18,8 @@
 #include <psi/sweater/threading/read_recursion_registry.hpp>
 
 #include <boost/assert.hpp>
+#include <boost/config_ex.hpp> // BOOST_ASSUME
+
 #include <windows.h>
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
