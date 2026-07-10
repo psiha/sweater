@@ -42,11 +42,19 @@ namespace psi::thrd_lite
 //     PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP is strictly writer-preferring.
 //       https://pubs.opengroup.org/onlinepubs/9699919799/functions/pthread_rwlock_rdlock.html
 //       https://man7.org/linux/man-pages/man3/pthread_rwlockattr_setkind_np.3.html
-//   - Windows SRWLOCK: "SRW locks ... cannot be acquired recursively." Acquiring a
-//     shared lock a thread already holds (shared or exclusive) is undefined and
-//     deadlocks in practice.
+//   - Windows SRWLOCK: the *exclusive* side is non-recursive ("SRW locks cannot be
+//     acquired recursively" is about the exclusive side). The *shared* side can in fact
+//     be re-acquired by a thread that already holds it -- an SRWLOCK is pointer-sized and
+//     keeps no shared-owner set, so it cannot even detect the reuse -- BUT a nested shared
+//     acquire DEADLOCKS if an exclusive waiter queued in between: a shared acquire defers
+//     to a pending writer, so the inner reader waits on the writer while the writer waits
+//     on the outer reader. This is the same writer-preference hang as the POSIX case, and
+//     implies SRWLOCK is effectively writer-favouring for shared/exclusive contention
+//     (undocumented -- reverse-engineered / per Raymond Chen; not a hard guarantee).
 //       https://learn.microsoft.com/en-us/windows/win32/sync/slim-reader-writer--srw--locks
-//       https://learn.microsoft.com/en-us/windows/win32/api/synchronization/nf-synchronization-acquiresrwlockshared
+//       https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-acquiresrwlockshared
+//       https://devblogs.microsoft.com/oldnewthing/20220304-00/?p=106309 (recursive shared -> deadlock once a writer waits)
+//       https://devblogs.microsoft.com/oldnewthing/20170705-00/?p=96535  (SRW fairness: fresh readers defer to a queued writer)
 //
 // rw_mutex itself asserts (debug builds) on recursive read-acquisition so the misuse
 // fails loudly rather than hanging; rrw_mutex is the type to reach for when a design
