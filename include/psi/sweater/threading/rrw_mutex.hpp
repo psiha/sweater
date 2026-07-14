@@ -52,17 +52,19 @@ namespace psi::thrd_lite
 // fails loudly rather than hanging; rrw_mutex is the type to reach for when a design
 // legitimately needs nested reads.
 //
-// Not this file's problem, but worth knowing about: rrw_mutex is only necessary
-// because the underlying primitive is writer-preferring. On platforms where
-// posix/rw_mutex.hpp's reader_preferring_rw_mutex is available (see
-// rw_preference.hpp), nested reads are natively deadlock-free -- a writer never
-// gets to jump the queue ahead of an already-held reader -- so a caller that wants
-// safe nested reads but does NOT need writer-starvation avoidance can use
-// reader_preferring_rw_mutex directly and skip rrw_mutex's per-thread hold-tracking
-// entirely. That is a real behavioural tradeoff (sustained read load can now starve
-// writers), not a strict upgrade, and it is POSIX/glibc-only today (unavailable on
-// Windows SRWLOCK and macOS pthread_rwlock) -- rrw_mutex remains the portable,
-// writer-preference-preserving choice.
+// Where this mechanism (basic_rrw_mutex, the class below) is actually used, per
+// platform, is decided at the bottom of this file: on Linux (glibc NP rwlock-kind
+// extensions available), reader_preferring_rw_mutex is instead a thin rw_mutex
+// subclass built on a genuinely reader-preferring OS primitive (posix/rw_mutex.hpp)
+// -- nested reads are natively deadlock-free there, a writer never gets to jump the
+// queue ahead of an already-held reader, and NONE of this file's per-thread hold-
+// tracking is needed. That is a real behavioural tradeoff versus staying
+// writer-preferring (sustained read load can now starve writers), not a strict
+// upgrade -- but it is what "rrw_mutex" means on Linux from here on. On every other
+// platform (Windows SRWLOCK, macOS pthread_rwlock -- neither offers a preference-
+// selecting API), THIS file's mechanism is what reader_preferring_rw_mutex (and so
+// rrw_mutex) actually is: safe nested reads via hold-collapsing, still writer-
+// preferring underneath.
 //
 // ---------------------------------------------------------------------------
 // How it works
@@ -186,14 +188,28 @@ private:
     }
 }; // class basic_rrw_mutex
 
-// Dependency-light default (std::vector storage) for standalone use; consumers that
-// already depend on a small-vector can supply an SBO container as HeldVec to keep the
-// shallow common case allocation-free.
-using rrw_mutex = basic_rrw_mutex< std::vector<detail::read_hold> >;
+// reader_preferring_rw_mutex: on Linux this name is already taken by the genuinely
+// reader-preferring rw_mutex subclass (posix/rw_mutex.hpp, gated on the same macro).
+// Everywhere else, THIS mechanism -- dependency-light std::vector-backed
+// basic_rrw_mutex -- is what it means: consumers that already depend on a small-
+// vector can instantiate basic_rrw_mutex directly with an SBO container instead, to
+// keep the shallow common case allocation-free.
+#ifndef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
+using reader_preferring_rw_mutex = basic_rrw_mutex< std::vector<detail::read_hold> >;
+#endif
 
-// Reentrant read guard for the default rrw_mutex. (The write guard rw_lock works for
-// any basic_rrw_mutex unchanged, by upcast to rw_mutex.)
-using rro_lock = basic_ro_lock<rrw_mutex>;
+// rrw_mutex: the portable name for "safe nested reads", unified across platforms --
+// the underlying mechanism differs (true OS reader-preference on Linux, per-thread
+// hold-collapsing elsewhere, see above), but the guarantee a caller relies on (a
+// thread that already holds the read side can safely re-acquire it) holds either way.
+using rrw_mutex = reader_preferring_rw_mutex;
+
+// Reentrant read guard for reader_preferring_rw_mutex / rrw_mutex, on every platform
+// (its acquire_ro/release_ro are shadowed either way -- attr-based on Linux, TLS-
+// based elsewhere -- so the guard must still name the concrete derived type; the
+// write guard rw_lock, by contrast, needs no equivalent and works unchanged by
+// upcast to rw_mutex, see rw_mutex.hpp).
+using rro_lock = basic_ro_lock<reader_preferring_rw_mutex>;
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite

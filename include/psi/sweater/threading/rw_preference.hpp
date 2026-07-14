@@ -20,12 +20,15 @@ namespace psi::thrd_lite
 //------------------------------------------------------------------------------
 
 // Which side a contended rw_mutex favours when both a reader and a writer are
-// waiting. This is a *compile-time* choice (an NTTP on the platform rw_mutex
-// implementations), not a runtime ctor flag: the preference is baked into the
-// underlying OS primitive at construction (a static initializer or an attr
-// object picked once), so making it a type-level parameter costs nothing per
-// acquire/release and lets callers select it with a type alias instead of a
-// branch.
+// waiting. Selected once, at construction (posix/rw_mutex.hpp's protected ctor),
+// not per acquire/release -- writer_preferring and reader_preferring rw_mutex
+// instances are the SAME type (rw_mutex, or a trivial derived class that adds no
+// methods a caller would ever call differently), differing only in which
+// underlying OS primitive attributes the ctor picked. Guards (rw_lock) and
+// std::shared_lock usage are therefore identical either way; only the read-side
+// RAII guard needs to name the concrete type (see reader_preferring_rw_mutex's
+// shadowed acquire_ro/release_ro in posix/rw_mutex.hpp, and rro_lock in
+// rrw_mutex.hpp), same as it already did for rrw_mutex before this enum existed.
 //
 //   - writer_preferring: a queued writer blocks newly-arriving readers (and
 //     other writers) until it runs. Prevents writer starvation under a heavy
@@ -39,27 +42,19 @@ namespace psi::thrd_lite
 //     rrw_mutex-style per-thread hold tracking needed). The tradeoff is
 //     writer starvation under sustained read load.
 //
-// Platform support is asymmetric and is reported by rw_mutex_traits (defined
-// alongside each backend's rw_mutex): POSIX (glibc NP rwlock-kind extensions)
-// can offer both preferences; Windows SRWLOCK cannot be steered -- it is
-// undocumented but empirically writer-favouring (see rrw_mutex.hpp) and there
-// is no API to request reader preference. A caller that only needs safe
-// nested reads (not writer starvation avoidance) and targets a platform with
-// reader_preferring support can use it directly instead of rrw_mutex.
+// Platform support is asymmetric: POSIX with glibc's NP rwlock-kind extensions
+// (Linux) can offer both preferences on the real primitive; everywhere else
+// (Windows SRWLOCK, macOS pthread_rwlock) there is no API to request reader
+// preference, so reader_preferring_rw_mutex there means something weaker --
+// "safe nested reads" via the same per-thread hold-tracking rrw_mutex always
+// used, not genuine OS-level reader preference against a newly-arriving reader
+// on another thread. See rrw_mutex.hpp for exactly which mechanism backs
+// reader_preferring_rw_mutex / rrw_mutex on a given platform.
 enum class rw_preference : bool
 {
     writer_preferring,
     reader_preferring,
 };
-
-// Primary template intentionally left undefined: every concrete rw_mutex type
-// (per backend, per preference) must specialize this. Referencing an
-// unspecialized rw_mutex_traits<M> is a compile error naming the missing
-// specialization, which is the point -- e.g. instantiating a
-// reader-preferring mutex on a backend that cannot support it should fail to
-// name a type at all (see posix/rw_mutex.hpp) rather than silently degrade.
-template <class RWMutex>
-struct rw_mutex_traits;
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
