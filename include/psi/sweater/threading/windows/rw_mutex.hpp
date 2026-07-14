@@ -16,6 +16,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include <psi/sweater/threading/read_recursion_registry.hpp>
+#include <psi/sweater/threading/rw_preference.hpp>
 
 #include <boost/assert.hpp>
 #include <boost/config_ex.hpp> // BOOST_ASSUME
@@ -108,6 +109,21 @@ private:
     DWORD active_writer_{};
 #endif
 }; // class rw_mutex
+
+// SRWLOCK offers no API to select or query a preference (unlike POSIX's NP
+// rwlockattr kind-setting) -- it is undocumented but empirically writer-favouring
+// (see rrw_mutex.hpp for the citations). There is therefore only ever one Windows
+// rw_mutex, and no reader_preferring_rw_mutex alias on this platform: a generic
+// caller that wants reader preference (see rw_preference.hpp) has no Windows
+// backend to select it from today -- see the futex/WaitOnAddress research item for
+// a possible future lightweight reader-preferring primitive.
+template <>
+struct rw_mutex_traits<rw_mutex>
+{
+    static constexpr rw_preference preference = rw_preference::writer_preferring;
+    static constexpr bool supports_reader_preference = false;
+    static constexpr bool supports_writer_preference  = true;
+};
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite

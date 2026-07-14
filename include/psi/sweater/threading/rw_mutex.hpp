@@ -58,18 +58,31 @@ private:
 using ro_lock = basic_ro_lock<rw_mutex>;
 
 
-class [[ clang::trivial_abi ]] rw_lock
+// RAII write guard, templated for the same reason as basic_ro_lock above: it must
+// work for any rw_mutex-shaped type, not just the writer_preferring `rw_mutex`
+// alias -- e.g. reader_preferring_rw_mutex (posix/rw_mutex.hpp) is a distinct type
+// with its own acquire_rw/release_rw. rrw_mutex reuses this unchanged, upcast to
+// its base rw_mutex (the write side is non-recursive on every backend/preference).
+template <class Mutex>
+class [[ clang::trivial_abi ]] basic_rw_lock
 {
 public:
-    constexpr rw_lock() noexcept = default;
-    rw_lock( rw_mutex & mutex ) noexcept : p_mutex_{ &mutex } {                 p_mutex_->acquire_rw(); }
-   ~rw_lock(                  ) noexcept                      { if ( p_mutex_ ) p_mutex_->release_rw(); }
-    rw_lock( rw_lock const &  ) = delete;
-    rw_lock( rw_lock && other ) noexcept : p_mutex_{ std::exchange( other.p_mutex_, nullptr ) } {}
+    constexpr basic_rw_lock() noexcept = default;
+    basic_rw_lock( Mutex & mutex ) noexcept : p_mutex_{ &mutex } {                 p_mutex_->acquire_rw(); }
+   ~basic_rw_lock(               ) noexcept                     { if ( p_mutex_ ) p_mutex_->release_rw(); }
+    basic_rw_lock( basic_rw_lock const &  ) = delete;
+    basic_rw_lock( basic_rw_lock && other ) noexcept : p_mutex_{ std::exchange( other.p_mutex_, nullptr ) } {}
 
 private:
-    rw_mutex * p_mutex_;
-}; // class rw_lock
+    Mutex * p_mutex_{};
+}; // class basic_rw_lock
+
+using rw_lock = basic_rw_lock<rw_mutex>;
+
+#ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
+using reader_preferring_ro_lock = basic_ro_lock<reader_preferring_rw_mutex>;
+using reader_preferring_rw_lock = basic_rw_lock<reader_preferring_rw_mutex>;
+#endif
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
