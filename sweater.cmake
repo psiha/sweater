@@ -47,6 +47,7 @@ set( sources_threading
     ${src_root}/threading/futex.hpp
     ${src_root}/threading/futex_barrier.cpp
     ${src_root}/threading/futex_barrier.hpp
+    ${src_root}/threading/futex_rw_mutex.hpp
     ${src_root}/threading/futex_semaphore.cpp
     ${src_root}/threading/generic_barrier.cpp
     ${src_root}/threading/generic_barrier.hpp

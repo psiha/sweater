@@ -33,6 +33,16 @@ target_link_libraries( sweater_rw_preference_test PRIVATE GTest::gtest_main psi:
 set_target_properties( sweater_rw_preference_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
 add_test( NAME sweater_rw_preference_test COMMAND sweater_rw_preference_test )
 
+# Experimental futex-based rwlock -- only where psi::thrd_lite::futex has a real
+# backend (Linux SYS_futex, Windows WaitOnAddress). No Apple backend exists (see
+# futex_rw_mutex.hpp's design-doc comment), so this would fail to link there.
+if ( NOT APPLE )
+    add_executable( sweater_futex_rw_mutex_test futex_rw_mutex_test.cpp )
+    target_link_libraries( sweater_futex_rw_mutex_test PRIVATE GTest::gtest_main psi::sweater )
+    set_target_properties( sweater_futex_rw_mutex_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
+    add_test( NAME sweater_futex_rw_mutex_test COMMAND sweater_futex_rw_mutex_test )
+endif()
+
 # Libuv backend tests — only when libuv headers + library are available.
 find_path( SWEATER_LIBUV_INCLUDE_DIR NAMES uv.h )
 find_library( SWEATER_LIBUV_LIBRARY NAMES uv libuv )
