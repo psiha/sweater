@@ -52,6 +52,18 @@ namespace psi::thrd_lite
 // fails loudly rather than hanging; rrw_mutex is the type to reach for when a design
 // legitimately needs nested reads.
 //
+// Not this file's problem, but worth knowing about: rrw_mutex is only necessary
+// because the underlying primitive is writer-preferring. On platforms where
+// posix/rw_mutex.hpp's reader_preferring_rw_mutex is available (see
+// rw_preference.hpp), nested reads are natively deadlock-free -- a writer never
+// gets to jump the queue ahead of an already-held reader -- so a caller that wants
+// safe nested reads but does NOT need writer-starvation avoidance can use
+// reader_preferring_rw_mutex directly and skip rrw_mutex's per-thread hold-tracking
+// entirely. That is a real behavioural tradeoff (sustained read load can now starve
+// writers), not a strict upgrade, and it is POSIX/glibc-only today (unavailable on
+// Windows SRWLOCK and macOS pthread_rwlock) -- rrw_mutex remains the portable,
+// writer-preference-preserving choice.
+//
 // ---------------------------------------------------------------------------
 // How it works
 // ---------------------------------------------------------------------------
