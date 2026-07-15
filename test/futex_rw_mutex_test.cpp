@@ -13,11 +13,33 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <type_traits>
 #include <vector>
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {
 //------------------------------------------------------------------------------
+
+// Regression test: futex's std::atomic base has a deleted copy ctor, which without
+// futex_rw_mutex's own explicit copy/move ctors (mirroring rw_mutex's) would silently
+// delete the copy/move ctors of ANY type embedding a futex_rw_mutex member (e.g.
+// rama's BitmapIndex on Apple) -- not a compile error at this point, just a quietly
+// non-copyable/non-movable enclosing type discovered far away at its own use site.
+TEST( FutexRWMutex, IsCopyableAndMovable )
+{
+    static_assert( std::is_copy_constructible_v<futex_rw_mutex> );
+    static_assert( std::is_move_constructible_v<futex_rw_mutex> );
+
+    struct Owner { futex_rw_mutex mutex; };
+    static_assert( std::is_copy_constructible_v<Owner> );
+    static_assert( std::is_move_constructible_v<Owner> );
+
+    Owner original;
+    Owner copied{ original }; // must not deadlock/assert: source is dormant
+    Owner moved{ std::move( original ) };
+    EXPECT_FALSE( copied.mutex.is_locked() );
+    EXPECT_FALSE( moved.mutex.is_locked() );
+}
 
 TEST( FutexRWMutex, UncontendedTryLock )
 {
