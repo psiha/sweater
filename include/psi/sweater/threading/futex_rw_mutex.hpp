@@ -32,7 +32,10 @@ namespace psi::thrd_lite
 // production-proven). This is the answer to "a pointer-sized, SRWLOCK-style
 // writer-favouring rwlock built on a futex, for platforms whose native rwlock
 // primitive is comparatively heavy" (posix pthread_rwlock_t is 200 bytes on OSX --
-// see posix/rw_mutex.hpp).
+// see posix/rw_mutex.hpp). Two variants are defined: futex_rw_mutex itself (writer-
+// preferring, aliased below as writer_preferring_futex_rw_mutex) and
+// reader_preferring_futex_rw_mutex (a subclass reimplementing the read side against
+// the same state word -- see its own doc comment further down).
 //
 // Built directly on psi::thrd_lite::futex (futex.hpp), so it is only actually
 // available where that primitive has a real backend: Linux (SYS_futex,
@@ -268,7 +271,8 @@ public: // std::shared_lock interface
     void unlock_shared() noexcept { release_ro(); }
     bool try_lock_shared() noexcept { return try_acquire_ro(); }
 
-private:
+protected: // exposed for reader_preferring_futex_rw_mutex below, which reimplements the
+           // read side against this same state word/bit layout
     static constexpr unsigned  state_bits          = sizeof( state_t ) * CHAR_BIT;
     static constexpr state_t   writer_locked_bit    = state_t( state_t{ 1 } << ( state_bits - 1 ) );
     static constexpr state_t   writer_waiting_bit   = state_t( state_t{ 1 } << ( state_bits - 2 ) );
@@ -277,11 +281,104 @@ private:
     futex state_ = { 0 };
 }; // class futex_rw_mutex
 
-// NOTE: rw_preference.hpp (PR #17) landed as tag TYPES selected at construction,
-// not a runtime-queryable trait -- there is nothing for a type like this one
-// (which only ever implements the writer-preferring algorithm) to specialize or
-// register. It is simply never constructed with reader_preferring_t; nothing
-// further to wire up here.
+// writer_preferring_futex_rw_mutex: futex_rw_mutex's default (and only, until the
+// subclass below) algorithm already IS writer-preferring -- this alias exists purely so
+// callers that want to name the preference explicitly can, symmetric with
+// writer_preferring_rw_mutex (rw_mutex.hpp) / reader_preferring_rw_mutex (posix/
+// rw_mutex.hpp).
+using writer_preferring_futex_rw_mutex = futex_rw_mutex;
+
+// ---------------------------------------------------------------------------
+// reader_preferring_futex_rw_mutex
+// ---------------------------------------------------------------------------
+// Reader-preferring variant of futex_rw_mutex, mirroring the writer_preferring_rw_mutex
+// / reader_preferring_rw_mutex split in posix/rw_mutex.hpp -- EXCEPT unlike that pair
+// (where the OS's own rwlock "kind" flag does the actual admission-policy work and the
+// derived class only skips a now-inapplicable debug tripwire), futex_rw_mutex implements
+// its own admission policy directly in the CAS condition: there is no "kind" to flip at
+// construction. This subclass therefore reimplements acquire_ro/release_ro/
+// try_acquire_ro against the SAME state word/bit layout as the base -- built entirely on
+// the futex machinery already in play, with no separate TLS hold-tracking container and
+// no read_recursion_registry involvement at all (not even the debug tripwire the base
+// pays for -- see below for why it doesn't apply here).
+//
+// New readers are admitted whenever no writer currently HOLDS the lock (writer_locked_
+// bit), ignoring writer_waiting_bit entirely -- a queued writer never blocks a new
+// reader. That is also what makes same-thread nested reads natively deadlock-free here:
+// a thread already holding a read lock can never observe writer_locked_bit become set
+// while it holds (the writer's own fast-path CAS requires reader_mask == 0 first), so a
+// nested acquire_ro() on the same thread just re-takes the fast CAS path. That is why,
+// like posix's reader_preferring_rw_mutex, this skips read_recursion_registry's
+// instrumentation (detail::on_ro_acquire/on_ro_release) entirely rather than tripping
+// its now-inapplicable same-thread-recursion assert.
+//
+// The write side (acquire_rw/release_rw/try_acquire_rw) is inherited UNCHANGED: a
+// writer's fast-path CAS condition and its wake-on-release target don't depend on the
+// read-admission policy, only on the actual state transitions, which are identical
+// either way.
+//
+// Same "writer can starve under sustained/bursty read load" caveat that applies to the
+// OS-level posix reader_preferring_rw_mutex applies here too -- accepted by whoever
+// opts into this type, same as there.
+class reader_preferring_futex_rw_mutex : public futex_rw_mutex
+{
+public:
+    void acquire_ro() noexcept
+    {
+        for ( ; ; )
+        {
+            auto observed{ state_.load( std::memory_order_relaxed ) };
+            if ( ( observed & writer_locked_bit ) == 0 )
+            {
+                BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
+                if ( state_.compare_exchange_weak( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed ) )
+                {
+                    return;
+                }
+            }
+            else
+            {
+                state_.wait_if_equal( observed );
+            }
+        }
+    }
+
+    // Skips detail::on_ro_release (unlike the base): this type never registers with
+    // read_recursion_registry in acquire_ro above, so there is nothing to balance here.
+    void release_ro() noexcept
+    {
+        auto const old{ state_.fetch_sub( 1, std::memory_order_release ) };
+        BOOST_ASSERT_MSG( ( old & reader_mask ) != 0, "release_ro without a matching acquire_ro" );
+        if ( ( ( old & reader_mask ) == 1 ) && ( old & writer_waiting_bit ) )
+        {
+            state_.wake_all(); // same wake-target reasoning as the base's release_ro
+        }
+    }
+
+    bool try_acquire_ro() noexcept
+    {
+        auto observed{ state_.load( std::memory_order_relaxed ) };
+        if ( ( observed & writer_locked_bit ) != 0 )
+        {
+            return false;
+        }
+        BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
+        return state_.compare_exchange_strong( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed );
+    }
+
+    // std::shared_lock interface: re-route through the shadowed overrides above (the
+    // base's non-virtual lock_shared()/unlock_shared()/try_lock_shared() would
+    // statically bind to the base's acquire_ro/release_ro/try_acquire_ro).
+    void   lock_shared() noexcept { acquire_ro(); }
+    void unlock_shared() noexcept { release_ro(); }
+    bool try_lock_shared() noexcept { return try_acquire_ro(); }
+}; // class reader_preferring_futex_rw_mutex
+
+// NOTE: rw_preference.hpp (PR #17) landed as tag TYPES selected at construction, not a
+// runtime-queryable trait -- there is nothing for either futex_rw_mutex or
+// reader_preferring_futex_rw_mutex (each only ever implementing ONE fixed algorithm) to
+// specialize or register against it. Callers select the preference by naming the type,
+// same as writer_preferring_rw_mutex vs reader_preferring_rw_mutex.
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
