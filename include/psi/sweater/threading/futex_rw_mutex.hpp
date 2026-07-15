@@ -36,23 +36,23 @@ namespace psi::thrd_lite
 //
 // Built directly on psi::thrd_lite::futex (futex.hpp), so it is only actually
 // available where that primitive has a real backend: Linux (SYS_futex,
-// linux/futex.cpp) and Windows (WaitOnAddress/WakeByAddress, windows/futex.cpp --
+// linux/futex.cpp), Windows (WaitOnAddress/WakeByAddress, windows/futex.cpp --
 // present for cross-validation/testing only; production Windows code should keep
 // using SRWLOCK directly, which is a first-class OS primitive rather than one
-// layered on WaitOnAddress, and is already what windows/rw_mutex.hpp uses). There
-// is deliberately NO Apple backend here: macOS's public API offers no futex
-// equivalent -- os_unfair_lock is exclusive-only (no shared/reader side at all),
-// and the only wait/wake primitive with matching semantics is the private
-// __ulock_wait/__ulock_wake pair (used internally by libc++/libdispatch but not a
-// public, stable API -- the same category of "undocumented, can silently change"
-// risk already flagged for Windows SRWLOCK fairness in rrw_mutex.hpp, except
-// there we at least have citations and years of stable empirical behaviour; a
-// private syscall number has neither). Recommendation: on Apple, keep using this
-// codebase's existing generic mutex+condvar fallback (the same pattern
-// semaphore.hpp/barrier already use for "futexless platforms" -- see
-// generic_semaphore.cpp) rather than building on __ulock. If a concrete
-// performance need for Apple ever justifies revisiting this, that is a separate,
-// explicit decision (private-API risk), not a default.
+// layered on WaitOnAddress, and is already what windows/rw_mutex.hpp uses), and
+// Apple (__ulock_wait/__ulock_wake, apple/futex.cpp -- see that file's own
+// design-doc comment). The Apple backend is PRIVATE API: os_unfair_lock is
+// exclusive-only (no shared/reader side at all), and __ulock_wait/__ulock_wake
+// (the same pair libc++ itself falls back to internally) are undocumented,
+// unversioned Darwin syscalls -- the same category of risk already flagged for
+// Windows SRWLOCK fairness in rrw_mutex.hpp, except there we at least have
+// citations and years of stable empirical behaviour; a private syscall number
+// has neither. Accordingly this whole type stays bleeding-edge/testing-only
+// EVERYWHERE, and on Apple specifically it is not wired into rw_mutex/rrw_mutex
+// at all -- production Apple code should keep using this codebase's existing
+// pthread_rwlock-backed posix/rw_mutex.hpp. If a concrete performance need for
+// Apple ever justifies shipping on __ulock, that is a separate, explicit
+// decision (private-API risk), not a default.
 //
 // ---------------------------------------------------------------------------
 // State layout
@@ -257,11 +257,11 @@ private:
     futex state_ = { 0 };
 }; // class futex_rw_mutex
 
-// NOTE: this prototype predates rw_preference.hpp / rw_mutex_traits (a separate,
-// concurrently developed PR, see the design-doc comment above): once that lands, a
-// trivial follow-up is a `template <> struct rw_mutex_traits<futex_rw_mutex>`
-// specialization here (preference = writer_preferring, supports_reader_preference =
-// false -- this prototype only implements the writer-preferring algorithm).
+// NOTE: rw_preference.hpp (PR #17) landed as tag TYPES selected at construction,
+// not a runtime-queryable trait -- there is nothing for a type like this one
+// (which only ever implements the writer-preferring algorithm) to specialize or
+// register. It is simply never constructed with reader_preferring_t; nothing
+// further to wire up here.
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite

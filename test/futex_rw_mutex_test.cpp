@@ -1,10 +1,9 @@
 //==============================================================================
 // Behavior/correctness tests for the experimental futex-based rwlock
 // (psi::thrd_lite::futex_rw_mutex, see futex_rw_mutex.hpp). Built directly on
-// psi::thrd_lite::futex, so it only links where that has a real backend: Linux
-// (SYS_futex) and Windows (WaitOnAddress) -- there is no Apple backend (see the
-// design-doc comment at the top of the header for why), so this whole file is
-// skipped there via the CMakeLists.txt guard.
+// psi::thrd_lite::futex, so it links wherever that has a real backend: Linux
+// (SYS_futex), Windows (WaitOnAddress), and Apple (__ulock_wait/__ulock_wake,
+// private API -- see apple/futex.cpp).
 //==============================================================================
 
 #include <psi/sweater/threading/futex_rw_mutex.hpp>
@@ -33,9 +32,14 @@ TEST( FutexRWMutex, UncontendedTryLock )
     EXPECT_FALSE( m.is_locked() );
 
     EXPECT_TRUE( m.try_acquire_ro() );
-    EXPECT_TRUE( m.try_acquire_ro() ); // multiple concurrent readers (different logical holders)
+    // A second, concurrent reader -- from another thread: futex_rw_mutex is
+    // non-recursive (same contract as rw_mutex), so a second same-thread
+    // try_acquire_ro() would trip the debug read_recursion_registry tripwire
+    // (it looks exactly like the documented same-thread recursive-read hang
+    // hazard, even though here it would happen not to deadlock).
+    std::thread reader2{ [&] { EXPECT_TRUE( m.try_acquire_ro() ); m.release_ro(); } };
+    reader2.join();
     EXPECT_FALSE( m.try_acquire_rw() ); // writer excluded while any reader holds
-    m.release_ro();
     m.release_ro();
     EXPECT_FALSE( m.is_locked() );
 }
