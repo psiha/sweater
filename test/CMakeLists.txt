@@ -22,27 +22,27 @@ function( sweater_add_test target_name source )
 endfunction()
 
 sweater_add_test( sweater_smoke_test     smoke_test.cpp     )
-sweater_add_test( sweater_rw_mutex_test  rw_mutex_test.cpp  )
-sweater_add_test( sweater_rrw_mutex_test rrw_mutex_test.cpp )
 
-# Portable across backends: skips itself (GTEST_SKIP) where reader_preferring_rw_mutex
-# is not defined (Windows SRWLOCK, macOS pthread_rwlock -- neither offers an NP
-# kind-setting API), see posix/rw_mutex.hpp.
+# Consolidated TYPED_TEST_SUITE coverage for rw_mutex/futex_rw_mutex and their
+# reader/writer-preferring variants -- supersedes the former sweater_rw_mutex_test
+# and sweater_rrw_mutex_test targets (see rw_mutex_contract_test.cpp's header
+# comment). mutex_test_traits.hpp is a header-only test helper, not a target.
+sweater_add_test( sweater_rw_mutex_contract_test rw_mutex_contract_test.cpp )
+
+# Type-identity checks only (see rw_preference_test.cpp's header comment); compiles to
+# zero tests where reader_preferring_rw_mutex is not the glibc NP-rwlock-kind mechanism
+# (Windows SRWLOCK, macOS pthread_rwlock -- neither offers a kind-setting API), see
+# posix/rw_mutex.hpp. That is expected, not a gap -- the behavioral coverage for
+# reader_preferring_rw_mutex on those platforms lives in rw_mutex_contract_test.cpp.
 add_executable( sweater_rw_preference_test rw_preference_test.cpp )
 target_link_libraries( sweater_rw_preference_test PRIVATE GTest::gtest_main psi::sweater )
 set_target_properties( sweater_rw_preference_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
 add_test( NAME sweater_rw_preference_test COMMAND sweater_rw_preference_test )
 
 # Low-level psi::thrd_lite::futex tests (bitset wait/wake targeting) -- same backend
-# availability as the futex_rw_mutex test below.
+# availability as futex_rw_mutex (see rw_mutex_contract_test.cpp for its behavioral
+# coverage, folded in above).
 sweater_add_test( sweater_futex_test futex_test.cpp )
-
-# Experimental futex-based rwlock -- available wherever psi::thrd_lite::futex has a
-# real backend: Linux (SYS_futex), Windows (WaitOnAddress, cross-validation only),
-# and Apple (__ulock_wait/__ulock_wake, PRIVATE API -- see apple/futex.cpp and
-# futex_rw_mutex.hpp's design-doc comment for why that's accepted only here, not
-# on any production path).
-sweater_add_test( sweater_futex_rw_mutex_test futex_rw_mutex_test.cpp )
 
 # Libuv backend tests — only when libuv headers + library are available.
 find_path( SWEATER_LIBUV_INCLUDE_DIR NAMES uv.h )
