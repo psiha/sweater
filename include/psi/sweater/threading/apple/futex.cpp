@@ -69,12 +69,15 @@ void futex::wake_one(                                              ) const noexc
     __ulock_wake( UL_COMPARE_AND_WAIT | ULF_NO_ERRNO, const_cast< futex * >( this ), 0 );
 }
 void futex::wake    ( hardware_concurrency_t                       ) const noexcept { wake_all(); } // no exact-count API, mirrors windows/futex.cpp
-void futex::wake_all(                                              ) const noexcept
+// wake_bitset ignored: __ulock_wake has no per-waiter-category filtering concept --
+// see futex.hpp's design-doc comment on the bitset parameter.
+void futex::wake_all( value_type ) const noexcept
 {
     __ulock_wake( UL_COMPARE_AND_WAIT | ULF_WAKE_ALL | ULF_NO_ERRNO, const_cast< futex * >( this ), 0 );
 }
 
-void futex::wait_if_equal( value_type const desired_value ) const noexcept
+// listen_bits ignored: __ulock_wait has no bitset concept -- see futex.hpp.
+void futex::wait_if_equal( value_type const desired_value, value_type ) const noexcept
 {
     // timeout_us == 0 means "wait indefinitely" for __ulock_wait. Return value
     // deliberately ignored (see ULF_NO_ERRNO comment above) -- every caller

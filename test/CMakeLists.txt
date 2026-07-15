@@ -33,6 +33,10 @@ target_link_libraries( sweater_rw_preference_test PRIVATE GTest::gtest_main psi:
 set_target_properties( sweater_rw_preference_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
 add_test( NAME sweater_rw_preference_test COMMAND sweater_rw_preference_test )
 
+# Low-level psi::thrd_lite::futex tests (bitset wait/wake targeting) -- same backend
+# availability as the futex_rw_mutex test below.
+sweater_add_test( sweater_futex_test futex_test.cpp )
+
 # Experimental futex-based rwlock -- available wherever psi::thrd_lite::futex has a
 # real backend: Linux (SYS_futex), Windows (WaitOnAddress, cross-validation only),
 # and Apple (__ulock_wait/__ulock_wake, PRIVATE API -- see apple/futex.cpp and
