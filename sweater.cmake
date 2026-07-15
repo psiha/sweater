@@ -47,6 +47,7 @@ set( sources_threading
     ${src_root}/threading/futex.hpp
     ${src_root}/threading/futex_barrier.cpp
     ${src_root}/threading/futex_barrier.hpp
+    ${src_root}/threading/futex_rw_mutex.hpp
     ${src_root}/threading/futex_semaphore.cpp
     ${src_root}/threading/generic_barrier.cpp
     ${src_root}/threading/generic_barrier.hpp
@@ -94,6 +95,21 @@ source_group( "ThrdLite/Linux" FILES ${sources_threading_linux} )
 list( APPEND sweater_sources ${sources_threading_linux} )
 if ( NOT ANDROID AND NOT LINUX )
     set_source_files_properties( ${sources_threading_linux} PROPERTIES HEADER_FILE_ONLY ON )
+endif()
+
+
+# __ulock_wait/__ulock_wake -- PRIVATE Darwin syscalls, see the design-doc
+# comment at the top of apple/futex.cpp. Bleeding-edge/testing use only (not a
+# production backend anywhere in this codebase yet); still compiled on every
+# Apple build since it costs nothing unreferenced and futex_rw_mutex.hpp needs
+# it to be usable at all on that platform.
+set( sources_threading_apple
+    ${src_root}/threading/apple/futex.cpp
+)
+source_group( "ThrdLite/Apple" FILES ${sources_threading_apple} )
+list( APPEND sweater_sources ${sources_threading_apple} )
+if ( NOT APPLE )
+    set_source_files_properties( ${sources_threading_apple} PROPERTIES HEADER_FILE_ONLY ON )
 endif()
 
 
@@ -151,6 +167,15 @@ add_library( psi_sweater STATIC ${sweater_sources} )
 add_library( psi::sweater ALIAS psi_sweater )
 
 target_include_directories( psi_sweater ${_sweater_scope} "${CMAKE_CURRENT_LIST_DIR}/include" )
+
+if ( WIN32 )
+    # windows/futex.cpp calls WaitOnAddress/WakeByAddressSingle/WakeByAddressAll,
+    # resolved by Synchronization.lib -- not linked by default and previously never
+    # missed because nothing on Windows referenced psi::thrd_lite::futex until
+    # futex_rw_mutex.hpp (windows/condvar.hpp, mutex.hpp, rw_mutex.hpp are all
+    # SRWLOCK/CONDITION_VARIABLE-based and never touch this backend).
+    target_link_libraries( psi_sweater ${_sweater_scope} Synchronization )
+endif()
 
 # Boost (header-only here: config_ex, assert, container, core, ...). Supplied by
 # the host project as the Boost::boost INTERFACE target; CPM-provided in the
