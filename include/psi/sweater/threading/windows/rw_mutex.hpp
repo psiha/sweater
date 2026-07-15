@@ -109,6 +109,15 @@ private:
 #endif
 }; // class rw_mutex
 
+// SRWLOCK offers no API to select or query a preference (unlike POSIX's NP
+// rwlockattr kind-setting) -- it is undocumented but empirically writer-favouring
+// (see rrw_mutex.hpp for the citations). There is therefore only ever one Windows
+// rw_mutex; writer_preferring_rw_mutex (rw_mutex.hpp) is a plain alias for it, and
+// reader_preferring_rw_mutex (rrw_mutex.hpp) is NOT this type -- it's the
+// per-thread hold-tracking wrapper, since there is no Windows backend to select a
+// true OS-level reader-preferring primitive from today (see the futex/
+// WaitOnAddress research item for a possible future lightweight alternative).
+
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
 //------------------------------------------------------------------------------

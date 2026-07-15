@@ -25,6 +25,14 @@ sweater_add_test( sweater_smoke_test     smoke_test.cpp     )
 sweater_add_test( sweater_rw_mutex_test  rw_mutex_test.cpp  )
 sweater_add_test( sweater_rrw_mutex_test rrw_mutex_test.cpp )
 
+# Portable across backends: skips itself (GTEST_SKIP) where reader_preferring_rw_mutex
+# is not defined (Windows SRWLOCK, macOS pthread_rwlock -- neither offers an NP
+# kind-setting API), see posix/rw_mutex.hpp.
+add_executable( sweater_rw_preference_test rw_preference_test.cpp )
+target_link_libraries( sweater_rw_preference_test PRIVATE GTest::gtest_main psi::sweater )
+set_target_properties( sweater_rw_preference_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
+add_test( NAME sweater_rw_preference_test COMMAND sweater_rw_preference_test )
+
 # Libuv backend tests — only when libuv headers + library are available.
 find_path( SWEATER_LIBUV_INCLUDE_DIR NAMES uv.h )
 find_library( SWEATER_LIBUV_LIBRARY NAMES uv libuv )

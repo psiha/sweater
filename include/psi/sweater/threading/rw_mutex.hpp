@@ -57,7 +57,19 @@ private:
 
 using ro_lock = basic_ro_lock<rw_mutex>;
 
+// writer_preferring_rw_mutex: rw_mutex's default ctor already IS writer-preferring
+// (unchanged, pre-existing name and behaviour) -- this alias exists purely so callers
+// that want to name the preference explicitly (symmetric with reader_preferring_rw_mutex,
+// rrw_mutex.hpp) can, without a second type to keep in sync with the first.
+using writer_preferring_rw_mutex = rw_mutex;
 
+
+// RAII write guard. Deliberately NOT templated: acquire_rw/release_rw are non-
+// recursive and identical for every rw_mutex-derived type regardless of preference
+// (writer_preferring_rw_mutex IS rw_mutex; reader_preferring_rw_mutex and rrw_mutex
+// both derive from it and add no write-side overrides) -- a plain rw_mutex& parameter
+// accepts all of them by ordinary base-reference binding, same as it already did for
+// rrw_mutex before reader_preferring_rw_mutex existed.
 class [[ clang::trivial_abi ]] rw_lock
 {
 public:
@@ -68,7 +80,7 @@ public:
     rw_lock( rw_lock && other ) noexcept : p_mutex_{ std::exchange( other.p_mutex_, nullptr ) } {}
 
 private:
-    rw_mutex * p_mutex_;
+    rw_mutex * p_mutex_{};
 }; // class rw_lock
 
 //------------------------------------------------------------------------------
