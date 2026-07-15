@@ -31,17 +31,17 @@ class [[ clang::trivial_abi ]] rw_mutex
 public:
     constexpr rw_mutex() noexcept = default;
     explicit // allow copy so as to enable use compiler generated constructors/functions for types that contain mutex members
-    constexpr rw_mutex( rw_mutex const &  other ) noexcept { BOOST_ASSUME( !other.locked() ); }
-    constexpr rw_mutex( rw_mutex       && other ) noexcept { BOOST_ASSUME( !other.locked() ); }
+    constexpr rw_mutex( rw_mutex const &  other ) noexcept { BOOST_ASSUME( !other.is_locked() ); }
+    constexpr rw_mutex( rw_mutex       && other ) noexcept { BOOST_ASSUME( !other.is_locked() ); }
 #ifndef NDEBUG
-    ~rw_mutex() { BOOST_ASSERT( !locked() ); }
+    ~rw_mutex() { BOOST_ASSERT( !is_locked() ); }
 #endif
 
     rw_mutex & operator=( rw_mutex && other ) noexcept
     {
         // this dummy operation makes sense only for dormant mutexes
-        BOOST_ASSUME( !this->locked() );
-        BOOST_ASSUME( !other.locked() );
+        BOOST_ASSUME( !this->is_locked() );
+        BOOST_ASSUME( !other.is_locked() );
         return *this;
     }
 
@@ -82,11 +82,12 @@ protected:
     // (a documented SRWLOCK deadlock). Protected so the derived reentrant rrw_mutex can
     // run the same check on its read path.
     void verify_deadlock() const noexcept {
-        BOOST_ASSERT( !locked() || ( active_writer_ != ::GetCurrentThreadId() ) );
+        BOOST_ASSERT( !is_locked() || ( active_writer_ != ::GetCurrentThreadId() ) );
     }
 public:
 
-    [[ gnu::pure ]] bool locked() const noexcept { return lock_.Ptr != nullptr; }
+    // debugging aid, named consistently with posix/rw_mutex.hpp and futex_rw_mutex.hpp
+    [[ gnu::pure ]] bool is_locked() const noexcept { return lock_.Ptr != nullptr; }
 
 public: // std::shared_lock interface
     void   lock() noexcept { acquire_rw(); }
