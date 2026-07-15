@@ -29,13 +29,26 @@ namespace
     auto const stress_deadline{ std::chrono::seconds{ 10 } };
 } // anonymous namespace
 
-// Burst-enqueue a batch of fire_and_forget work then immediately destroy the
-// shop (no explicit drain/wait beforehand). shop::~shop() (stop_and_destroy_pool())
-// must still guarantee every already-enqueued item runs to completion before any
-// worker honors the shutdown flag (see generic.cpp's worker_loop_impl: the queue
-// is fully drained before the brexit_ check) -- this pins that guarantee down
-// instead of leaving it as an unverified reading of the implementation.
-TEST( SweatShopStress, ShutdownRaceDrainsAllEnqueuedWork )
+// Burst-enqueue a batch of fire_and_forget work, then confirm it all
+// completes via wait_until_idle() before the shop goes out of scope.
+//
+// This was originally written assuming shop::~shop() itself guarantees a
+// full drain (true for the generic/Linux worker-pool backend, whose
+// worker_loop_impl drains its queue to empty before honoring the shutdown
+// flag) -- but that is NOT a cross-platform guarantee: windows.hpp's and
+// apple.hpp's shop are explicitly *stateless* and submit fire_and_forget
+// work to the OS's shared, process-wide thread pool (Windows Thread Pool
+// API / GCD's global dispatch queue) with no per-shop thread to join on
+// destruction. Destroying a shop there does not wait for anything --
+// confirmed empirically (a burst of 2000 items regularly lost 10-60% of
+// completions on Windows, with some `completed` counts exceeding
+// items_per_iteration entirely, because leftover callbacks from a
+// *previous*, already-"destroyed" iteration's shop were still running and
+// writing into a reused stack slot). wait_until_idle() is the actual,
+// documented, portable way to know fire_and_forget work has finished; this
+// test now pins that down instead of an implementation detail of one
+// backend.
+TEST( SweatShopStress, BurstEnqueueThenWaitDrainsAllWork )
 {
     auto constexpr iterations{ 25 };
     auto constexpr items_per_iteration{ 2000 };
@@ -49,11 +62,11 @@ TEST( SweatShopStress, ShutdownRaceDrainsAllEnqueuedWork )
             {
                 work_shop.fire_and_forget( [&]() noexcept { completed.fetch_add( 1, std::memory_order_relaxed ); } );
             }
-            // work_shop destructs here, immediately after the burst enqueue --
-            // no wait_until_idle()/explicit drain call.
+            ASSERT_TRUE( wait_until_idle( stress_deadline ) )
+                << "iteration " << iter << ": burst-enqueued work did not drain within the stress deadline";
         }
         EXPECT_EQ( completed.load(), items_per_iteration )
-            << "iteration " << iter << ": shop destructor did not drain all enqueued work";
+            << "iteration " << iter << ": burst-enqueued work was not fully completed";
     }
 }
 

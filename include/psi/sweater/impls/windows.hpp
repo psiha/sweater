@@ -46,6 +46,13 @@ namespace psi::sweater::windows
 
 using hardware_concurrency_t = thrd_lite::hardware_concurrency_t;
 
+// Stateless: fire_and_forget/dispatch/spread_the_sweat all submit to the OS's
+// shared, process-wide default thread pool -- there is no per-instance worker
+// thread here for the destructor to join. Destroying a shop does NOT wait for
+// its already-submitted work to finish (unlike the generic/Linux backend,
+// whose worker-thread pool happens to drain to empty before honoring
+// shutdown). Use wait_until_idle() to know fire_and_forget work has actually
+// completed -- do not rely on end-of-scope/destruction for this.
 class shop
 {
 public:

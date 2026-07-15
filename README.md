@@ -64,9 +64,10 @@ Current test targets (`test/`, GoogleTest):
   (bleeding-edge, `__ulock`-based on Apple — see that header's own design-doc comment on
   why this isn't a production path there).
 - `sweater_shop_stress_test` — `sweat_shop` dispatch/thread-pool adversarial coverage:
-  a shutdown-race test (burst-enqueue then immediately destroy the shop, pinning down
-  that the destructor drains all already-enqueued work before any worker honors
-  shutdown), a concurrent-producer stress test (many threads hammering
+  a burst-enqueue test (fire-and-forget a batch of work, then confirm it all
+  completes via `wait_until_idle()` before the shop goes out of scope — see the note
+  below on why the shop's destructor alone cannot be relied on for this), a
+  concurrent-producer stress test (many threads hammering
   `fire_and_forget`/`dispatch`/`spread_the_sweat` on one shared shop), and a test
   documenting that `in_flight_count()`/`wait_until_idle()` are tracked by a single
   process-wide counter, not one per shop (a shop with no work of its own can still
@@ -78,6 +79,17 @@ Current test targets (`test/`, GoogleTest):
   eventually make `wait_until_idle()` return false forever. See `work_added_untracked()`
   in `impls/generic.hpp`/`generic.cpp`.
 - `sweater_libuv_test` — optional, only built when libuv headers/library are found.
+
+**`shop::~shop()` does not drain fire_and_forget work on every backend.** The
+generic (Linux) implementation owns a joinable worker-thread pool whose loop
+drains its queue to empty before honoring shutdown, so destroying a shop there
+happens to wait for already-enqueued work as a side effect. `windows.hpp`'s and
+`apple.hpp`'s shops are explicitly *stateless* and submit `fire_and_forget` work
+to the OS's shared, process-wide thread pool (Windows Thread Pool API / GCD's
+global dispatch queue) — there is no per-shop thread to join, so destroying the
+shop does not wait for anything there. Always call `wait_until_idle()` (or track
+completion yourself) before relying on `fire_and_forget` work having finished;
+do not rely on a shop's destructor or end-of-scope for this.
 
 All of the above are green on every CI platform as of this writing. The rw-mutex family
 in particular has been additionally stress-tested well beyond CI's single pass: repeated
