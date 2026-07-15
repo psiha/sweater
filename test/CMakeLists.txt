@@ -21,7 +21,8 @@ function( sweater_add_test target_name source )
     add_test( NAME ${target_name} COMMAND ${target_name} )
 endfunction()
 
-sweater_add_test( sweater_smoke_test     smoke_test.cpp     )
+sweater_add_test( sweater_smoke_test        smoke_test.cpp             )
+sweater_add_test( sweater_shop_stress_test  sweat_shop_stress_test.cpp )
 
 # Consolidated TYPED_TEST_SUITE coverage for rw_mutex/futex_rw_mutex and their
 # reader/writer-preferring variants -- supersedes the former sweater_rw_mutex_test
