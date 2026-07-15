@@ -496,9 +496,9 @@ void shop::perform_caller_work
     chunk_setup.  end_iteration = iterations;
     BOOST_ASSERT( chunk_setup.p_completion_barrier == &completion_barrier );
     completion_barrier.add_expected_arrival();
-    work_added    ();
-    caller_chunk  ();
-    work_completed();
+    work_added_untracked();
+    caller_chunk        ();
+    work_completed      ();
     events::caller_work_end();
 }
 
@@ -568,7 +568,7 @@ auto shop::dispatch_workers
             // number than the simple number_of_work_parts calculation in the
             // non-HMP case.
             completion_barrier.add_expected_arrival();
-            work_added();
+            work_added_untracked();
         }
         BOOST_ASSERT( number_of_slices );
         BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_ ) ); //...mrmlj...todo err handling
@@ -826,7 +826,7 @@ bool shop::spread_work
             }
             BOOST_ASSUME( iteration == iterations );
 
-            work_added( number_of_dispatched_work_parts );
+            work_added_untracked( number_of_dispatched_work_parts );
             // Has to be initialized before enqueuing (to support spinning waits in workers -
             // where trivial work would get dequeued and executed (and 'arrived at') before
             // this thread could enter the if ( enqueue_succeeded ) block and initialize the
@@ -962,6 +962,10 @@ void shop::work_added    ( hardware_concurrency_t const items ) noexcept
 {
     work_items_.fetch_add( items, std::memory_order_acquire );
     if ( items ) { detail::in_flight_inc(); }
+}
+void shop::work_added_untracked( hardware_concurrency_t const items ) noexcept
+{
+    work_items_.fetch_add( items, std::memory_order_acquire );
 }
 void shop::work_completed(                                    ) noexcept { /*thrd_lite::detail::underflow_checked_dec( work_items_        );*/ work_items_.fetch_sub( 1    , std::memory_order_release ); }
 

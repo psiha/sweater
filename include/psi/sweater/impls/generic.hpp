@@ -447,8 +447,21 @@ private:
 
     void wake_all_workers() noexcept;
 
-    void work_added    ( hardware_concurrency_t items = 1 ) noexcept;
-    void work_completed(                                  ) noexcept;
+    // Tracked by the process-wide dispatch_tracking counter (in_flight_count()/
+    // wait_until_idle()): used only by the fire_and_forget/dispatch path, whose
+    // self_destructed_work wrapper pairs every increment here with an
+    // in_flight_dec() once the (asynchronous, fire-and-move-on) work runs.
+    void work_added          ( hardware_concurrency_t items = 1 ) noexcept;
+    // Untracked: used by spread_the_sweat's dispatch paths, which have no
+    // matching in_flight_dec() anywhere (spread_the_sweat is synchronous --
+    // the completion_barrier already blocks the caller until all dispatched
+    // parts finish, so there is no fire-and-move-on window for in_flight_count()/
+    // wait_until_idle() to observe). Routing spread through the tracked
+    // work_added() above would increment the counter once per dispatched part
+    // (or once per call, depending on the code path) with nothing to ever
+    // decrement it back -- a permanent leak.
+    void work_added_untracked( hardware_concurrency_t items = 1 ) noexcept;
+    void work_completed(                                        ) noexcept;
 
 private:
 #if PSI_SWEATER_EXACT_WORKER_SELECTION

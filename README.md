@@ -60,7 +60,36 @@ Current test targets (`test/`, GoogleTest):
 - `sweater_futex_test` — low-level `psi::thrd_lite::futex` wait/wake, including the
   bitset-targeted `wake_all`/`wait_if_equal` overloads (real filtering on Linux
   `FUTEX_WAIT_BITSET`/`FUTEX_WAKE_BITSET`; a documented no-op elsewhere).
+- `sweater_futex_rw_mutex_test` — `futex_rw_mutex`/`reader_preferring_futex_rw_mutex`
+  (bleeding-edge, `__ulock`-based on Apple — see that header's own design-doc comment on
+  why this isn't a production path there).
+- `sweater_shop_stress_test` — `sweat_shop` dispatch/thread-pool adversarial coverage:
+  a burst-enqueue test (fire-and-forget a batch of work, then confirm it all
+  completes via `wait_until_idle()` before the shop goes out of scope — see the note
+  below on why the shop's destructor alone cannot be relied on for this), a
+  concurrent-producer stress test (many threads hammering
+  `fire_and_forget`/`dispatch`/`spread_the_sweat` on one shared shop), and a test
+  documenting that `in_flight_count()`/`wait_until_idle()` are tracked by a single
+  process-wide counter, not one per shop (a shop with no work of its own can still
+  observe, and wait on, a completely unrelated shop's in-flight work). Writing the
+  concurrent-producer test surfaced a real bug (now fixed): the generic (Linux) impl's
+  `spread_the_sweat` incremented that process-wide counter once per dispatched work part
+  but never decremented it (spread's own completion barrier already makes it synchronous,
+  so it was never meant to be tracked there at all) — a permanent leak that would
+  eventually make `wait_until_idle()` return false forever. See `work_added_untracked()`
+  in `impls/generic.hpp`/`generic.cpp`.
 - `sweater_libuv_test` — optional, only built when libuv headers/library are found.
+
+**`shop::~shop()` does not drain fire_and_forget work on every backend.** The
+generic (Linux) implementation owns a joinable worker-thread pool whose loop
+drains its queue to empty before honoring shutdown, so destroying a shop there
+happens to wait for already-enqueued work as a side effect. `windows.hpp`'s and
+`apple.hpp`'s shops are explicitly *stateless* and submit `fire_and_forget` work
+to the OS's shared, process-wide thread pool (Windows Thread Pool API / GCD's
+global dispatch queue) — there is no per-shop thread to join, so destroying the
+shop does not wait for anything there. Always call `wait_until_idle()` (or track
+completion yourself) before relying on `fire_and_forget` work having finished;
+do not rely on a shop's destructor or end-of-scope for this.
 
 All of the above are green on every CI platform as of this writing. The rw-mutex family
 in particular has been additionally stress-tested well beyond CI's single pass: repeated
@@ -68,11 +97,3 @@ in particular has been additionally stress-tested well beyond CI's single pass: 
 runs) on both WSL/Linux and real Apple hardware, specifically to catch intermittent
 concurrency bugs that a single green run can miss — two such bugs were in fact found and
 fixed this way (see the `futex_rw_mutex` commit history).
-
-Known gap (tracked, not yet addressed): test coverage for `sweat_shop`'s own dispatch/
-thread-pool machinery is currently limited to `sweater_smoke_test`'s three basic-usage
-cases — no dedicated stress/adversarial coverage yet (shutdown races, oversubscription,
-exception propagation through `dispatch()`, `in_flight_count()`/`wait_until_idle()`
-correctness). A concrete research writeup and proposed next steps is on file (ask in the
-project's issue tracker or check recent history around this README's last update for the
-writeup).
