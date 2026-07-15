@@ -121,6 +121,26 @@ class futex_rw_mutex
 public:
     using state_t = futex::value_type;
 
+    futex_rw_mutex() noexcept = default;
+
+    // Mirrors rw_mutex's copy/move ctors (posix/rw_mutex.hpp): futex's std::atomic base
+    // has a deleted copy ctor, so without these, any type embedding a futex_rw_mutex
+    // member (e.g. BitmapIndex's PlainRWMutex on Apple) would have its own copy/move
+    // ctors implicitly deleted too. A "copy" here just default-constructs a fresh,
+    // dormant instance -- the same "allow copy so as to enable use of compiler
+    // generated constructors/functions for types that contain rw_mutex members"
+    // rationale, not an actual state copy (there is no valid notion of copying live
+    // lock state).
+    explicit
+    futex_rw_mutex( [[ maybe_unused ]] futex_rw_mutex const &  other ) noexcept : futex_rw_mutex{} { BOOST_ASSERT_MSG( !other.is_locked(), "Copy allowed only for dormant mutexes" ); }
+    futex_rw_mutex( [[ maybe_unused ]] futex_rw_mutex       && other ) noexcept : futex_rw_mutex{} { BOOST_ASSERT_MSG( !other.is_locked(), "Relocation allowed only for dormant mutexes" ); }
+
+    futex_rw_mutex & operator=( [[ maybe_unused ]] futex_rw_mutex && other ) noexcept
+    {
+        BOOST_ASSERT_MSG( !is_locked() && !other.is_locked(), "Relocation allowed only for dormant mutexes" );
+        return *this;
+    }
+
     void acquire_ro() noexcept
     {
         detail::on_ro_acquire( this ); // writer-preferring: nested read is the documented hang, same as rw_mutex
