@@ -47,7 +47,7 @@ class
 rw_mutex
 {
 public:
-    rw_mutex() noexcept : rw_mutex( rw_preference::writer_preferring ) {}
+    rw_mutex() noexcept : rw_mutex( writer_preferring ) {}
    ~rw_mutex() noexcept { BOOST_VERIFY( pthread_rwlock_destroy( &lock_ ) == 0 ); }
 
     explicit // allow copy so as to enable use of compiler generated constructors/functions for types that contain rw_mutex members
@@ -87,15 +87,25 @@ public:
     bool try_acquire_rw() noexcept { return pthread_rwlock_trywrlock( &lock_ ) == 0; }
 
 protected:
-    // Selects the underlying rwlockattr kind once, at construction -- not a per-call
-    // branch, so the two preferences cost nothing extra per acquire/release. Protected:
-    // ordinary rw_mutex users always get writer_preferring via the public default ctor
-    // above; only a derived class (reader_preferring_rw_mutex below) picks the other
-    // policy. Both preferences are the SAME type (rw_mutex) either way -- they only
-    // differ in what this ctor sets up, not in any method's signature or behaviour, so
-    // callers, guards (rw_lock, ro_lock) and std::shared_lock all work identically
-    // regardless of which preference a given instance was built with.
-    explicit rw_mutex( rw_preference ) noexcept;
+    // Tag-dispatched: selects the underlying rwlockattr kind once, at construction --
+    // not a per-call branch, so the two preferences cost nothing extra per acquire/
+    // release, and the RIGHT overload is picked by the compiler, not a runtime
+    // comparison (see rw_preference.hpp). Protected: ordinary rw_mutex users always
+    // get writer_preferring via the public default ctor above; only a derived class
+    // (reader_preferring_rw_mutex below) picks the other policy. Both preferences are
+    // the SAME type (rw_mutex) either way -- they only differ in what the chosen ctor
+    // sets up, not in any method's signature or behaviour, so callers, guards
+    // (rw_lock, ro_lock) and std::shared_lock all work identically regardless of which
+    // preference a given instance was built with.
+    explicit rw_mutex( writer_preferring_t ) noexcept;
+#ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
+    // Only declared where the underlying primitive can actually be steered this way --
+    // reader_preferring_rw_mutex (below) is itself only defined under the same macro,
+    // so attempting to build a reader-preferring rw_mutex where this overload doesn't
+    // exist is a compile error at the CALL site, not something this class needs to
+    // runtime-check.
+    explicit rw_mutex( reader_preferring_t ) noexcept;
+#endif
 
     // Raw, un-instrumented OS read lock/unlock (pthread treats unlock uniformly for the
     // shared and exclusive sides). The reentrant rrw_mutex and reader_preferring_rw_mutex
@@ -141,35 +151,33 @@ private:
     pthread_rwlock_t lock_; // this is yuge on OSX (200 bytes)
 }; // class rw_mutex
 
-inline rw_mutex::rw_mutex( rw_preference const preference ) noexcept
+inline rw_mutex::rw_mutex( writer_preferring_t ) noexcept
 {
 #ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
-    if ( preference == rw_preference::reader_preferring )
-    {
-        pthread_rwlockattr_t attr;
-        BOOST_VERIFY( pthread_rwlockattr_init( &attr ) == 0 );
-        BOOST_VERIFY( pthread_rwlockattr_setkind_np( &attr, PTHREAD_RWLOCK_PREFER_READER_NP ) == 0 );
-        BOOST_VERIFY( pthread_rwlock_init( &lock_, &attr ) == 0 );
-        BOOST_VERIFY( pthread_rwlockattr_destroy( &attr ) == 0 );
-        return;
-    }
     lock_ = PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP;
-#else
-    // No portable POSIX API to request reader preference (glibc's NP rwlockattr kind
-    // extensions are what the branch above uses): reader_preferring_rw_mutex is not
-    // defined at all on platforms without them (see below) -- this ctor should never be
-    // reached with that value here, but assert rather than silently build a
-    // writer-preferring lock and call it something it isn't.
-    BOOST_ASSERT_MSG( preference != rw_preference::reader_preferring,
-        "reader_preferring rw_mutex requires glibc NP rwlock-kind extensions, unavailable on this platform" );
-    static_cast<void>( preference );
-#   ifdef PTHREAD_RWLOCK_INITIALIZER
+#elifdef PTHREAD_RWLOCK_INITIALIZER
+    // Best-effort fallback: no NP kind-setting API here, so this is just whatever the
+    // OS default is -- not a guarantee of writer preference off Linux (see rrw_mutex.hpp).
     lock_ = PTHREAD_RWLOCK_INITIALIZER;
-#   else
+#else
     BOOST_VERIFY( pthread_rwlock_init( &lock_, nullptr ) == 0 );
-#   endif
 #endif
 }
+
+#ifdef PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP
+inline rw_mutex::rw_mutex( reader_preferring_t ) noexcept
+{
+    // No pthread_rwlockattr_t/setkind_np/destroy ceremony needed: glibc's own default
+    // rwlock kind, PTHREAD_RWLOCK_DEFAULT_NP, IS PTHREAD_RWLOCK_PREFER_READER_NP
+    // (pthread.h: "PTHREAD_RWLOCK_DEFAULT_NP = PTHREAD_RWLOCK_PREFER_READER_NP"), and
+    // PTHREAD_RWLOCK_INITIALIZER bakes that default straight into the static struct --
+    // so it already IS a reader-preferring initializer, at zero runtime cost.
+    // PTHREAD_RWLOCK_INITIALIZER is guaranteed available wherever this overload is
+    // (both live inside the same "__USE_UNIX98 || __USE_XOPEN2K" #if in pthread.h,
+    // with the NP writer-nonrecursive macro additionally nested under __USE_GNU).
+    lock_ = PTHREAD_RWLOCK_INITIALIZER;
+}
+#endif
 
 // reader_preferring_rw_mutex: only defined where glibc's NP rwlock-kind extensions are
 // available (Linux; neither macOS's pthread_rwlock nor Windows SRWLOCK offer a kind-
@@ -191,7 +199,7 @@ class
 reader_preferring_rw_mutex : public rw_mutex
 {
 public:
-    reader_preferring_rw_mutex() noexcept : rw_mutex( rw_preference::reader_preferring ) {}
+    reader_preferring_rw_mutex() noexcept : rw_mutex( reader_preferring ) {}
 
     // Shadow (non-virtual -- rw_mutex has no virtuals) the read side only: reader
     // preference makes a nested read acquire natively deadlock-free (a queued writer
