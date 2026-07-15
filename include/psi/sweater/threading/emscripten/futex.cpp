@@ -31,9 +31,12 @@ namespace
 
 void futex::wake_one(                                              ) const noexcept { wake( 1 ); }
 void futex::wake    ( hardware_concurrency_t const waiters_to_wake ) const noexcept { emscripten_futex_wake( void_cast( this ), waiters_to_wake ); }
-void futex::wake_all(                                              ) const noexcept { emscripten_futex_wake( void_cast( this ), INT_MAX         ); }
+// wake_bitset ignored: Emscripten's futex emulation has no bitset concept -- see
+// futex.hpp's design-doc comment on the bitset parameter.
+void futex::wake_all( value_type ) const noexcept { emscripten_futex_wake( void_cast( this ), INT_MAX ); }
 
-void futex::wait_if_equal( value_type const desired_value ) const noexcept
+// listen_bits ignored: see above.
+void futex::wait_if_equal( value_type const desired_value, value_type ) const noexcept
 {
     emscripten_futex_wait( void_cast( this ), desired_value, INFINITY );
 };

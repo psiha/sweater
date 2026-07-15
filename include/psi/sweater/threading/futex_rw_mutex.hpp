@@ -100,14 +100,32 @@ namespace psi::thrd_lite
 //   of a missed wakeup -- deliberately the conservative choice.
 //
 // ---------------------------------------------------------------------------
+// Wake targeting via futex bitsets (Linux only, transparently ignored elsewhere)
+// ---------------------------------------------------------------------------
+// psi::thrd_lite::futex's wait_if_equal/wake_all take an optional bitset (futex.hpp;
+// on Linux, backed by FUTEX_WAIT_BITSET/FUTEX_WAKE_BITSET; a no-op elsewhere). Parked
+// readers listen on reader_wait_bits, parked writers on writer_wait_bits (two
+// independent bits, unrelated to the state-word bits above -- the bitset is the
+// syscall's separate val3 argument, not part of the compared/stored value). This lets
+// release_ro's wake target ONLY parked writers precisely, instead of waking every
+// parked thread and making the non-writers re-check and re-park for nothing:
+// release_ro only ever wakes when the reader count is hitting zero, at which instant
+// writer_locked_bit cannot be set (mutual exclusion with active readers), so any
+// reader parked at that exact moment can only be one that arrived AFTER
+// writer_waiting_bit was set (queued behind the same writer this wake is FOR) --
+// waking it too would be pure waste, never a missed wakeup. release_rw still wakes
+// EITHER category (either_wait_bits): after an exclusive release, both a queued
+// writer and a fresh reader parked behind writer_locked_bit alone are eligible.
+//
+// ---------------------------------------------------------------------------
 // Known limitations (research prototype, not yet production-hardened)
 // ---------------------------------------------------------------------------
 // - Single writer_waiting_bit (not a count/queue): release_rw wakes ALL parked
-//   threads (readers and writers alike), who then race to re-acquire; only one
-//   writer wins the CAS, the rest re-park. Correct, but not contention-optimal
-//   under sustained multi-writer load -- a real production version would likely
-//   want a proper waiter queue (or at least a waiting-writer count) to wake
-//   precisely.
+//   writers (bitset-targeted, but still every one of them, not just one), who then
+//   race to re-acquire; only one wins the CAS, the rest re-park. Correct, but not
+//   contention-optimal under sustained multi-writer load -- a real production
+//   version would likely want a proper waiter queue (or at least a waiting-writer
+//   count) to wake exactly one.
 // - No try_acquire timeout / no fairness ticket beyond "writer bit blocks new
 //   readers": a writer that loses the CAS race after being woken goes back to
 //   the tail of the same shared wait set, no strict FIFO ordering guaranteed
@@ -160,7 +178,7 @@ public:
             }
             else
             {
-                state_.wait_if_equal( observed );
+                state_.wait_if_equal( observed, reader_wait_bits );
             }
         }
     }
@@ -172,17 +190,21 @@ public:
         BOOST_ASSERT_MSG( ( old & reader_mask ) != 0, "release_ro without a matching acquire_ro" );
         if ( ( ( old & reader_mask ) == 1 ) && ( old & writer_waiting_bit ) )
         {
-            // wake_all, not wake_one: readers that saw writer_waiting_bit set also park
-            // on this SAME futex word (see acquire_ro), so a single wake_one() can be
-            // "stolen" by one of THEM instead of the writer it was meant for -- that
-            // reader just re-parks (writer_waiting_bit is still set from its point of
-            // view), the wake is wasted, and the writer can be left permanently parked
-            // if nothing else ever wakes this word again (observed as an intermittent
-            // hang under StressMutualExclusionAndProgress before this fix). wake_all
-            // avoids the ambiguity entirely, at the cost of the woken non-writers just
-            // re-checking and re-parking -- the same conservative tradeoff release_rw
-            // already makes.
-            state_.wake_all();
+            // Bitset-targeted at writer_wait_bits (see the design-doc comment above): on
+            // backends without a real bitset (all but Linux) this degrades to plain
+            // wake_all's old behaviour -- readers that saw writer_waiting_bit set also
+            // park on this SAME futex word (see acquire_ro), so an untargeted wake_all()
+            // (or a naive wake_one(), which is what this originally tried) can reach/be
+            // stolen by one of THEM instead of a writer -- that reader just re-parks, the
+            // wake is wasted, and on wake_one() specifically a writer can be left
+            // permanently parked if nothing else ever wakes this word again (observed as
+            // an intermittent hang under StressMutualExclusionAndProgress before the
+            // wake_all fix). The bitset now recovers wake_one's CATEGORY precision (wakes
+            // only writers, never readers) on the one backend that supports it, without
+            // wake_one's single-thread-only risk of picking the wrong category -- still
+            // wakes every parked writer, not just one (see "Known limitations" above for
+            // why that's an accepted simplification, not a bitset limitation).
+            state_.wake_all( writer_wait_bits );
         }
     }
 
@@ -233,7 +255,7 @@ public:
                 }
                 continue; // either way (won or lost the CAS), re-evaluate from the top
             }
-            state_.wait_if_equal( observed );
+            state_.wait_if_equal( observed, writer_wait_bits );
             observed = state_.load( std::memory_order_relaxed ); // re-arm before re-checking
         }
     }
@@ -242,10 +264,13 @@ public:
     {
         BOOST_ASSERT_MSG( ( state_.load( std::memory_order_relaxed ) & writer_locked_bit ) != 0, "release_rw without a matching acquire_rw" );
         state_.exchange( 0, std::memory_order_release );
-        // Always wake_all: a reader can be parked behind writer_locked_bit alone
-        // (writer_waiting_bit unset), so its absence does not mean no one is
-        // waiting -- see "release_rw" in the algorithm comment above.
-        state_.wake_all();
+        // Always wake EITHER category: a reader can be parked behind writer_locked_bit
+        // alone (writer_waiting_bit unset), so its absence does not mean no one is
+        // waiting -- see "release_rw" in the algorithm comment above. (either_wait_bits
+        // is behaviorally identical to the default all_bits here since these are the
+        // only two categories that ever park on this word -- spelled out explicitly for
+        // documentation, not because it differs.)
+        state_.wake_all( either_wait_bits );
     }
 
     bool try_acquire_rw() noexcept
@@ -277,6 +302,14 @@ protected: // exposed for reader_preferring_futex_rw_mutex below, which reimplem
     static constexpr state_t   writer_locked_bit    = state_t( state_t{ 1 } << ( state_bits - 1 ) );
     static constexpr state_t   writer_waiting_bit   = state_t( state_t{ 1 } << ( state_bits - 2 ) );
     static constexpr state_t   reader_mask          = state_t( writer_waiting_bit - 1 );
+
+    // futex::wait_if_equal/wake_all bitset categories (see the design-doc comment
+    // above) -- these live in the syscall's separate bitset argument, not the state
+    // word above, so they don't need to avoid colliding with writer_locked_bit/
+    // writer_waiting_bit/reader_mask; any two distinct, non-zero bits would do.
+    static constexpr futex::value_type reader_wait_bits = futex::value_type{ 0b01 };
+    static constexpr futex::value_type writer_wait_bits = futex::value_type{ 0b10 };
+    static constexpr futex::value_type either_wait_bits = futex::value_type( reader_wait_bits | writer_wait_bits );
 
     futex state_ = { 0 };
 }; // class futex_rw_mutex
@@ -338,7 +371,7 @@ public:
             }
             else
             {
-                state_.wait_if_equal( observed );
+                state_.wait_if_equal( observed, reader_wait_bits );
             }
         }
     }
@@ -351,7 +384,12 @@ public:
         BOOST_ASSERT_MSG( ( old & reader_mask ) != 0, "release_ro without a matching acquire_ro" );
         if ( ( ( old & reader_mask ) == 1 ) && ( old & writer_waiting_bit ) )
         {
-            state_.wake_all(); // same wake-target reasoning as the base's release_ro
+            // Bitset-targeted at writer_wait_bits, same reasoning as the base's
+            // release_ro -- doubly safe here, since under reader preference no OTHER
+            // reader can ever be parked at this instant either way (they never wait on
+            // writer_waiting_bit alone, only on an actual writer_locked_bit hold, which
+            // cannot be set concurrently with this reader's own hold just now ending).
+            state_.wake_all( writer_wait_bits );
         }
     }
 
