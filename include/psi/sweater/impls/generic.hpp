@@ -377,7 +377,7 @@ private:
 #       if PSI_SWEATER_EXACT_WORKER_SELECTION
             if ( !thrd_lite::slow_thread_signals )
             {
-                enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+                enqueue_succeeded = this->next_dispatch_target().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
             }
             else
 #       endif
@@ -429,7 +429,7 @@ private:
 #       if PSI_SWEATER_EXACT_WORKER_SELECTION
             if ( !thrd_lite::slow_thread_signals )
             {
-                enqueue_succeeded = this->pool_.front().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+                enqueue_succeeded = this->next_dispatch_target().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
             }
             else
 #       endif
@@ -482,6 +482,16 @@ private:
 #   endif // Linux
     }; // struct worker_thread
 
+    // The worker that the next fire_and_forget item is queued on and signalled
+    // to. Round-robin rather than always pool_.front(): each worker sleeps on
+    // its OWN event and the work-stealing dequeue sits after that wait, so a
+    // worker nobody signals never reaches it. Always targeting the first worker
+    // therefore runs every dispatched item on that one thread with the rest of
+    // the pool asleep - i.e. no concurrency at all on the fire-and-forget
+    // dispatch path. spread_the_sweat is unaffected: it targets workers
+    // explicitly and wakes each one it uses.
+    worker_thread & next_dispatch_target() noexcept;
+
 #if defined( __ANDROID__ )
     // Partial fix attempt for slow thread synchronization on older Android
     // versions (it seems to be related to the OS version rather than the
@@ -496,6 +506,9 @@ private:
 
     std::atomic<hardware_concurrency_t> work_items_ = 0;
     std::atomic<bool                  > brexit_     = false;
+#if PSI_SWEATER_EXACT_WORKER_SELECTION
+    std::atomic<std::uint32_t         > dispatch_rotor_ = 0; // see next_dispatch_target()
+#endif
 
     /// \todo Further queue refinements.
     /// http://ithare.com/implementing-queues-for-event-driven-programs

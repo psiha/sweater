@@ -970,6 +970,14 @@ void shop::work_added_untracked( hardware_concurrency_t const items ) noexcept
 void shop::work_completed(                                    ) noexcept { /*thrd_lite::detail::underflow_checked_dec( work_items_        );*/ work_items_.fetch_sub( 1    , std::memory_order_release ); }
 
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
+shop::worker_thread & shop::next_dispatch_target() noexcept
+{
+    auto const workers{ number_of_worker_threads() };
+    BOOST_ASSUME( workers > 0 );
+    auto const rotor{ dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) };
+    return pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ];
+}
+
 void shop::worker_thread::notify() noexcept { event_.signal(); }
 
 bool shop::worker_thread::enqueue( work_t && __restrict work, my_queue & __restrict queue ) noexcept
