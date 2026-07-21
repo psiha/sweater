@@ -970,6 +970,24 @@ void shop::work_added_untracked( hardware_concurrency_t const items ) noexcept
 void shop::work_completed(                                    ) noexcept { /*thrd_lite::detail::underflow_checked_dec( work_items_        );*/ work_items_.fetch_sub( 1    , std::memory_order_release ); }
 
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
+shop::worker_thread & shop::next_dispatch_target() noexcept
+{
+    auto const workers{ number_of_worker_threads() };
+    BOOST_ASSUME( workers > 0 );
+    // Advance only while something is still in flight. An idle shop means the
+    // previous target has just drained its queue, so it is the warm thread -
+    // still running, caches populated - and a serial stream of dispatches stays
+    // on it instead of waking a cold worker per item. Once work overlaps, every
+    // further dispatch moves on and the pool fills up.
+    auto const rotor
+    {
+        work_items_.load( std::memory_order_acquire )
+            ? ( dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) + 1 )
+            :   dispatch_rotor_.load     (    std::memory_order_relaxed )
+    };
+    return pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ];
+}
+
 void shop::worker_thread::notify() noexcept { event_.signal(); }
 
 bool shop::worker_thread::enqueue( work_t && __restrict work, my_queue & __restrict queue ) noexcept
