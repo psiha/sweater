@@ -32,6 +32,10 @@
 #   include <fcntl.h>
 #   include <sys/types.h>
 #   include <unistd.h>
+
+#   include <algorithm>
+#   include <cstddef>
+#   include <cstdlib>
 #endif // PSI_SWEATER_DOCKER_LIMITS
 
 #ifdef _MSC_VER
@@ -61,15 +65,28 @@ hardware_concurrency_t get_hardware_concurrency_max() noexcept { return 1; }
 
 namespace
 {
-    [[ maybe_unused ]]
-    int read_int( char const * const file_path ) noexcept
+    // Reads at most size-1 bytes and NUL terminates. Returns false if the file
+    // does not exist (the normal outcome for the cgroup hierarchy this build is
+    // not running under) or cannot be read.
+    bool read_text( char const * const file_path, char * const buffer, std::size_t const size ) noexcept
     {
+        BOOST_ASSERT( size > 1 );
         auto const fd{ ::open( file_path, O_RDONLY, 0 ) };
         if ( fd == -1 )
-            return -1;
-        char value[ 64 ];
-        BOOST_VERIFY( ::read( fd, value, sizeof( value ) ) < signed( sizeof( value ) ) );
+            return false;
+        auto const bytes_read{ ::read( fd, buffer, size - 1 ) };
         BOOST_VERIFY( ::close( fd ) == 0 );
+        if ( bytes_read <= 0 )
+            return false;
+        buffer[ bytes_read ] = '\0';
+        return true;
+    }
+
+    int read_int( char const * const file_path ) noexcept
+    {
+        char value[ 64 ];
+        if ( !read_text( file_path, value, sizeof( value ) ) )
+            return -1;
         return std::atoi( value );
     }
 
@@ -80,20 +97,33 @@ namespace
         // RAM limit /sys/fs/cgroup/memory.limit_in_bytes
         // swap limt /sys/fs/cgroup/memory.memsw.limit_in_bytes
 
-#   ifdef __aarch64__
+        // Which of the two cgroup hierarchies is mounted is a property of the
+        // host, not of the target architecture: unified (v2) is the default on
+        // contemporary distributions on every arch, while v1 is still what
+        // older hosts present. Probe v2 first and fall back to v1 - selecting
+        // by architecture instead silently misses the quota (and so sizes pools
+        // by the host core count) on any v2 host that is not the arch the v2
+        // path happened to be written for.
         // https://github.com/moby/moby/issues/20770#issuecomment-1559152307
-        auto const fd{ ::open( "/sys/fs/cgroup/cpu.max", O_RDONLY, 0 ) };
-        char value_pair[ 128 ]; value_pair[ 0 ] = 0;
-        BOOST_VERIFY( ::read( fd, value_pair, sizeof( value_pair ) ) < signed( sizeof( value_pair ) ) );
-        BOOST_VERIFY( ::close( fd ) == 0 );
+        long cfs_quota { -1 };
+        long cfs_period{ -1 };
+        char value_pair[ 128 ];
+        if ( read_text( "/sys/fs/cgroup/cpu.max", value_pair, sizeof( value_pair ) ) ) // cgroup v2
+        {
+            // "$MAX $PERIOD", where MAX is either the quota in microseconds or
+            // the literal "max" for an unconstrained cgroup.
+            char * cfs_period_ptr;
+            cfs_quota  = std::strtol( value_pair    , &cfs_period_ptr, 10 );
+            cfs_period = std::strtol( cfs_period_ptr, nullptr        , 10 );
+            if ( cfs_period_ptr == value_pair ) // "max": no quota in place
+                cfs_quota = -1;
+        }
+        else // cgroup v1
+        {
+            cfs_quota  = read_int( "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"  );
+            cfs_period = read_int( "/sys/fs/cgroup/cpu/cpu.cfs_period_us" );
+        }
 
-        char * cfs_period_ptr;
-        auto const cfs_quota { std::strtol( value_pair    , &cfs_period_ptr, 10 ) };
-        auto const cfs_period{ std::strtol( cfs_period_ptr, nullptr        , 10 ) };
-#   else
-        auto const cfs_quota { read_int( "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"  ) };
-        auto const cfs_period{ read_int( "/sys/fs/cgroup/cpu/cpu.cfs_period_us" ) };
-#   endif
         if ( ( cfs_quota > 0 ) && ( cfs_period > 0 ) )
         {
             // Docker allows non-whole core quota assignments - use some sort of
