@@ -38,7 +38,7 @@
 #	include "impls/openmp.hpp"
 #elif defined( PSI_SWEATER_IMPL )
 #include <boost/preprocessor/stringize.hpp>
-#	include BOOST_PP_STRINGIZE( detail/PSI_SWEATER_IMPL.hpp )
+#	include BOOST_PP_STRINGIZE( impls/PSI_SWEATER_IMPL.hpp )
 #else
 #   undef  PSI_SWEATER_IMPL
 #   define PSI_SWEATER_IMPL generic

@@ -30,7 +30,12 @@ set( sources_impls
 )
 source_group( "Impls" FILES ${sources_impls} )
 list( APPEND sweater_sources ${sources_impls} )
-if ( WIN32 OR APPLE )
+# A host project may override the implementation the platform would select on
+# its own (PSI_SWEATER_IMPL=generic to run the own thread pool on Windows /
+# Apple, say, to compare it against the native one). Only then does the generic
+# pool's .cpp have to be compiled on those platforms.
+set( PSI_SWEATER_IMPL "" CACHE STRING "Override the psi::sweater implementation (generic/windows/apple/libuv/openmp/single_threaded); empty = let the platform choose" )
+if ( ( WIN32 OR APPLE ) AND NOT ( PSI_SWEATER_IMPL STREQUAL "generic" ) )
     # Windows and Apple use native impls (windows.hpp / apple.hpp); the generic
     # thread pool's .cpp is excluded from compilation on those platforms.
     set_source_files_properties( ${src_root}/impls/generic.cpp PROPERTIES HEADER_FILE_ONLY ON )
@@ -167,6 +172,13 @@ add_library( psi_sweater STATIC ${sweater_sources} )
 add_library( psi::sweater ALIAS psi_sweater )
 
 target_include_directories( psi_sweater ${_sweater_scope} "${CMAKE_CURRENT_LIST_DIR}/include" )
+
+# PUBLIC: every TU that includes sweater.hpp must select the same implementation
+# or the ODR checks (and the impl's own types) diverge between the library and
+# its consumers.
+if ( PSI_SWEATER_IMPL )
+    target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_IMPL=${PSI_SWEATER_IMPL} )
+endif()
 
 if ( WIN32 )
     # windows/futex.cpp calls WaitOnAddress/WakeByAddressSingle/WakeByAddressAll,
