@@ -974,7 +974,17 @@ shop::worker_thread & shop::next_dispatch_target() noexcept
 {
     auto const workers{ number_of_worker_threads() };
     BOOST_ASSUME( workers > 0 );
-    auto const rotor{ dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) };
+    // Advance only while something is still in flight. An idle shop means the
+    // previous target has just drained its queue, so it is the warm thread -
+    // still running, caches populated - and a serial stream of dispatches stays
+    // on it instead of waking a cold worker per item. Once work overlaps, every
+    // further dispatch moves on and the pool fills up.
+    auto const rotor
+    {
+        work_items_.load( std::memory_order_acquire )
+            ? ( dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) + 1 )
+            :   dispatch_rotor_.load     (    std::memory_order_relaxed )
+    };
     return pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ];
 }
 
