@@ -78,7 +78,7 @@ public:
     // must now drop the OS read lock.
     [[ nodiscard ]] bool leave( void const * const m ) noexcept
     {
-        for ( std::size_t i{ 0 }; i < held_.size(); ++i )
+        for ( typename HeldVec::size_type i{ 0 }; i < held_.size(); ++i )
         {
             if ( held_[ i ].mutex == m )
             {
