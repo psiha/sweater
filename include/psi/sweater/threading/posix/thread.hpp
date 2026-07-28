@@ -63,7 +63,7 @@ public:
 
     class affinity_mask
     {
-#ifdef __linux__
+#if defined( __linux__ )
     public:
         affinity_mask() noexcept { CPU_ZERO( &value_ ); }
 
@@ -71,7 +71,19 @@ public:
 
     private: friend class thread_impl;
         cpu_set_t value_;
-#endif // __linux__
+#elif defined( __APPLE__ )
+    // Best effort only: XNU offers no hard pinning — just the advisory
+    // THREAD_AFFINITY_POLICY tag (threads sharing a tag are *hinted* onto an
+    // L2-sharing set; distinct tags apart), and Apple Silicon ignores even
+    // that (thread_policy_set returns KERN_NOT_SUPPORTED). The cpu id is
+    // mapped to a distinct non-null tag so per-cpu binds at least request
+    // mutual separation on the hardware that honors it.
+    public:
+        void add_cpu( unsigned const cpu_id ) noexcept { tag_ = static_cast<int>( cpu_id ) + 1; } // 0 == THREAD_AFFINITY_TAG_NULL
+
+    private: friend class thread_impl;
+        int tag_{ 0 };
+#endif
     }; // class affinity_mask
 
     void join  ()       noexcept;

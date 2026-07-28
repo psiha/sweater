@@ -15,6 +15,11 @@
 //------------------------------------------------------------------------------
 #include "thread.hpp"
 
+#ifdef __APPLE__
+#   include <mach/thread_act.h>
+#   include <mach/thread_policy.h>
+#endif
+
 #include <boost/assert.hpp>
 
 #include <cerrno>
@@ -109,6 +114,16 @@ bool thread_impl::bind_to_cpu( [[ maybe_unused ]] affinity_mask const mask ) noe
     return pthread_setaffinity_np( get_id(), sizeof( mask.value_ ), &mask.value_ ) == 0;
 #elif 0
     return bind_to_cpu( pthread_getthreadid_np( get_id() ), mask ) == 0;
+#elif defined( __APPLE__ )
+    // Best effort (see affinity_mask): the advisory affinity tag. Honored (as
+    // a hint) on Intel Macs; Apple Silicon returns KERN_NOT_SUPPORTED.
+    ::thread_affinity_policy_data_t policy{ .affinity_tag = mask.tag_ };
+    return ::thread_policy_set(
+        ::pthread_mach_thread_np( get_id() ),
+        THREAD_AFFINITY_POLICY,
+        reinterpret_cast<thread_policy_t>( &policy ),
+        THREAD_AFFINITY_POLICY_COUNT
+    ) == KERN_SUCCESS;
 #else
     return false;
 #endif
@@ -119,7 +134,7 @@ bool thread_impl::bind_to_cpu( pid_t const thread_id, affinity_mask const mask )
 {
 #ifdef __linux__
     return sched_setaffinity( thread_id, sizeof( mask.value_ ), &mask.value_ ) == 0;
-#else // TODO Mach
+#else // no cross-thread-by-id affinity API outside Linux (Mach policies bind via the handle overload above)
     (void)thread_id; (void)mask;
     return 0;
 #endif
