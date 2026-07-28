@@ -97,14 +97,17 @@ endif()
 # The futex-backed BARRIER serves every platform with a futex backend (macOS
 # through __ulock); Apple's embedded OSes keep the condvar-based
 # generic_barrier (see barrier.hpp). The SEMAPHORE stays condvar-based on all
-# of Apple — measured faster there for the signal-heavy fire path (see
-# semaphore.hpp).
+# of Apple by default — private-API-free, and the original futex protocol
+# measured slower there (see semaphore.hpp); PSI_SWEATER_FUTEX_SEMAPHORE opts
+# macOS into the futex semaphore for A/B runs (meaningless on embedded Apple,
+# which has no futex backend at all).
+option( PSI_SWEATER_FUTEX_SEMAPHORE "Use the futex semaphore on Apple too (macOS only -- private __ulock API; primarily an A/B knob)" OFF )
 if ( sweater_apple_embedded )
     set_source_files_properties( ${src_root}/threading/futex_barrier.cpp   PROPERTIES HEADER_FILE_ONLY ON )
 else()
     set_source_files_properties( ${src_root}/threading/generic_barrier.cpp PROPERTIES HEADER_FILE_ONLY ON )
 endif()
-if ( APPLE )
+if ( APPLE AND NOT PSI_SWEATER_FUTEX_SEMAPHORE )
     set_source_files_properties( ${src_root}/threading/futex_semaphore.cpp   PROPERTIES HEADER_FILE_ONLY ON )
 else()
     set_source_files_properties( ${src_root}/threading/generic_semaphore.cpp PROPERTIES HEADER_FILE_ONLY ON )
@@ -220,6 +223,11 @@ endif()
 # its consumers.
 if ( PSI_SWEATER_IMPL )
     target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_IMPL=${PSI_SWEATER_IMPL} )
+endif()
+# PUBLIC for the same ODR reason: semaphore.hpp's layout selection reaches
+# consumers through impls/generic.hpp.
+if ( PSI_SWEATER_FUTEX_SEMAPHORE )
+    target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_FUTEX_SEMAPHORE )
 endif()
 
 if ( WIN32 )
