@@ -1002,18 +1002,33 @@ shop::worker_thread & shop::next_dispatch_target() noexcept
 {
     auto const workers{ number_of_worker_threads() };
     BOOST_ASSUME( workers > 0 );
-    // Advance only while something is still in flight. An idle shop means the
-    // previous target has just drained its queue, so it is the warm thread -
-    // still running, caches populated - and a serial stream of dispatches stays
-    // on it instead of waking a cold worker per item. Once work overlaps, every
-    // further dispatch moves on and the pool fills up.
-    auto const rotor
+    // Depth-bounded sticky dispatch: stay on the current target while its
+    // backlog is small, spill to the next worker only once it piles up. The
+    // backlog proxy is the target's event semaphore's unconsumed-token count
+    // (one signal per enqueued item; an awake worker burns leftover tokens
+    // through its empty-drain wait() cycles, so the count only accumulates
+    // while the worker is BUSY -- exactly the "this one needs help" signal).
+    // Signaling a non-parked worker is syscall-free (the semaphore's exact
+    // sleeper accounting), so a serial-ish stream of fires keeps hitting the
+    // same warm, awake worker at fetch_add cost per item -- profiling showed
+    // the previous unconditional round-robin (advance whenever ANY work was
+    // in flight) scattered every burst across the whole pool, each item
+    // waking a worker that had just drained its single item and parked
+    // (~3/4 of the fire path's cost was the per-item wake syscall). Real,
+    // non-trivial work fills the target's backlog past the threshold and
+    // spills, progressively engaging the pool -- so parallelism is preserved
+    // where it matters (items long enough to overlap) and traded for syscall
+    // elision only where it does not (items shorter than the dispatch cost).
+    // The stealing dequeue path remains the backstop for any imbalance.
+    constexpr std::int32_t sticky_dispatch_depth{ 2 };
+    auto rotor { dispatch_rotor_.load( std::memory_order_relaxed ) };
+    auto target{ &pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ] };
+    if ( target->event_.pending() > sticky_dispatch_depth )
     {
-        work_items_.load( std::memory_order_acquire )
-            ? ( dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) + 1 )
-            :   dispatch_rotor_.load     (    std::memory_order_relaxed )
-    };
-    return pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ];
+        rotor  = dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) + 1;
+        target = &pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ];
+    }
+    return *target;
 }
 
 void shop::worker_thread::notify() noexcept { event_.signal(); }

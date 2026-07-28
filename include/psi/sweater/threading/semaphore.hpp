@@ -72,6 +72,12 @@ public:
     void wait(                          ) noexcept;
     void wait( std::uint32_t spin_count ) noexcept;
 
+    // Approximate signaled-but-unconsumed token count (negative: that many
+    // waiters in debt/parked) -- a single relaxed load, for load-balancing
+    // heuristics (see generic.cpp's next_dispatch_target). Instantly stale;
+    // never use for correctness decisions.
+    std::int32_t pending() const noexcept { return static_cast<std::int32_t>( value_.load( std::memory_order_relaxed ) ); }
+
 #if !PSI_SWEATER_CONDVAR_SEMAPHORE // futex impl //////////////////////////////
 
 private:
