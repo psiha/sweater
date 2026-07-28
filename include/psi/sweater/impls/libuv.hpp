@@ -10,17 +10,14 @@
 //------------------------------------------------------------------------------
 #include "../detail/config.hpp"
 #include "../dispatch_tracking.hpp"
-#include "../spread_chunked.hpp"
 #include "../threading/hardware_concurrency.hpp"
 #include "../threading/thread.hpp"
 
 #include <boost/assert.hpp>
 
-#include <algorithm>
+#include <atomic>
 #include <cstdint>
-#include <exception>
-#include <future>
-#include <latch>
+#include <new>
 #include <type_traits>
 #include <utility>
 
@@ -39,111 +36,56 @@ public:
 
     shop() noexcept = default;
 
-    void bind_loop( uv_loop_t * const loop ) noexcept { loop_ = loop; }
+    /// Must be called on the loop's own thread (it installs the async handle
+    /// that off-loop spread_the_sweat callers use to reach the loop).
+    void bind_loop( uv_loop_t * loop ) noexcept;
 
-    [[ nodiscard ]] uv_loop_t * loop() const noexcept { return loop_; }
+    /// Must be called on the loop thread, before the loop is closed (libuv
+    /// asserts on open handles in uv_loop_close). Safe to call when never/
+    /// no-longer bound. The close completes on a subsequent loop iteration.
+    /// The host must quiesce dispatchers first: no spread_the_sweat /
+    /// fire_with_after call may be in flight or start concurrently with (or
+    /// after) this call — drain the pool (e.g. wait_until_idle()) before
+    /// unbinding.
+    void unbind_loop() noexcept;
+
+    [[ nodiscard ]] uv_loop_t * loop() const noexcept { return loop_.load( std::memory_order_relaxed ); }
 
     [[ gnu::pure ]]
-    static hardware_concurrency_t number_of_workers() noexcept
-    {
-        return thrd_lite::hardware_concurrency_max;
-    }
+    static hardware_concurrency_t number_of_workers() noexcept;
 
     /// GCD dispatch_apply / Windows TP equivalent — synchronous parallel loop.
-    /// Chunks via `chunked_spread`, queues each chunk on the libuv thread pool,
-    /// and blocks until all chunks finish. `count_down` runs in the pool work
-    /// callback so this is safe when called from a pool worker; if the bound
-    /// loop is not set or only one chunk is needed, falls back to serial.
+    ///
+    /// Chunks via `chunked_spread`. Only `uv_async_send` is thread-safe in
+    /// libuv, so chunks are queued on the loop thread: directly when the
+    /// caller IS the loop thread, otherwise through an MPSC request list +
+    /// the async bridge handle installed by `bind_loop`.
+    ///
+    /// The caller participates: it runs the tail chunk inline, then steals
+    /// back and runs inline every chunk the pool has not picked up (claims
+    /// are serialized against the queuer by a per-spread spin lock: not yet
+    /// queued chunks are claimed outright, already queued ones via
+    /// `uv_cancel`, which succeeds only for work still sitting in the pool
+    /// queue — so each chunk executes exactly once, here or on a worker).
+    /// This guarantees forward progress even when called from a pool worker
+    /// with the pool fully saturated — the call can never deadlock waiting
+    /// on slots it occupies; it degrades toward serial execution exactly as
+    /// far as the pool is busy.
+    ///
+    /// If no loop is bound or only one chunk is needed, runs serially.
     template <typename F>
     bool spread_the_sweat( iterations_t const iterations, F && work, iterations_t /*parallelizable_count*/ = 1 ) noexcept
     {
         static_assert( noexcept( work( iterations_t{ 0 }, iterations ) ), "F must be noexcept" );
-
-        if ( PSI_UNLIKELY( iterations == 0 ) )
-        {
-            return true;
-        }
-
-        if ( PSI_UNLIKELY( !loop_ ) )
-        {
-            work( iterations_t{ 0 }, iterations );
-            return true;
-        }
-
-        auto const num_workers{ number_of_workers() };
-        auto const num_chunks { static_cast<iterations_t>(
-            std::min( iterations, static_cast<iterations_t>( 4 * num_workers ) )
-        ) };
-
-        if ( PSI_UNLIKELY( num_chunks <= 1 ) )
-        {
-            work( iterations_t{ 0 }, iterations );
-            return true;
-        }
-
-        struct chunk_ctx
-        {
-            void const   * p_work;
-            iterations_t   start;
-            iterations_t   end;
-            std::latch   * p_latch;
-            void (*invoke)( void const *, iterations_t, iterations_t ) noexcept;
-        };
-        static_assert( std::is_trivially_destructible_v<chunk_ctx> );
-
-        void (*const invoke_fn)( void const *, iterations_t, iterations_t ) noexcept =
-            []( void const * pw, iterations_t s, iterations_t e ) noexcept
+        spread_impl
+        (
+            iterations,
+            std::addressof( work ),
+            []( void const * const p_work, iterations_t const start, iterations_t const end ) noexcept
             {
-                ( *static_cast<std::decay_t<F> const *>( pw ) )( s, e );
-            };
-
-        std::latch sync{ static_cast<std::ptrdiff_t>( num_chunks ) };
-
-        chunked_spread const setup{ iterations, num_chunks };
-        for ( iterations_t i{ 0 }; i < num_chunks; ++i )
-        {
-            auto const [start, end]{ setup.chunk_range( static_cast<hardware_concurrency_t>( i ) ) };
-
-            struct req_bundle
-            {
-                chunk_ctx  ctx;
-                uv_work_t  req{};
-            };
-
-            auto * const bundle{ new ( std::nothrow ) req_bundle{
-                chunk_ctx{ &work, start, end, &sync, invoke_fn }
-            } };
-            if ( PSI_UNLIKELY( !bundle ) )
-            {
-                work( start, end );
-                sync.count_down();
-                continue;
+                ( *static_cast<std::decay_t<F> const *>( p_work ) )( start, end );
             }
-
-            bundle->req.data = bundle;
-            if ( PSI_UNLIKELY( uv_queue_work(
-                     loop_,
-                     &bundle->req,
-                     []( uv_work_t * const req ) noexcept
-                     {
-                         auto * const self{ static_cast<req_bundle *>( req->data ) };
-                         auto & c{ self->ctx };
-                         c.invoke( c.p_work, c.start, c.end );
-                         c.p_latch->count_down();
-                     },
-                     []( uv_work_t * const req, int /*status*/ ) noexcept
-                     {
-                         delete static_cast<req_bundle *>( req->data );
-                     }
-                 ) != 0 ) )
-            {
-                work( start, end );
-                sync.count_down();
-                delete bundle;
-            }
-        }
-
-        sync.wait();
+        );
         return true;
     }
 
@@ -155,6 +97,8 @@ public:
     }
 
     /// Run `work` on the libuv pool; `after` on the bound loop thread.
+    /// Must be called ON the loop thread (`uv_queue_work` is not thread-safe;
+    /// off-loop dispatch is what spread_the_sweat's async bridge is for).
     template <typename Work, typename After>
     bool fire_with_after( Work && work, After && after ) noexcept
     (
@@ -166,7 +110,14 @@ public:
     {
         static_assert( noexcept( std::declval<Work &>()() ), "Work must be noexcept" );
         static_assert( noexcept( std::declval<After &>()() ), "After must be noexcept" );
-        BOOST_ASSERT_MSG( loop_, "psi::sweater::libuv::shop::bind_loop() not called" );
+        auto * const loop{ loop_.load( std::memory_order_relaxed ) };
+        BOOST_ASSERT_MSG( loop, "psi::sweater::libuv::shop::bind_loop() not called" );
+#ifndef NDEBUG
+        {
+            auto self_thread{ uv_thread_self() };
+            BOOST_ASSERT_MSG( uv_thread_equal( &self_thread, &loop_thread_ ), "fire_with_after must be called on the bound loop thread (uv_queue_work is not thread-safe)" );
+        }
+#endif
 
         struct ctx
         {
@@ -183,7 +134,7 @@ public:
         state->req.data = state;
         detail::in_flight_inc();
         if ( uv_queue_work(
-                 loop_,
+                 loop,
                  &state->req,
                  []( uv_work_t * const req ) noexcept
                  {
@@ -210,7 +161,31 @@ public:
     bool set_affinity( cpu_affinity_mask const & /*new_affinity*/ ) noexcept { return true; }
 
 private:
-    uv_loop_t * loop_{ nullptr };
+    struct spread_node; // single-allocation per-spread state, defined in libuv.cpp
+
+    using spread_invoke_t = void (*)( void const * p_work, iterations_t start, iterations_t end ) /*noexcept*/;
+
+    /// The F-independent bulk of spread_the_sweat (defined in libuv.cpp).
+    void spread_impl( iterations_t iterations, void const * p_work, spread_invoke_t invoke ) noexcept;
+
+    /// Loop thread only.
+    void queue_chunks( spread_node * node ) noexcept;
+
+    static void spread_work_cb ( uv_work_t  * req ) noexcept;
+    static void spread_after_cb( uv_work_t  * req, int status ) noexcept;
+    static void on_spread_async( uv_async_t * handle ) noexcept;
+
+private:
+    // `loop_` is written on the loop thread (bind_loop / unbind_loop) and read
+    // from arbitrary threads (spread_the_sweat / fire_with_after) — atomic to
+    // keep those reads well-defined. Atomicity alone does NOT make teardown
+    // safe against still-running calls (a caller could load the pointer just
+    // before unbind_loop closes the bridge): the host must quiesce dispatchers
+    // before unbinding — see unbind_loop().
+    std::atomic<uv_loop_t *>   loop_        { nullptr };
+    uv_thread_t                loop_thread_ {};
+    uv_async_t                 async_       {};
+    std::atomic<spread_node *> pending_     { nullptr }; // MPSC list of off-loop spread requests
 }; // class shop
 
 //------------------------------------------------------------------------------
