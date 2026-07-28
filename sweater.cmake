@@ -23,6 +23,7 @@ set( sources_impls
     ${src_root}/impls/generic.cpp
     ${src_root}/impls/generic.hpp
     ${src_root}/impls/generic_config.hpp
+    ${src_root}/impls/libuv.cpp
     ${src_root}/impls/libuv.hpp
     ${src_root}/impls/openmp.hpp
     ${src_root}/impls/single_threaded.hpp
@@ -39,6 +40,20 @@ if ( ( WIN32 OR APPLE ) AND NOT ( PSI_SWEATER_IMPL STREQUAL "generic" ) )
     # Windows and Apple use native impls (windows.hpp / apple.hpp); the generic
     # thread pool's .cpp is excluded from compilation on those platforms.
     set_source_files_properties( ${src_root}/impls/generic.cpp PROPERTIES HEADER_FILE_ONLY ON )
+endif()
+# The libuv backend's TU compiles only when libuv headers are reachable. A
+# host project that supplies its own libuv headers (e.g. a Node.js embedder
+# using the Node SDK's bundled uv.h) can point PSI_SWEATER_LIBUV_INCLUDE_DIR
+# at them instead of relying on a system install.
+set( PSI_SWEATER_LIBUV_INCLUDE_DIR "" CACHE PATH "Directory containing uv.h for the libuv psi::sweater backend; empty = search system paths" )
+if ( NOT PSI_SWEATER_LIBUV_INCLUDE_DIR )
+    find_path( PSI_SWEATER_LIBUV_INCLUDE_DIR_FOUND NAMES uv.h )
+    if ( PSI_SWEATER_LIBUV_INCLUDE_DIR_FOUND )
+        set( PSI_SWEATER_LIBUV_INCLUDE_DIR "${PSI_SWEATER_LIBUV_INCLUDE_DIR_FOUND}" )
+    endif()
+endif()
+if ( NOT PSI_SWEATER_LIBUV_INCLUDE_DIR )
+    set_source_files_properties( ${src_root}/impls/libuv.cpp PROPERTIES HEADER_FILE_ONLY ON )
 endif()
 
 set( sources_queues
@@ -172,6 +187,9 @@ add_library( psi_sweater STATIC ${sweater_sources} )
 add_library( psi::sweater ALIAS psi_sweater )
 
 target_include_directories( psi_sweater ${_sweater_scope} "${CMAKE_CURRENT_LIST_DIR}/include" )
+if ( PSI_SWEATER_LIBUV_INCLUDE_DIR )
+    target_include_directories( psi_sweater PRIVATE "${PSI_SWEATER_LIBUV_INCLUDE_DIR}" )
+endif()
 
 # PUBLIC: every TU that includes sweater.hpp must select the same implementation
 # or the ODR checks (and the impl's own types) diverge between the library and

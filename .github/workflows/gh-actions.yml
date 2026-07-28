@@ -40,25 +40,26 @@ jobs:
         which git
         git --version
 
-    - name: Install LLVM/Clang 21
+    - name: Install LLVM/Clang 22
       if: matrix.config.name == 'Clang'
       # https://apt.llvm.org
       run: |
         wget https://apt.llvm.org/llvm.sh
         chmod u+x llvm.sh
-        sudo ./llvm.sh 21 all
-        echo "PATH=/usr/lib/llvm-21/bin:$PATH" >> $GITHUB_ENV
-        echo "LLVM_PATH=/usr/lib/llvm-21" >> $GITHUB_ENV
-        echo "LD_LIBRARY_PATH=/usr/lib/llvm-21/lib" >> $GITHUB_ENV
-        echo "DYLD_LIBRARY_PATH=/usr/lib/llvm-21/lib" >> $GITHUB_ENV
-        echo "CC=/usr/lib/llvm-21/bin/clang" >> $GITHUB_ENV
-        echo "CXX=/usr/lib/llvm-21/bin/clang++" >> $GITHUB_ENV
+        sudo ./llvm.sh 22 all
+        sudo apt-get install -y libuv1-dev
+        echo "PATH=/usr/lib/llvm-22/bin:$PATH" >> $GITHUB_ENV
+        echo "LLVM_PATH=/usr/lib/llvm-22" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=/usr/lib/llvm-22/lib" >> $GITHUB_ENV
+        echo "DYLD_LIBRARY_PATH=/usr/lib/llvm-22/lib" >> $GITHUB_ENV
+        echo "CC=/usr/lib/llvm-22/bin/clang" >> $GITHUB_ENV
+        echo "CXX=/usr/lib/llvm-22/bin/clang++" >> $GITHUB_ENV
 
     - name: Install build tools (GCC container)
       if: matrix.config.name == 'GCC'
       run: |
         apt-get update
-        apt-get install -y ninja-build
+        apt-get install -y ninja-build libuv1-dev
         cmake_ver=3.31.4
         wget -qO- "https://github.com/Kitware/CMake/releases/download/v${cmake_ver}/cmake-${cmake_ver}-linux-x86_64.tar.gz" | tar xz --strip-components=1 -C /usr/local
         cmake --version

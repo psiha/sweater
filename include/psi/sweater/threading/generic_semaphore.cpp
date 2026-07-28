@@ -13,10 +13,12 @@
 ///
 ////////////////////////////////////////////////////////////////////////////////
 //------------------------------------------------------------------------------
-#if !defined( __linux__ ) && !!defined( _WIN32 )
+#if defined( __APPLE__ ) // must match semaphore.hpp's futexless-layout selection exactly
 #include "semaphore.hpp"
 
 #include "cpp/spin_lock.hpp"
+
+#include <algorithm>
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {

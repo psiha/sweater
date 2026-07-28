@@ -60,3 +60,19 @@ if ( SWEATER_LIBUV_INCLUDE_DIR AND SWEATER_LIBUV_LIBRARY )
 else()
     message( STATUS "sweater: libuv not found — skipping sweater_libuv_test" )
 endif()
+
+# Cross-backend shop-overhead microbenchmark (not a ctest — run manually):
+# generic always; the OS pool where one exists (Windows TP / Apple GCD);
+# libuv when available. On Windows/Apple the library excludes generic.cpp
+# (native impls are the platform default) — compile it into the bench directly.
+add_executable( sweater_shop_bench EXCLUDE_FROM_ALL shop_overhead_bench.cpp )
+target_link_libraries( sweater_shop_bench PRIVATE psi::sweater )
+set_target_properties( sweater_shop_bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
+if ( WIN32 OR APPLE ) # platforms whose default impl is native exclude generic.cpp from the library — the bench compares against it, so compile it in directly
+    target_sources( sweater_shop_bench PRIVATE ../include/psi/sweater/impls/generic.cpp )
+endif()
+if ( SWEATER_LIBUV_INCLUDE_DIR AND SWEATER_LIBUV_LIBRARY )
+    target_compile_definitions( sweater_shop_bench PRIVATE SWEATER_BENCH_HAS_LIBUV )
+    target_include_directories( sweater_shop_bench PRIVATE "${SWEATER_LIBUV_INCLUDE_DIR}" )
+    target_link_libraries     ( sweater_shop_bench PRIVATE "${SWEATER_LIBUV_LIBRARY}" )
+endif()
