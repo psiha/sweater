@@ -45,12 +45,18 @@
 // https://source.android.com/devices/tech/debug/jank_jitter
 // https://www.scylladb.com/2016/06/10/read-latency-and-scylla-jmx-process
 // https://lwn.net/Articles/663879
+// Now on EVERYWHERE (was Android-only): with sticky fire dispatch in place,
+// a BRIEF spin (see shop::worker_spin_count -- the runtime knob; the
+// Android-era 100k-nop count was the pathology, not spinning itself) lets a
+// worker catch the next back-to-back item/spread without a park+wake round
+// trip. Measured on Apple Silicon @ 8 workers, sweater_shop_bench: small
+// counts (500-2000 nops) leave fire ops flat-to-better and improve the
+// back-to-back small-spread join ~30-40% (~5 vs ~8 us); large counts
+// (>=10k) regress BOTH (post-join spinners oversubscribe the cores against
+// the producer/caller). Turn fully off with
+// -DPSI_SWEATER_SPIN_BEFORE_SUSPENSION=false, or set worker_spin_count=0.
 #ifndef PSI_SWEATER_SPIN_BEFORE_SUSPENSION
-#if defined( __ANDROID__ )
 #   define PSI_SWEATER_SPIN_BEFORE_SUSPENSION true
-#else
-#   define PSI_SWEATER_SPIN_BEFORE_SUSPENSION false
-#endif // Android
 #endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
 
 #ifndef PSI_SWEATER_EVENTS

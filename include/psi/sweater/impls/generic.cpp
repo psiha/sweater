@@ -73,7 +73,18 @@ shop::hmp_config shop::hmp_clusters;
 #endif
 
 #if PSI_SWEATER_SPIN_BEFORE_SUSPENSION
+#ifdef __ANDROID__
+// The historical Android value, tuned against that platform's slow thread
+// signals -- deliberately untouched by the general-default change below
+// (no Android hardware in the bench fleet to re-tune it on).
 std::uint32_t shop::worker_spin_count{ 100 * 1000 };
+#else
+// Small on purpose -- see generic_config.hpp's spin-before-suspension note:
+// ~1k nops captures the catch-the-next-dispatch win (fire flat-to-better,
+// back-to-back small-spread join ~30-40% faster on Apple Silicon) while
+// large counts regress both by oversubscribing the cores after a join.
+std::uint32_t shop::worker_spin_count{ 1000 };
+#endif // Android
 #if PSI_SWEATER_USE_CALLER_THREAD
 std::uint32_t shop::caller_spin_count{ 100 * 1000 };
 #endif // PSI_SWEATER_USE_CALLER_THREAD
