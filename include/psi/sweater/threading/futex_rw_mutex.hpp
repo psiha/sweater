@@ -166,30 +166,7 @@ public:
     void acquire_ro() noexcept
     {
         detail::on_ro_acquire( this ); // writer-preferring: nested read is the documented hang, same as rw_mutex
-        for ( ; ; )
-        {
-            auto observed{ state_.load( std::memory_order_relaxed ) };
-            if ( ( observed & ( writer_locked_bit | writer_waiting_bit ) ) == 0 )
-            {
-                BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
-                if ( state_.compare_exchange_weak( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed ) )
-                {
-                    return;
-                }
-            }
-            else
-            {
-                if ( ( observed & reader_parked_bit ) == 0 )
-                {
-                    // Announce before parking -- what makes release_rw's no-waiter
-                    // fast path sound (see there). Lost CAS just means the state
-                    // changed; either way re-evaluate from the top.
-                    state_.compare_exchange_weak( observed, state_t( observed | reader_parked_bit ), std::memory_order_relaxed, std::memory_order_relaxed );
-                    continue;
-                }
-                state_.wait_if_equal( observed, reader_wait_bits );
-            }
-        }
+        acquire_ro_core<writer_locked_bit | writer_waiting_bit>();
     }
 
     void release_ro() noexcept
@@ -219,13 +196,7 @@ public:
 
     bool try_acquire_ro() noexcept
     {
-        auto observed{ state_.load( std::memory_order_relaxed ) };
-        if ( ( observed & ( writer_locked_bit | writer_waiting_bit ) ) != 0 )
-        {
-            return false;
-        }
-        BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
-        if ( !state_.compare_exchange_strong( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed ) )
+        if ( !try_acquire_ro_core<writer_locked_bit | writer_waiting_bit>() )
         {
             return false;
         }
@@ -319,6 +290,54 @@ public: // std::shared_lock interface
     void unlock_shared() noexcept { release_ro(); }
     bool try_lock_shared() noexcept { return try_acquire_ro(); }
 
+protected:
+    // Shared read-side cores for this class and its admission-policy subclasses --
+    // the variants differ ONLY in which writer bits block a new reader
+    // (`reader_blocking_bits`: both writer bits for the writer-preferring base,
+    // writer_locked_bit alone for the reader-preferring subclass); the counting,
+    // park-with-announce (see release_rw's no-waiter fast path) and retry
+    // mechanics are identical.
+    template <state_t reader_blocking_bits>
+    void acquire_ro_core() noexcept
+    {
+        for ( ; ; )
+        {
+            auto observed{ state_.load( std::memory_order_relaxed ) };
+            if ( ( observed & reader_blocking_bits ) == 0 )
+            {
+                BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
+                if ( state_.compare_exchange_weak( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed ) )
+                {
+                    return;
+                }
+            }
+            else
+            {
+                if ( ( observed & reader_parked_bit ) == 0 )
+                {
+                    // Announce before parking -- what makes release_rw's no-waiter
+                    // fast path sound (see there). Lost CAS just means the state
+                    // changed; either way re-evaluate from the top.
+                    state_.compare_exchange_weak( observed, state_t( observed | reader_parked_bit ), std::memory_order_relaxed, std::memory_order_relaxed );
+                    continue;
+                }
+                state_.wait_if_equal( observed, reader_wait_bits );
+            }
+        }
+    }
+
+    template <state_t reader_blocking_bits>
+    bool try_acquire_ro_core() noexcept
+    {
+        auto observed{ state_.load( std::memory_order_relaxed ) };
+        if ( ( observed & reader_blocking_bits ) != 0 )
+        {
+            return false;
+        }
+        BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
+        return state_.compare_exchange_strong( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed );
+    }
+
 protected: // exposed for reader_preferring_futex_rw_mutex below, which reimplements the
            // read side against this same state word/bit layout
     static constexpr unsigned  state_bits          = sizeof( state_t ) * CHAR_BIT;
@@ -383,28 +402,9 @@ class reader_preferring_futex_rw_mutex : public futex_rw_mutex
 public:
     void acquire_ro() noexcept
     {
-        for ( ; ; )
-        {
-            auto observed{ state_.load( std::memory_order_relaxed ) };
-            if ( ( observed & writer_locked_bit ) == 0 )
-            {
-                BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
-                if ( state_.compare_exchange_weak( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed ) )
-                {
-                    return;
-                }
-            }
-            else
-            {
-                if ( ( observed & reader_parked_bit ) == 0 )
-                {
-                    // Announce before parking -- see the base class / release_rw.
-                    state_.compare_exchange_weak( observed, state_t( observed | reader_parked_bit ), std::memory_order_relaxed, std::memory_order_relaxed );
-                    continue;
-                }
-                state_.wait_if_equal( observed, reader_wait_bits );
-            }
-        }
+        // No on_ro_acquire (see the class comment); admission defers to an actual
+        // writer HOLD only -- a queued writer never blocks a new reader.
+        acquire_ro_core<writer_locked_bit>();
     }
 
     // Skips detail::on_ro_release (unlike the base): this type never registers with
@@ -426,13 +426,7 @@ public:
 
     bool try_acquire_ro() noexcept
     {
-        auto observed{ state_.load( std::memory_order_relaxed ) };
-        if ( ( observed & writer_locked_bit ) != 0 )
-        {
-            return false;
-        }
-        BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
-        return state_.compare_exchange_strong( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed );
+        return try_acquire_ro_core<writer_locked_bit>();
     }
 
     // std::shared_lock interface: re-route through the shadowed overrides above (the
