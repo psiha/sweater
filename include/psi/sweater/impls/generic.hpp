@@ -110,7 +110,7 @@ public:
 #endif // PSI_SWEATER_USE_CALLER_THREAD
 #endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
 
-    static std::uint8_t spread_work_stealing_division;
+    static std::atomic<std::uint8_t> spread_work_stealing_division; // adaptive; raced by concurrent spreads by design (relaxed)
 
 private:
     struct worker_traits : psi::functionoid::default_traits
