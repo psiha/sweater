@@ -940,12 +940,16 @@ bool shop::spread_work
             if ( stalled )
             {
                 // Concurrent spreads race on this adaptive knob by design --
-                // relaxed atomics make that defined; lost updates are fine
-                // (it is a heuristic that only ever creeps between fixed
-                // bounds).
-                auto const current{ spread_work_stealing_division.load( std::memory_order_relaxed ) };
+                // relaxed atomics make that defined. CAS (rather than a blind
+                // store) so a concurrently-advanced value is never regressed;
+                // on CAS failure someone else already bumped it -- good enough,
+                // no retry needed for a monotone heuristic.
+                auto current{ spread_work_stealing_division.load( std::memory_order_relaxed ) };
                 events::caller_stalled( current );
-                spread_work_stealing_division.store( std::min<std::uint8_t>( current + 1, spread_work_stealing_division_max ), std::memory_order_relaxed );
+                if ( current < spread_work_stealing_division_max )
+                {
+                    spread_work_stealing_division.compare_exchange_strong( current, static_cast<std::uint8_t>( current + 1 ), std::memory_order_relaxed, std::memory_order_relaxed );
+                }
             }
         }
     }
@@ -1042,13 +1046,16 @@ bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, 
     return success;
 }
 
-// Spread wake propagation: a worker woken with (spread) work still in the
-// queue wakes its two children in the (spread-root-relative) binary wake
-// tree, giving log2(N) wake depth without the caller serially paying one
-// wake syscall per worker on its critical path (the measured dominant term
-// of small-spread joins: one syscall per worker, ~1-4 us each). The caller
-// wakes only the tree root; propagation is a heuristic best-effort -- a
-// broken chain (a worker drains the queue before its children are needed)
+// Spread wake propagation: a worker woken with (spread) work still in
+// flight wakes its two children in the binary wake tree over ABSOLUTE
+// worker indices, rooted at worker 0 (children of i are 2i+1 / 2i+2 --
+// which matches the dispatch origin, since the non-HMP dispatch path
+// always starts handing out slices at worker 0). This gives log2(N) wake
+// depth without the caller serially paying one wake syscall per worker on
+// its critical path (the measured dominant term of small-spread joins: one
+// syscall per worker, ~1-4 us each). The caller wakes only the tree root;
+// propagation is a heuristic best-effort -- a chain that skips a worker
+// (HMP dispatch starting mid-pool, a worker draining the queue early)
 // simply means the remaining work is done by the already-awake threads and
 // the (always-participating, work-stealing) caller.
 void shop::propagate_spread_wake( hardware_concurrency_t const worker_index ) noexcept

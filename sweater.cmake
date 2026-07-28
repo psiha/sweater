@@ -125,8 +125,9 @@ endif()
 # __ulock_wait/__ulock_wake -- PRIVATE Darwin syscalls, see the design-doc
 # comment at the top of apple/futex.cpp (the single place to swap to the
 # public os_sync_wait_on_address API when the deployment floor allows). Now a
-# load-bearing backend on Apple: the futex-based semaphore/barrier (and with
-# them the generic pool) run on it.
+# load-bearing backend on Apple: the futex-based BARRIER (and futex_rw_mutex)
+# run on it -- the semaphore stays condvar-backed there (measured faster for
+# its signal-heavy pattern; see semaphore.hpp).
 set( sources_threading_apple
     ${src_root}/threading/apple/futex.cpp
 )
