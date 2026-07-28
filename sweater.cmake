@@ -83,10 +83,15 @@ set( sources_threading
 source_group( "ThrdLite" FILES ${sources_threading} )
 list( APPEND sweater_sources ${sources_threading} )
 
-# The futex-backed semaphore/barrier serve every platform (Apple through the
-# __ulock futex backend); the condvar-based generic ones remain available as
-# sources but are not compiled by default.
-set_source_files_properties( ${src_root}/threading/generic_barrier.cpp ${src_root}/threading/generic_semaphore.cpp PROPERTIES HEADER_FILE_ONLY ON )
+# The futex-backed BARRIER serves every platform (Apple through the __ulock
+# futex backend). The SEMAPHORE stays condvar-based on Apple — measured faster
+# there for the signal-heavy fire path (see semaphore.hpp).
+set_source_files_properties( ${src_root}/threading/generic_barrier.cpp PROPERTIES HEADER_FILE_ONLY ON )
+if ( APPLE )
+    set_source_files_properties( ${src_root}/threading/futex_semaphore.cpp   PROPERTIES HEADER_FILE_ONLY ON )
+else()
+    set_source_files_properties( ${src_root}/threading/generic_semaphore.cpp PROPERTIES HEADER_FILE_ONLY ON )
+endif()
 
 
 set( sources_threading_cpp
