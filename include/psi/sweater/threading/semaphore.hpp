@@ -22,10 +22,26 @@
 #include <cstdint>
 #include <type_traits>
 
-#ifdef __APPLE__ // condvar, not futex: measured faster for the semaphore's
-// signal-heavy fire path on Apple Silicon (sweater_shop_bench: ~460 vs ~737
-// ns/op) — pthread_cond_signal's no-waiter fast path beats __ulock_wake here,
+#ifdef __APPLE__ // condvar, not futex: measured ~1.6x faster for the
+// semaphore's signal-heavy fire path on Apple Silicon (sweater_shop_bench),
 // unlike the barrier's join pattern which does profit from the futex.
+// Root-caused with per-impl park/wake counters. It is NOT a
+// no-waiter-fast-path difference (both impls skip the wake syscall when no
+// waiter is registered) and NOT __ulock_wake's lack of an exact wake count
+// (a wake_one-loop variant measured the same as ULF_WAKE_ALL). The futex
+// protocol's waiters_ gate merely OVERCOUNTS sleepers: a woken worker stays
+// registered across its whole wake -> retry -> (lose the token race) ->
+// re-park window, so under the bench's fire pattern ~92% of signals paid a
+// wake syscall — mostly aimed at workers that were already awake — and the
+// token stealing added ~40% more park syscalls. The condvar impl's
+// mutex-serialized waiters_/to_release_ bookkeeping is an exact "is anyone
+// actually asleep" test plus a credit that guarantees every wake is consumed
+// (no steal/re-park churn): only ~23% of its signals reached
+// pthread_cond_signal. A futex protocol with condvar-style exact sleeper
+// accounting could plausibly close the gap — unexplored, as the condvar
+// already delivers, and keeping the semaphore private-API-free on all of
+// Apple is worth having anyway (the embedded OSes have no futex backend at
+// all — see futex.hpp).
 #include "condvar.hpp"
 #include "mutex.hpp"
 
