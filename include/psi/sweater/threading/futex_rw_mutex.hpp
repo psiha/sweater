@@ -166,7 +166,7 @@ public:
     void acquire_ro() noexcept
     {
         detail::on_ro_acquire( this ); // writer-preferring: nested read is the documented hang, same as rw_mutex
-        acquire_ro_core<writer_locked_bit | writer_waiting_bit>();
+        acquire_ro_core( writer_locked_bit | writer_waiting_bit );
     }
 
     void release_ro() noexcept
@@ -196,7 +196,7 @@ public:
 
     bool try_acquire_ro() noexcept
     {
-        if ( !try_acquire_ro_core<writer_locked_bit | writer_waiting_bit>() )
+        if ( !try_acquire_ro_core( writer_locked_bit | writer_waiting_bit ) )
         {
             return false;
         }
@@ -296,9 +296,10 @@ protected:
     // (`reader_blocking_bits`: both writer bits for the writer-preferring base,
     // writer_locked_bit alone for the reader-preferring subclass); the counting,
     // park-with-announce (see release_rw's no-waiter fast path) and retry
-    // mechanics are identical.
-    template <state_t reader_blocking_bits>
-    void acquire_ro_core() noexcept
+    // mechanics are identical. A plain runtime parameter: the cores inline into
+    // the (per-policy) public wrappers where the constant folds anyway --
+    // a template parameter would only force two instantiations.
+    void acquire_ro_core( state_t const reader_blocking_bits ) noexcept
     {
         for ( ; ; )
         {
@@ -326,8 +327,7 @@ protected:
         }
     }
 
-    template <state_t reader_blocking_bits>
-    bool try_acquire_ro_core() noexcept
+    bool try_acquire_ro_core( state_t const reader_blocking_bits ) noexcept
     {
         auto observed{ state_.load( std::memory_order_relaxed ) };
         if ( ( observed & reader_blocking_bits ) != 0 )
@@ -404,7 +404,7 @@ public:
     {
         // No on_ro_acquire (see the class comment); admission defers to an actual
         // writer HOLD only -- a queued writer never blocks a new reader.
-        acquire_ro_core<writer_locked_bit>();
+        acquire_ro_core( writer_locked_bit );
     }
 
     // Skips detail::on_ro_release (unlike the base): this type never registers with
@@ -426,7 +426,7 @@ public:
 
     bool try_acquire_ro() noexcept
     {
-        return try_acquire_ro_core<writer_locked_bit>();
+        return try_acquire_ro_core( writer_locked_bit );
     }
 
     // std::shared_lock interface: re-route through the shadowed overrides above (the
