@@ -43,8 +43,11 @@ namespace psi::thrd_lite
 // present for cross-validation/testing only; production Windows code should keep
 // using SRWLOCK directly, which is a first-class OS primitive rather than one
 // layered on WaitOnAddress, and is already what windows/rw_mutex.hpp uses), and
-// Apple (__ulock_wait/__ulock_wake, apple/futex.cpp -- see that file's own
-// design-doc comment). The Apple backend is PRIVATE API: os_unfair_lock is
+// Apple -- macOS ONLY (__ulock_wait/__ulock_wake, apple/futex.cpp -- see that
+// file's own design-doc comment; Apple's embedded OSes cannot ship private
+// syscalls at all, so they have no futex backend and none of the futex-backed
+// types -- see futex.hpp's PSI_THRD_LITE_HAS_FUTEX). The Apple backend is
+// PRIVATE API: os_unfair_lock is
 // exclusive-only (no shared/reader side at all), and __ulock_wait/__ulock_wake
 // (the same pair libc++ itself falls back to internally) are undocumented,
 // unversioned Darwin syscalls -- the same category of risk already flagged for
@@ -78,8 +81,9 @@ namespace psi::thrd_lite
 // ---------------------------------------------------------------------------
 // Algorithm (writer-preferring, non-recursive -- same contract as rw_mutex)
 // ---------------------------------------------------------------------------
-// acquire_ro: CAS reader_count+1 while neither writer bit is set; else park via
-//   futex::wait_if_equal(observed_state) and retry from scratch. FUTEX_WAIT /
+// acquire_ro: CAS reader_count+1 while neither writer bit is set; else announce
+//   (set reader_parked_bit) and park via futex::wait_if_equal(observed_state),
+//   then retry from scratch. FUTEX_WAIT /
 //   WaitOnAddress atomically re-checks the value before parking, so a state change
 //   between our load and the wait call is never a missed wakeup.
 // release_ro: fetch_sub(1); if that was the last reader AND a writer is waiting,
@@ -92,12 +96,12 @@ namespace psi::thrd_lite
 //   writers all share the one writer_waiting_bit and are woken together on
 //   release (thundering-herd on multi-writer contention is a known, documented
 //   simplification -- see "Known limitations" below).
-// release_rw: exchange(0) and, if the old state indicates anyone could be
-//   parked (which is always possible: a reader may have parked behind
-//   writer_locked_bit even with writer_waiting_bit unset), wake_all(). Waking
-//   unconditionally (rather than trying to track "any parked waiter" precisely)
-//   trades a possible redundant syscall on an uncontended release for zero risk
-//   of a missed wakeup -- deliberately the conservative choice.
+// release_rw: exchange(0); wake_all() only when the exchanged-out state carries a
+//   parked-announcement bit (writer_waiting_bit or reader_parked_bit -- every
+//   parker sets its category's bit before parking, so an uncontended release
+//   skips the wake syscall entirely: the same no-waiter fast path
+//   pthread_cond_signal has). The announce bits are cleared only here; a writer
+//   taking the lock preserves them (others may still be parked on them).
 //
 // ---------------------------------------------------------------------------
 // Wake targeting via futex bitsets (Linux only, transparently ignored elsewhere)
@@ -132,7 +136,7 @@ namespace psi::thrd_lite
 //   (matches futex semantics in general, not a regression vs the OS rwlocks this
 //   is compared against -- neither pthread_rwlock nor SRWLOCK document strict
 //   FIFO writer ordering either).
-// - reader_count width is (W-2) bits: 30 bits (Linux/generic uint32_t) or 14 bits
+// - reader_count width is (W-3) bits: 29 bits (Linux/generic uint32_t) or 13 bits
 //   (Windows uint16_t) -- effectively unbounded for any realistic thread count,
 //   asserted in debug builds (see acquire_ro).
 // ---------------------------------------------------------------------------
@@ -165,58 +169,14 @@ public:
     void acquire_ro() noexcept
     {
         detail::on_ro_acquire( this ); // writer-preferring: nested read is the documented hang, same as rw_mutex
-        for ( ; ; )
-        {
-            auto observed{ state_.load( std::memory_order_relaxed ) };
-            if ( ( observed & ( writer_locked_bit | writer_waiting_bit ) ) == 0 )
-            {
-                BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
-                if ( state_.compare_exchange_weak( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed ) )
-                {
-                    return;
-                }
-            }
-            else
-            {
-                state_.wait_if_equal( observed, reader_wait_bits );
-            }
-        }
+        acquire_ro_core( writer_locked_bit | writer_waiting_bit );
     }
 
-    void release_ro() noexcept
-    {
-        detail::on_ro_release( this );
-        auto const old{ state_.fetch_sub( 1, std::memory_order_release ) };
-        BOOST_ASSERT_MSG( ( old & reader_mask ) != 0, "release_ro without a matching acquire_ro" );
-        if ( ( ( old & reader_mask ) == 1 ) && ( old & writer_waiting_bit ) )
-        {
-            // Bitset-targeted at writer_wait_bits (see the design-doc comment above): on
-            // backends without a real bitset (all but Linux) this degrades to plain
-            // wake_all's old behaviour -- readers that saw writer_waiting_bit set also
-            // park on this SAME futex word (see acquire_ro), so an untargeted wake_all()
-            // (or a naive wake_one(), which is what this originally tried) can reach/be
-            // stolen by one of THEM instead of a writer -- that reader just re-parks, the
-            // wake is wasted, and on wake_one() specifically a writer can be left
-            // permanently parked if nothing else ever wakes this word again (observed as
-            // an intermittent hang under StressMutualExclusionAndProgress before the
-            // wake_all fix). The bitset now recovers wake_one's CATEGORY precision (wakes
-            // only writers, never readers) on the one backend that supports it, without
-            // wake_one's single-thread-only risk of picking the wrong category -- still
-            // wakes every parked writer, not just one (see "Known limitations" above for
-            // why that's an accepted simplification, not a bitset limitation).
-            state_.wake_all( writer_wait_bits );
-        }
-    }
+    void release_ro() noexcept;
 
     bool try_acquire_ro() noexcept
     {
-        auto observed{ state_.load( std::memory_order_relaxed ) };
-        if ( ( observed & ( writer_locked_bit | writer_waiting_bit ) ) != 0 )
-        {
-            return false;
-        }
-        BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
-        if ( !state_.compare_exchange_strong( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed ) )
+        if ( !try_acquire_ro_core( writer_locked_bit | writer_waiting_bit ) )
         {
             return false;
         }
@@ -224,65 +184,11 @@ public:
         return true;
     }
 
-    void acquire_rw() noexcept
-    {
-        auto observed{ state_.load( std::memory_order_relaxed ) };
-        for ( ; ; )
-        {
-            // "Free to take" means no readers AND no writer currently holding --
-            // writer_waiting_bit may already be set (by us, on a previous iteration of
-            // this very loop, or by another queued writer) and that must NOT block us:
-            // requiring the whole word to be exactly 0 here is the bug this replaced --
-            // a writer that had set its own writer_waiting_bit could never again observe
-            // state 0 once readers drained (the bit it set itself permanently excluded
-            // the very state it was waiting for -- a self-inflicted missed wakeup).
-            if ( ( observed & ( reader_mask | writer_locked_bit ) ) == 0 )
-            {
-                // Also clears writer_waiting_bit (transition target is writer_locked_bit
-                // alone): we're no longer "waiting", we're holding.
-                if ( state_.compare_exchange_weak( observed, writer_locked_bit, std::memory_order_acquire, std::memory_order_relaxed ) )
-                {
-                    return;
-                }
-                continue; // observed refreshed by the failed CAS; retry
-            }
-            if ( ( observed & writer_waiting_bit ) == 0 )
-            {
-                auto const desired{ state_t( observed | writer_waiting_bit ) };
-                if ( state_.compare_exchange_weak( observed, desired, std::memory_order_relaxed, std::memory_order_relaxed ) )
-                {
-                    observed = desired; // successfully set; safe to park against this value
-                }
-                continue; // either way (won or lost the CAS), re-evaluate from the top
-            }
-            state_.wait_if_equal( observed, writer_wait_bits );
-            observed = state_.load( std::memory_order_relaxed ); // re-arm before re-checking
-        }
-    }
+    void acquire_rw() noexcept;
 
-    void release_rw() noexcept
-    {
-        BOOST_ASSERT_MSG( ( state_.load( std::memory_order_relaxed ) & writer_locked_bit ) != 0, "release_rw without a matching acquire_rw" );
-        state_.exchange( 0, std::memory_order_release );
-        // Always wake EITHER category: a reader can be parked behind writer_locked_bit
-        // alone (writer_waiting_bit unset), so its absence does not mean no one is
-        // waiting -- see "release_rw" in the algorithm comment above. (either_wait_bits
-        // is behaviorally identical to the default all_bits here since these are the
-        // only two categories that ever park on this word -- spelled out explicitly for
-        // documentation, not because it differs.)
-        state_.wake_all( either_wait_bits );
-    }
+    void release_rw() noexcept;
 
-    bool try_acquire_rw() noexcept
-    {
-        auto observed{ state_.load( std::memory_order_relaxed ) };
-        // Same fast-path condition as acquire_rw: ignore writer_waiting_bit (see there).
-        if ( ( observed & ( reader_mask | writer_locked_bit ) ) != 0 )
-        {
-            return false;
-        }
-        return state_.compare_exchange_strong( observed, writer_locked_bit, std::memory_order_acquire, std::memory_order_relaxed );
-    }
+    bool try_acquire_rw() noexcept;
 
     // debugging aid, mirrors rw_mutex::is_locked
     bool is_locked() const noexcept { return state_.load( std::memory_order_relaxed ) != 0; }
@@ -296,12 +202,28 @@ public: // std::shared_lock interface
     void unlock_shared() noexcept { release_ro(); }
     bool try_lock_shared() noexcept { return try_acquire_ro(); }
 
+protected:
+    // Shared read-side cores for this class and its admission-policy subclasses --
+    // the variants differ ONLY in which writer bits block a new reader
+    // (`reader_blocking_bits`: both writer bits for the writer-preferring base,
+    // writer_locked_bit alone for the reader-preferring subclass); the counting,
+    // park-with-announce (see release_rw's no-waiter fast path) and retry
+    // mechanics are identical. A plain runtime parameter: LTO inlines the cores
+    // (futex_rw_mutex.cpp) into the (per-policy) public wrappers where the
+    // constant folds anyway -- a template parameter would only force two
+    // instantiations.
+    void acquire_ro_core( state_t reader_blocking_bits ) noexcept;
+
+    bool try_acquire_ro_core( state_t reader_blocking_bits ) noexcept;
+
 protected: // exposed for reader_preferring_futex_rw_mutex below, which reimplements the
            // read side against this same state word/bit layout
     static constexpr unsigned  state_bits          = sizeof( state_t ) * CHAR_BIT;
     static constexpr state_t   writer_locked_bit    = state_t( state_t{ 1 } << ( state_bits - 1 ) );
     static constexpr state_t   writer_waiting_bit   = state_t( state_t{ 1 } << ( state_bits - 2 ) );
-    static constexpr state_t   reader_mask          = state_t( writer_waiting_bit - 1 );
+    static constexpr state_t   reader_parked_bit    = state_t( state_t{ 1 } << ( state_bits - 3 ) ); // a reader parked behind writer_locked_bit announced itself (enables release_rw's no-waiter fast path)
+    static constexpr state_t   parked_bits          = state_t( writer_waiting_bit | reader_parked_bit );
+    static constexpr state_t   reader_mask          = state_t( reader_parked_bit - 1 );
 
     // futex::wait_if_equal/wake_all bitset categories (see the design-doc comment
     // above) -- these live in the syscall's separate bitset argument, not the state
@@ -358,50 +280,18 @@ class reader_preferring_futex_rw_mutex : public futex_rw_mutex
 public:
     void acquire_ro() noexcept
     {
-        for ( ; ; )
-        {
-            auto observed{ state_.load( std::memory_order_relaxed ) };
-            if ( ( observed & writer_locked_bit ) == 0 )
-            {
-                BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
-                if ( state_.compare_exchange_weak( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed ) )
-                {
-                    return;
-                }
-            }
-            else
-            {
-                state_.wait_if_equal( observed, reader_wait_bits );
-            }
-        }
+        // No on_ro_acquire (see the class comment); admission defers to an actual
+        // writer HOLD only -- a queued writer never blocks a new reader.
+        acquire_ro_core( writer_locked_bit );
     }
 
     // Skips detail::on_ro_release (unlike the base): this type never registers with
     // read_recursion_registry in acquire_ro above, so there is nothing to balance here.
-    void release_ro() noexcept
-    {
-        auto const old{ state_.fetch_sub( 1, std::memory_order_release ) };
-        BOOST_ASSERT_MSG( ( old & reader_mask ) != 0, "release_ro without a matching acquire_ro" );
-        if ( ( ( old & reader_mask ) == 1 ) && ( old & writer_waiting_bit ) )
-        {
-            // Bitset-targeted at writer_wait_bits, same reasoning as the base's
-            // release_ro -- doubly safe here, since under reader preference no OTHER
-            // reader can ever be parked at this instant either way (they never wait on
-            // writer_waiting_bit alone, only on an actual writer_locked_bit hold, which
-            // cannot be set concurrently with this reader's own hold just now ending).
-            state_.wake_all( writer_wait_bits );
-        }
-    }
+    void release_ro() noexcept;
 
     bool try_acquire_ro() noexcept
     {
-        auto observed{ state_.load( std::memory_order_relaxed ) };
-        if ( ( observed & writer_locked_bit ) != 0 )
-        {
-            return false;
-        }
-        BOOST_ASSERT_MSG( ( observed & reader_mask ) != reader_mask, "reader_count overflow" );
-        return state_.compare_exchange_strong( observed, state_t( observed + 1 ), std::memory_order_acquire, std::memory_order_relaxed );
+        return try_acquire_ro_core( writer_locked_bit );
     }
 
     // std::shared_lock interface: re-route through the shadowed overrides above (the

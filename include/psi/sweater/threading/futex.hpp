@@ -18,6 +18,24 @@
 #include "hardware_concurrency.hpp"
 
 #include <atomic>
+
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif // Apple
+
+// PSI_THRD_LITE_HAS_FUTEX: does psi::thrd_lite::futex have a real backend on
+// this platform? True everywhere except Apple's embedded OSes (iOS/tvOS/
+// watchOS/visionOS): the Apple backend (apple/futex.cpp) is built on the
+// PRIVATE __ulock_wait/__ulock_wake syscalls, which are tolerated on macOS
+// (own-machine software, no review gate) but are grounds for App Store
+// rejection on the embedded platforms -- so there the backend does not exist
+// at all and futex-backed primitives (futex_barrier, futex_rw_mutex) must not
+// be used (barrier.hpp falls back to the condvar-based generic_barrier).
+#if defined( __APPLE__ ) && !TARGET_OS_OSX
+#define PSI_THRD_LITE_HAS_FUTEX 0
+#else
+#define PSI_THRD_LITE_HAS_FUTEX 1
+#endif
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {

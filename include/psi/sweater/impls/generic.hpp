@@ -110,7 +110,7 @@ public:
 #endif // PSI_SWEATER_USE_CALLER_THREAD
 #endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
 
-    static std::uint8_t spread_work_stealing_division;
+    static std::atomic<std::uint8_t> spread_work_stealing_division; // adaptive; raced by concurrent spreads by design (relaxed)
 
 private:
     struct worker_traits : psi::functionoid::default_traits
@@ -150,6 +150,10 @@ private:
     using spread_work_template_t = psi::functionoid::callable<void(), spread_worker_template_traits>;
 
     auto number_of_worker_threads() const noexcept;
+
+#if PSI_SWEATER_EXACT_WORKER_SELECTION
+    void propagate_spread_wake( hardware_concurrency_t worker_index ) noexcept;
+#endif // PSI_SWEATER_EXACT_WORKER_SELECTION
 
     auto worker_loop( hardware_concurrency_t worker_index ) noexcept;
 
@@ -472,7 +476,7 @@ private:
         void notify() noexcept;
 
         bool enqueue(                     work_t &&                                         , my_queue & ) noexcept;
-        bool enqueue( std::move_iterator< work_t * >, hardware_concurrency_t number_of_items, my_queue & ) noexcept;
+        bool enqueue( std::move_iterator< work_t * >, hardware_concurrency_t number_of_items, my_queue &, bool notify_worker = true ) noexcept;
 
         thrd_lite::semaphore                      event_;
         thrd_lite::spin_lock                      token_mutex_; // producer tokens are not thread safe (support concurrent spread_the_sweat calls)

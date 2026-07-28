@@ -204,6 +204,20 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
                 work_event.wait();
 #           endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
                 events::worker_sleep_end  ( worker_index );
+#           if PSI_SWEATER_EXACT_WORKER_SELECTION
+                // Freshly woken with work still in flight: continue the spread
+                // wake tree (see propagate_spread_wake) before starting to
+                // consume. Keyed off the shop-wide item counter, NOT the
+                // queue's own view: moodycamel consumers can observe a
+                // spuriously empty queue while token-enqueued items exist,
+                // and a false negative here can strand a sleeping worker
+                // whose token items the (also-fallible) stealing consumers
+                // never reach -- a join deadlock (caught by TSan-scheduled
+                // stress runs). A false POSITIVE (counter > 0 for work that
+                // is merely executing) just costs two redundant notifies.
+                if ( !thrd_lite::slow_thread_signals && parent.number_of_items() != 0 )
+                    parent.propagate_spread_wake( worker_index );
+#           endif // EWS
             }
         }
     }; // worker_loop_impl
@@ -512,7 +526,7 @@ void shop::perform_caller_work
 // required for a dispatcher which supports concurrent and recursive dispatches.
 std::uint8_t const spread_work_stealing_division_min{  4 };
 std::uint8_t const spread_work_stealing_division_max{ 16 }; // has to be limited (among other reasons) not to overflow hardware_concurrency_t
-std::uint8_t shop::spread_work_stealing_division    { spread_work_stealing_division_min };
+std::atomic<std::uint8_t> shop::spread_work_stealing_division{ spread_work_stealing_division_min };
 
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
 auto shop::dispatch_workers
@@ -527,13 +541,14 @@ auto shop::dispatch_workers
     spread_work_template_t const &       work_part_template
 ) noexcept
 {
-    BOOST_ASSUME( spread_work_stealing_division >= spread_work_stealing_division_min );
-    BOOST_ASSUME( spread_work_stealing_division <= spread_work_stealing_division_max );
+    auto const stealing_division{ spread_work_stealing_division.load( std::memory_order_relaxed ) };
+    BOOST_ASSUME( stealing_division >= spread_work_stealing_division_min );
+    BOOST_ASSUME( stealing_division <= spread_work_stealing_division_max );
     auto const slice_div
     {
         static_cast<std::uint8_t>
         (
-            std::min<iterations_t>( spread_work_stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
+            std::min<iterations_t>( stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
         )
     };
 #ifdef BOOST_MSVC
@@ -571,7 +586,10 @@ auto shop::dispatch_workers
             work_added_untracked();
         }
         BOOST_ASSERT( number_of_slices );
-        BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_ ) ); //...mrmlj...todo err handling
+        // Wake only the FIRST worker of this dispatch run (the wake-tree root);
+        // the rest are woken by the workers themselves (propagate_spread_wake) --
+        // off the caller's critical path.
+        BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_, /*notify:*/ work_part == 0 ) ); //...mrmlj...todo err handling
         iteration = end_iteration;
         events::worker_enqueue_end( worker_index );
         ++worker_index;
@@ -778,13 +796,14 @@ bool shop::spread_work
                 // Slice up the parts for work stealing (unless there are other
                 // active spreads - there's work to steal so don't create
                 // unnecessary queue traffic).
-                BOOST_ASSUME( spread_work_stealing_division <= spread_work_stealing_division_max );
+                auto const stealing_division{ spread_work_stealing_division.load( std::memory_order_relaxed ) };
+                BOOST_ASSUME( stealing_division <= spread_work_stealing_division_max );
                 BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
                 auto const slice_div
                 {
                     static_cast<std::uint8_t>
                     (
-                        std::min<iterations_t>( spread_work_stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
+                        std::min<iterations_t>( stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
                     )
                 };
                 parts_with_extra_iteration      += ( iterations_per_part % slice_div ) * number_of_dispatched_work_parts;
@@ -920,8 +939,17 @@ bool shop::spread_work
             events::caller_join_end();
             if ( stalled )
             {
-                events::caller_stalled( spread_work_stealing_division );
-                spread_work_stealing_division = std::min<std::uint8_t>( spread_work_stealing_division + 1, spread_work_stealing_division_max );
+                // Concurrent spreads race on this adaptive knob by design --
+                // relaxed atomics make that defined. CAS (rather than a blind
+                // store) so a concurrently-advanced value is never regressed;
+                // on CAS failure someone else already bumped it -- good enough,
+                // no retry needed for a monotone heuristic.
+                auto current{ spread_work_stealing_division.load( std::memory_order_relaxed ) };
+                events::caller_stalled( current );
+                if ( current < spread_work_stealing_division_max )
+                {
+                    spread_work_stealing_division.compare_exchange_strong( current, static_cast<std::uint8_t>( current + 1 ), std::memory_order_relaxed, std::memory_order_relaxed );
+                }
             }
         }
     }
@@ -1002,7 +1030,7 @@ bool shop::worker_thread::enqueue( work_t && __restrict work, my_queue & __restr
     return success;
 }
 
-bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, hardware_concurrency_t const number_of_items, my_queue & __restrict queue ) noexcept
+bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, hardware_concurrency_t const number_of_items, my_queue & __restrict queue, bool const notify_worker /*= true*/ ) noexcept
 {
     BOOST_ASSUME( !thrd_lite::slow_thread_signals );
     BOOST_ASSERT( number_of_items                 );
@@ -1011,8 +1039,32 @@ bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, 
         std::scoped_lock<thrd_lite::spin_lock> const token_lock{ token_mutex_ };
         success = queue.enqueue_bulk( *token_, p_work, number_of_items );
     }
-    notify();
+    if ( notify_worker )
+    {
+        notify();
+    }
     return success;
+}
+
+// Spread wake propagation: a worker woken with (spread) work still in
+// flight wakes its two children in the binary wake tree over ABSOLUTE
+// worker indices, rooted at worker 0 (children of i are 2i+1 / 2i+2 --
+// which matches the dispatch origin, since the non-HMP dispatch path
+// always starts handing out slices at worker 0). This gives log2(N) wake
+// depth without the caller serially paying one wake syscall per worker on
+// its critical path (the measured dominant term of small-spread joins: one
+// syscall per worker, ~1-4 us each). The caller wakes only the tree root;
+// propagation is a heuristic best-effort -- a chain that skips a worker
+// (HMP dispatch starting mid-pool, a worker draining the queue early)
+// simply means the remaining work is done by the already-awake threads and
+// the (always-participating, work-stealing) caller.
+void shop::propagate_spread_wake( hardware_concurrency_t const worker_index ) noexcept
+{
+    auto const workers{ number_of_worker_threads() };
+    auto const left   { static_cast<hardware_concurrency_t>( 2 * worker_index + 1 ) };
+    auto const right  { static_cast<hardware_concurrency_t>( 2 * worker_index + 2 ) };
+    if ( left  < workers ) { pool_[ left  ].notify(); }
+    if ( right < workers ) { pool_[ right ].notify(); }
 }
 #endif // PSI_SWEATER_EXACT_WORKER_SELECTION
 
