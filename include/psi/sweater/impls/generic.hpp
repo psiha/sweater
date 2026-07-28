@@ -151,6 +151,10 @@ private:
 
     auto number_of_worker_threads() const noexcept;
 
+#if PSI_SWEATER_EXACT_WORKER_SELECTION
+    void propagate_spread_wake( hardware_concurrency_t worker_index ) noexcept;
+#endif // PSI_SWEATER_EXACT_WORKER_SELECTION
+
     auto worker_loop( hardware_concurrency_t worker_index ) noexcept;
 
 public:
@@ -472,7 +476,7 @@ private:
         void notify() noexcept;
 
         bool enqueue(                     work_t &&                                         , my_queue & ) noexcept;
-        bool enqueue( std::move_iterator< work_t * >, hardware_concurrency_t number_of_items, my_queue & ) noexcept;
+        bool enqueue( std::move_iterator< work_t * >, hardware_concurrency_t number_of_items, my_queue &, bool notify_worker = true ) noexcept;
 
         thrd_lite::semaphore                      event_;
         thrd_lite::spin_lock                      token_mutex_; // producer tokens are not thread safe (support concurrent spread_the_sweat calls)

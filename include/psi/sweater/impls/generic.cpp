@@ -204,6 +204,12 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
                 work_event.wait();
 #           endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
                 events::worker_sleep_end  ( worker_index );
+#           if PSI_SWEATER_EXACT_WORKER_SELECTION
+                // Freshly woken with work still queued: continue the spread wake
+                // tree (see propagate_spread_wake) before starting to consume.
+                if ( !thrd_lite::slow_thread_signals && !queue.empty() )
+                    parent.propagate_spread_wake( worker_index );
+#           endif // EWS
             }
         }
     }; // worker_loop_impl
@@ -571,7 +577,10 @@ auto shop::dispatch_workers
             work_added_untracked();
         }
         BOOST_ASSERT( number_of_slices );
-        BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_ ) ); //...mrmlj...todo err handling
+        // Wake only the FIRST worker of this dispatch run (the wake-tree root);
+        // the rest are woken by the workers themselves (propagate_spread_wake) --
+        // off the caller's critical path.
+        BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_, /*notify:*/ work_part == 0 ) ); //...mrmlj...todo err handling
         iteration = end_iteration;
         events::worker_enqueue_end( worker_index );
         ++worker_index;
@@ -1002,7 +1011,7 @@ bool shop::worker_thread::enqueue( work_t && __restrict work, my_queue & __restr
     return success;
 }
 
-bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, hardware_concurrency_t const number_of_items, my_queue & __restrict queue ) noexcept
+bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, hardware_concurrency_t const number_of_items, my_queue & __restrict queue, bool const notify_worker /*= true*/ ) noexcept
 {
     BOOST_ASSUME( !thrd_lite::slow_thread_signals );
     BOOST_ASSERT( number_of_items                 );
@@ -1011,8 +1020,29 @@ bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, 
         std::scoped_lock<thrd_lite::spin_lock> const token_lock{ token_mutex_ };
         success = queue.enqueue_bulk( *token_, p_work, number_of_items );
     }
-    notify();
+    if ( notify_worker )
+    {
+        notify();
+    }
     return success;
+}
+
+// Spread wake propagation: a worker woken with (spread) work still in the
+// queue wakes its two children in the (spread-root-relative) binary wake
+// tree, giving log2(N) wake depth without the caller serially paying one
+// wake syscall per worker on its critical path (the measured dominant term
+// of small-spread joins: one syscall per worker, ~1-4 us each). The caller
+// wakes only the tree root; propagation is a heuristic best-effort -- a
+// broken chain (a worker drains the queue before its children are needed)
+// simply means the remaining work is done by the already-awake threads and
+// the (always-participating, work-stealing) caller.
+void shop::propagate_spread_wake( hardware_concurrency_t const worker_index ) noexcept
+{
+    auto const workers{ number_of_worker_threads() };
+    auto const left   { static_cast<hardware_concurrency_t>( 2 * worker_index + 1 ) };
+    auto const right  { static_cast<hardware_concurrency_t>( 2 * worker_index + 2 ) };
+    if ( left  < workers ) { pool_[ left  ].notify(); }
+    if ( right < workers ) { pool_[ right ].notify(); }
 }
 #endif // PSI_SWEATER_EXACT_WORKER_SELECTION
 
