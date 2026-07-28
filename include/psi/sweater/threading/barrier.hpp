@@ -15,25 +15,17 @@
 //------------------------------------------------------------------------------
 #pragma once
 //------------------------------------------------------------------------------
-#if defined( __APPLE__ )
-// TODO
-// https://developer.apple.com/forums/thread/707288
-// https://lists.apple.com/archives/darwin-dev/2018/Jul/msg00003.html
-// https://webkit.org/blog/6161/locking-in-webkit
-#include "generic_barrier.hpp"
-#else
+// Futex-backed on every platform — Apple included, through the __ulock futex
+// backend (apple/futex.cpp; see the private-API caveat there — swapping that
+// single backend to the public os_sync_wait_on_address API lifts it for the
+// whole thrd_lite collection at once).
 #include "futex_barrier.hpp"
-#endif
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {
 //------------------------------------------------------------------------------
 
-#if defined( __APPLE__ )
-using barrier = generic_barrier;
-#else
 using barrier = futex_barrier;
-#endif
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite

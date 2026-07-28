@@ -83,11 +83,10 @@ set( sources_threading
 source_group( "ThrdLite" FILES ${sources_threading} )
 list( APPEND sweater_sources ${sources_threading} )
 
-if ( APPLE )
-    set_source_files_properties( ${src_root}/threading/futex_barrier.cpp   ${src_root}/threading/futex_semaphore.cpp   PROPERTIES HEADER_FILE_ONLY ON )
-else()
-    set_source_files_properties( ${src_root}/threading/generic_barrier.cpp ${src_root}/threading/generic_semaphore.cpp PROPERTIES HEADER_FILE_ONLY ON )
-endif()
+# The futex-backed semaphore/barrier serve every platform (Apple through the
+# __ulock futex backend); the condvar-based generic ones remain available as
+# sources but are not compiled by default.
+set_source_files_properties( ${src_root}/threading/generic_barrier.cpp ${src_root}/threading/generic_semaphore.cpp PROPERTIES HEADER_FILE_ONLY ON )
 
 
 set( sources_threading_cpp
@@ -119,10 +118,10 @@ endif()
 
 
 # __ulock_wait/__ulock_wake -- PRIVATE Darwin syscalls, see the design-doc
-# comment at the top of apple/futex.cpp. Bleeding-edge/testing use only (not a
-# production backend anywhere in this codebase yet); still compiled on every
-# Apple build since it costs nothing unreferenced and futex_rw_mutex.hpp needs
-# it to be usable at all on that platform.
+# comment at the top of apple/futex.cpp (the single place to swap to the
+# public os_sync_wait_on_address API when the deployment floor allows). Now a
+# load-bearing backend on Apple: the futex-based semaphore/barrier (and with
+# them the generic pool) run on it.
 set( sources_threading_apple
     ${src_root}/threading/apple/futex.cpp
 )

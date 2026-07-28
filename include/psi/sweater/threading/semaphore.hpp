@@ -22,12 +22,6 @@
 #include <cstdint>
 #include <type_traits>
 
-#ifdef __APPLE__ // not futex for you!
-#include "condvar.hpp"
-#include "mutex.hpp"
-
-#include <mutex>
-#endif // Apple
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {
@@ -46,7 +40,8 @@ public:
     void wait(                          ) noexcept;
     void wait( std::uint32_t spin_count ) noexcept;
 
-#if !defined( __APPLE__ ) /////////////////////////////////////////////////////
+// futex-backed on every platform (Linux & Windows natively; Apple through the
+// __ulock futex backend in apple/futex.cpp).
 
 private:
     using signed_futex_value_t =  std::make_signed_t< futex::value_type >;
@@ -60,16 +55,7 @@ private:
     futex                               value_   = { state::locked };
     std::atomic<hardware_concurrency_t> waiters_ = 0                ;
 
-#else // generic impl for futexless platforms  ////////////////////////////////
 
-private:
-    std::atomic<std::int32_t> value_      = 0; // atomic to support spin-waits
-    hardware_concurrency_t    waiters_    = 0; // to enable detection when notify_all() can be used
-    hardware_concurrency_t    to_release_ = 0;
-    mutex                     mutex_    ;
-    condition_variable        condition_;
-
-#endif // Apple ///////////////////////////////////////////////////////////////
 }; // class semaphore
 
 //------------------------------------------------------------------------------
