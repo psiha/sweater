@@ -15,6 +15,11 @@
 //------------------------------------------------------------------------------
 #include "../futex.hpp"
 
+#if PSI_THRD_LITE_HAS_FUTEX // no-op TU on Apple's embedded OSes -- private
+// syscalls are grounds for App Store rejection there; macOS (own-machine
+// software, no review gate) is the only Apple platform this backend serves.
+// See futex.hpp's macro definition and barrier.hpp's fallback.
+
 #include <cstdint>
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
@@ -27,11 +32,12 @@ namespace psi::thrd_lite
 // PUBLIC os_sync_wait_on_address API (macOS 14.4 / iOS 17.4, <os/os_sync_wait_
 // on_address.h>) -- see llvm-project's libcxx/include/__atomic/atomic_sync.h.
 // Deliberately targeting the older private pair here rather than the new
-// public one so this backend also covers pre-14.4 deployment targets; this is
-// explicitly a bleeding-edge/testing-only backend (see futex_rw_mutex.hpp's
-// design-doc comment), not a production path, so the extra private-API risk
-// (undocumented, unversioned, could disappear or be blocked under a hardened
-// runtime / App Store review without notice) is accepted knowingly. The
+// public one so this backend also covers pre-14.4 deployment targets. The
+// private-API risk (undocumented, unversioned, could disappear without
+// notice) is accepted knowingly -- for macOS ONLY, where there is no store
+// review gate; on Apple's embedded OSes private syscalls are grounds for App
+// Store rejection, so this backend does not exist there at all (see
+// futex.hpp's PSI_THRD_LITE_HAS_FUTEX and the guard atop this TU). The
 // prototypes and UL_*/ULF_* constants below are reverse-engineered from XNU's
 // bsd/sys/ulock.h (kernel-side source; userspace ships no equivalent header)
 // and match what libc++'s fallback path and WebKit's ParkingLot declare.
@@ -90,3 +96,4 @@ void futex::wait_if_equal( value_type const desired_value, value_type ) const no
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
 //------------------------------------------------------------------------------
+#endif // PSI_THRD_LITE_HAS_FUTEX (macOS only)

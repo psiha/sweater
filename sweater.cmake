@@ -84,10 +84,26 @@ set( sources_threading
 source_group( "ThrdLite" FILES ${sources_threading} )
 list( APPEND sweater_sources ${sources_threading} )
 
-# The futex-backed BARRIER serves every platform (Apple through the __ulock
-# futex backend). The SEMAPHORE stays condvar-based on Apple — measured faster
-# there for the signal-heavy fire path (see semaphore.hpp).
-set_source_files_properties( ${src_root}/threading/generic_barrier.cpp PROPERTIES HEADER_FILE_ONLY ON )
+# Apple's embedded OSes (iOS/tvOS/watchOS/visionOS) have no futex backend at
+# all (the __ulock syscalls are private -- App Store rejection material; see
+# futex.hpp's PSI_THRD_LITE_HAS_FUTEX) so every futex-backed TU is excluded
+# there. CMAKE_SYSTEM_NAME is "Darwin" only for macOS proper.
+if ( APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin" )
+    set( sweater_apple_embedded TRUE  )
+else()
+    set( sweater_apple_embedded FALSE )
+endif()
+
+# The futex-backed BARRIER serves every platform with a futex backend (macOS
+# through __ulock); Apple's embedded OSes keep the condvar-based
+# generic_barrier (see barrier.hpp). The SEMAPHORE stays condvar-based on all
+# of Apple — measured faster there for the signal-heavy fire path (see
+# semaphore.hpp).
+if ( sweater_apple_embedded )
+    set_source_files_properties( ${src_root}/threading/futex_barrier.cpp   PROPERTIES HEADER_FILE_ONLY ON )
+else()
+    set_source_files_properties( ${src_root}/threading/generic_barrier.cpp PROPERTIES HEADER_FILE_ONLY ON )
+endif()
 if ( APPLE )
     set_source_files_properties( ${src_root}/threading/futex_semaphore.cpp   PROPERTIES HEADER_FILE_ONLY ON )
 else()
@@ -126,15 +142,17 @@ endif()
 # __ulock_wait/__ulock_wake -- PRIVATE Darwin syscalls, see the design-doc
 # comment at the top of apple/futex.cpp (the single place to swap to the
 # public os_sync_wait_on_address API when the deployment floor allows). Now a
-# load-bearing backend on Apple: the futex-based BARRIER (and futex_rw_mutex)
+# load-bearing backend on macOS: the futex-based BARRIER (and futex_rw_mutex)
 # run on it -- the semaphore stays condvar-backed there (measured faster for
-# its signal-heavy pattern; see semaphore.hpp).
+# its signal-heavy pattern; see semaphore.hpp). macOS ONLY: private syscalls
+# are App Store rejection material on Apple's embedded OSes, which therefore
+# have no futex backend at all (see futex.hpp).
 set( sources_threading_apple
     ${src_root}/threading/apple/futex.cpp
 )
 source_group( "ThrdLite/Apple" FILES ${sources_threading_apple} )
 list( APPEND sweater_sources ${sources_threading_apple} )
-if ( NOT APPLE )
+if ( NOT APPLE OR sweater_apple_embedded )
     set_source_files_properties( ${sources_threading_apple} PROPERTIES HEADER_FILE_ONLY ON )
 endif()
 
