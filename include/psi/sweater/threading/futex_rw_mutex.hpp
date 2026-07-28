@@ -78,8 +78,9 @@ namespace psi::thrd_lite
 // ---------------------------------------------------------------------------
 // Algorithm (writer-preferring, non-recursive -- same contract as rw_mutex)
 // ---------------------------------------------------------------------------
-// acquire_ro: CAS reader_count+1 while neither writer bit is set; else park via
-//   futex::wait_if_equal(observed_state) and retry from scratch. FUTEX_WAIT /
+// acquire_ro: CAS reader_count+1 while neither writer bit is set; else announce
+//   (set reader_parked_bit) and park via futex::wait_if_equal(observed_state),
+//   then retry from scratch. FUTEX_WAIT /
 //   WaitOnAddress atomically re-checks the value before parking, so a state change
 //   between our load and the wait call is never a missed wakeup.
 // release_ro: fetch_sub(1); if that was the last reader AND a writer is waiting,
@@ -92,12 +93,12 @@ namespace psi::thrd_lite
 //   writers all share the one writer_waiting_bit and are woken together on
 //   release (thundering-herd on multi-writer contention is a known, documented
 //   simplification -- see "Known limitations" below).
-// release_rw: exchange(0) and, if the old state indicates anyone could be
-//   parked (which is always possible: a reader may have parked behind
-//   writer_locked_bit even with writer_waiting_bit unset), wake_all(). Waking
-//   unconditionally (rather than trying to track "any parked waiter" precisely)
-//   trades a possible redundant syscall on an uncontended release for zero risk
-//   of a missed wakeup -- deliberately the conservative choice.
+// release_rw: exchange(0); wake_all() only when the exchanged-out state carries a
+//   parked-announcement bit (writer_waiting_bit or reader_parked_bit -- every
+//   parker sets its category's bit before parking, so an uncontended release
+//   skips the wake syscall entirely: the same no-waiter fast path
+//   pthread_cond_signal has). The announce bits are cleared only here; a writer
+//   taking the lock preserves them (others may still be parked on them).
 //
 // ---------------------------------------------------------------------------
 // Wake targeting via futex bitsets (Linux only, transparently ignored elsewhere)
@@ -132,7 +133,7 @@ namespace psi::thrd_lite
 //   (matches futex semantics in general, not a regression vs the OS rwlocks this
 //   is compared against -- neither pthread_rwlock nor SRWLOCK document strict
 //   FIFO writer ordering either).
-// - reader_count width is (W-2) bits: 30 bits (Linux/generic uint32_t) or 14 bits
+// - reader_count width is (W-3) bits: 29 bits (Linux/generic uint32_t) or 13 bits
 //   (Windows uint16_t) -- effectively unbounded for any realistic thread count,
 //   asserted in debug builds (see acquire_ro).
 // ---------------------------------------------------------------------------
@@ -178,6 +179,14 @@ public:
             }
             else
             {
+                if ( ( observed & reader_parked_bit ) == 0 )
+                {
+                    // Announce before parking -- what makes release_rw's no-waiter
+                    // fast path sound (see there). Lost CAS just means the state
+                    // changed; either way re-evaluate from the top.
+                    state_.compare_exchange_weak( observed, state_t( observed | reader_parked_bit ), std::memory_order_relaxed, std::memory_order_relaxed );
+                    continue;
+                }
                 state_.wait_if_equal( observed, reader_wait_bits );
             }
         }
@@ -238,9 +247,15 @@ public:
             // the very state it was waiting for -- a self-inflicted missed wakeup).
             if ( ( observed & ( reader_mask | writer_locked_bit ) ) == 0 )
             {
-                // Also clears writer_waiting_bit (transition target is writer_locked_bit
-                // alone): we're no longer "waiting", we're holding.
-                if ( state_.compare_exchange_weak( observed, writer_locked_bit, std::memory_order_acquire, std::memory_order_relaxed ) )
+                // PRESERVE the announce bits (writer_waiting_bit may cover OTHER
+                // writers still parked on it; reader_parked_bit likewise): with
+                // release_rw's wake now conditional on them, clearing either here
+                // would strand those parked threads. The bits are cleared only by
+                // release_rw's exchange( 0 ). (A sole writer that announced and
+                // then won thus carries its own stale waiting bit through the
+                // hold -- costing release one possibly-redundant wake, exactly
+                // the unconditional behaviour this fast path replaces.)
+                if ( state_.compare_exchange_weak( observed, state_t( writer_locked_bit | ( observed & parked_bits ) ), std::memory_order_acquire, std::memory_order_relaxed ) )
                 {
                     return;
                 }
@@ -263,25 +278,33 @@ public:
     void release_rw() noexcept
     {
         BOOST_ASSERT_MSG( ( state_.load( std::memory_order_relaxed ) & writer_locked_bit ) != 0, "release_rw without a matching acquire_rw" );
-        state_.exchange( 0, std::memory_order_release );
-        // Always wake EITHER category: a reader can be parked behind writer_locked_bit
-        // alone (writer_waiting_bit unset), so its absence does not mean no one is
-        // waiting -- see "release_rw" in the algorithm comment above. (either_wait_bits
-        // is behaviorally identical to the default all_bits here since these are the
-        // only two categories that ever park on this word -- spelled out explicitly for
-        // documentation, not because it differs.)
-        state_.wake_all( either_wait_bits );
+        auto const old_state{ state_.exchange( 0, std::memory_order_release ) };
+        // No-waiter fast path (the pthread_cond_signal-style skip): every parker
+        // announces itself in the state word before parking (writer_waiting_bit /
+        // reader_parked_bit), and the futex's atomic value re-check on park means
+        // an announcement can never slip past this exchange unobserved -- so a
+        // word with neither bit set proves nobody is (or can end up) parked
+        // against the pre-release state, and the wake syscall can be skipped.
+        // When it does fire it wakes EITHER category (either_wait_bits --
+        // behaviorally identical to the default all_bits here since these are the
+        // only two categories that ever park on this word; spelled out for
+        // documentation).
+        if ( old_state & parked_bits )
+        {
+            state_.wake_all( either_wait_bits );
+        }
     }
 
     bool try_acquire_rw() noexcept
     {
         auto observed{ state_.load( std::memory_order_relaxed ) };
-        // Same fast-path condition as acquire_rw: ignore writer_waiting_bit (see there).
+        // Same fast-path condition as acquire_rw: ignore writer_waiting_bit (see there);
+        // same announce-bit preservation too (see acquire_rw).
         if ( ( observed & ( reader_mask | writer_locked_bit ) ) != 0 )
         {
             return false;
         }
-        return state_.compare_exchange_strong( observed, writer_locked_bit, std::memory_order_acquire, std::memory_order_relaxed );
+        return state_.compare_exchange_strong( observed, state_t( writer_locked_bit | ( observed & parked_bits ) ), std::memory_order_acquire, std::memory_order_relaxed );
     }
 
     // debugging aid, mirrors rw_mutex::is_locked
@@ -301,7 +324,9 @@ protected: // exposed for reader_preferring_futex_rw_mutex below, which reimplem
     static constexpr unsigned  state_bits          = sizeof( state_t ) * CHAR_BIT;
     static constexpr state_t   writer_locked_bit    = state_t( state_t{ 1 } << ( state_bits - 1 ) );
     static constexpr state_t   writer_waiting_bit   = state_t( state_t{ 1 } << ( state_bits - 2 ) );
-    static constexpr state_t   reader_mask          = state_t( writer_waiting_bit - 1 );
+    static constexpr state_t   reader_parked_bit    = state_t( state_t{ 1 } << ( state_bits - 3 ) ); // a reader parked behind writer_locked_bit announced itself (enables release_rw's no-waiter fast path)
+    static constexpr state_t   parked_bits          = state_t( writer_waiting_bit | reader_parked_bit );
+    static constexpr state_t   reader_mask          = state_t( reader_parked_bit - 1 );
 
     // futex::wait_if_equal/wake_all bitset categories (see the design-doc comment
     // above) -- these live in the syscall's separate bitset argument, not the state
@@ -371,6 +396,12 @@ public:
             }
             else
             {
+                if ( ( observed & reader_parked_bit ) == 0 )
+                {
+                    // Announce before parking -- see the base class / release_rw.
+                    state_.compare_exchange_weak( observed, state_t( observed | reader_parked_bit ), std::memory_order_relaxed, std::memory_order_relaxed );
+                    continue;
+                }
                 state_.wait_if_equal( observed, reader_wait_bits );
             }
         }
