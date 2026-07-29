@@ -219,11 +219,7 @@ public:
     template <typename F>
     static auto dispatch_lite( F && work )
     {
-#       if     __cplusplus >= 201703L
-        using result_t = typename std::invoke_result_t<F>;
-#       else
-        using result_t = typename std::result_of<F()>::type;
-#       endif
+        using result_t = std::invoke_result_t<F>;
 
         auto pair( thrd_lite::make_promise_future<result_t>() );
         fire_and_forget
@@ -245,11 +241,7 @@ public:
     template <typename F>
     static auto dispatch_outcome( F && work )
     {
-#       if     __cplusplus >= 201703L
-        using result_t = typename std::invoke_result_t<F>;
-#       else
-        using result_t = typename std::result_of<F()>::type;
-#       endif
+        using result_t = std::invoke_result_t<F>;
 
         auto pair( thrd_lite::make_outcome_promise_future<result_t>() );
         fire_and_forget
