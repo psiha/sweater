@@ -69,16 +69,22 @@ namespace psi::thrd_lite
 //   "consume a credit or park on credits_ == 0".
 //
 // Missed-wakeup safety (the Dekker/store-buffer pattern): the signal side
-// STORES credits_ then LOADS sleepers_; the wait side STORES sleepers_ then
-// LOADS credits_. Both critical pairs are seq_cst, so at least one side must
-// observe the other: a signaler that reads sleepers_ == 0 (and skips the
-// syscall) is seq_cst-ordered such that the concurrent would-be sleeper's
-// subsequent credits_ load sees the deposited credit and consumes it without
-// parking; conversely a sleeper that observed credits_ == 0 and parked is
-// ordered such that any later depositor reads sleepers_ >= 1 and issues the
-// wake. The futex's atomic value re-check on park covers the remaining
-// in-between: a deposit landing between the sleeper's load and its park makes
-// wait_if_equal( 0 ) return immediately.
+// deposits into credits_ (a seq_cst RMW) then loads sleepers_ (seq_cst); the
+// wait side registers in sleepers_ (a plain acquire RMW -- the shared
+// overflow_checked_inc helper) then issues a seq_cst FENCE before its
+// credits_ loads. The fence participates in the same single total order S as
+// the signal side's seq_cst operations, which restores the pairing the
+// all-seq_cst formulation would give ([atomics.order]): either the signal
+// side's deposit precedes the fence in S -- then the sleeper's credits_ load
+// (sequenced after the fence) observes the deposited credit and consumes it
+// without parking -- or the fence precedes the deposit, in which case the
+// signal side's sleepers_ load (sequenced after its deposit, later still in
+// S) observes the registration (sequenced before the fence) and issues the
+// wake. Either way at least one side sees the other; a signaler may skip the
+// syscall only when no registered sleeper can end up parked against the
+// pre-deposit credits_ value. The futex's atomic value re-check on park
+// covers the remaining in-between: a deposit landing between the sleeper's
+// load and its park makes wait_if_equal( 0 ) return immediately.
 //
 // A woken sleeper can still find credits_ == 0 -- another REGISTERED sleeper
 // (about to park, never parked) may consume the credit first and skip its own
@@ -154,8 +160,11 @@ void semaphore::wait() noexcept
         return;
 
     // In debt: this thread owes a sleep and is entitled to exactly one credit.
-    // Register-then-load-credits is the wait side's seq_cst Dekker half (see
-    // the design-doc comment above).
+    // Register, then a seq_cst fence, then load credits -- the wait side's
+    // half of the Dekker pairing, fence-based so the registration itself can
+    // stay the shared overflow_checked_inc helper (see the design-doc comment
+    // above for why the fence gives the same guarantee as an all-seq_cst
+    // formulation).
     detail::overflow_checked_inc( sleepers_ );
     std::atomic_thread_fence( std::memory_order_seq_cst );
     for ( ; ; )
