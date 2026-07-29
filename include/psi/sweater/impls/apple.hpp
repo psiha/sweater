@@ -25,6 +25,7 @@
 
 #include <boost/assert.hpp>
 #include <cstdint>
+#include <exception>
 #include <future>
 #include <thread>
 #include <type_traits>
