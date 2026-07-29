@@ -37,7 +37,7 @@
 #endif // PSI_SWEATER_HMP
 
 #ifndef PSI_SWEATER_USE_PARALLELIZATION_COST
-#   define PSI_SWEATER_USE_PARALLELIZATION_COST false
+#   define PSI_SWEATER_USE_PARALLELIZATION_COST true
 #endif // PSI_SWEATER_USE_PARALLELIZATION_COST
 
 // https://petewarden.com/2015/10/11/one-weird-trick-for-faster-android-multithreading
