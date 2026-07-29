@@ -22,31 +22,38 @@
 #include <cstdint>
 #include <type_traits>
 
-#ifdef __APPLE__ // condvar, not futex: measured ~1.6x faster for the
-// semaphore's signal-heavy fire path on Apple Silicon (sweater_shop_bench),
-// unlike the barrier's join pattern which does profit from the futex.
-// Root-caused with per-impl park/wake counters. It is NOT a
-// no-waiter-fast-path difference (both impls skip the wake syscall when no
-// waiter is registered) and NOT __ulock_wake's lack of an exact wake count
-// (a wake_one-loop variant measured the same as ULF_WAKE_ALL). The futex
-// protocol's waiters_ gate merely OVERCOUNTS sleepers: a woken worker stays
-// registered across its whole wake -> retry -> (lose the token race) ->
-// re-park window, so under the bench's fire pattern ~92% of signals paid a
-// wake syscall — mostly aimed at workers that were already awake — and the
-// token stealing added ~40% more park syscalls. The condvar impl's
-// mutex-serialized waiters_/to_release_ bookkeeping is an exact "is anyone
-// actually asleep" test plus a credit that guarantees every wake is consumed
-// (no steal/re-park churn): only ~23% of its signals reached
-// pthread_cond_signal. A futex protocol with condvar-style exact sleeper
-// accounting could plausibly close the gap — unexplored, as the condvar
-// already delivers, and keeping the semaphore private-API-free on all of
-// Apple is worth having anyway (the embedded OSes have no futex backend at
-// all — see futex.hpp).
+// Backend selection: futex wherever psi::thrd_lite::futex has a backend
+// (macOS included, through __ulock -- the same shipping decision already made
+// for the barrier), condvar only on Apple's embedded OSes (no futex backend
+// at all there -- see futex.hpp) or when forced for A/B runs
+// (PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE, the sweater.cmake knob).
+//
+// History of this selection: an EARLIER futex protocol (single futex word
+// carrying the token count, gated by an approximate waiters_ count) measured
+// ~1.6x SLOWER than the condvar impl on Apple Silicon and Apple was
+// condvar-backed for a while on that basis. Root-causing showed the loss was
+// protocol accounting, not primitive cost: waiters_ overcounted sleepers (a
+// woken worker stayed registered across its whole wake -> retry ->
+// lose-the-token-race -> re-park window), so ~92% of the bench's fire
+// signals paid a wake syscall vs ~23% reaching pthread_cond_signal under the
+// condvar's exact, mutex-serialized bookkeeping. (It was neither a
+// no-waiter-fast-path difference -- both impls skipped the syscall with no
+// waiter registered -- nor __ulock_wake's lack of an exact wake count: a
+// wake_one-loop variant measured the same as ULF_WAKE_ALL.) The current
+// futex protocol (futex_semaphore.cpp) transcribes the condvar's exact
+// sleeper accounting lock-free, dropping the wake-syscall rate to the
+// condvar's ~1/4 level and measuring ~15% FASTER fire ops than the condvar
+// on Apple Silicon (with matching ~3.5x wake-syscall reduction on Linux).
+#include "futex.hpp" // PSI_THRD_LITE_HAS_FUTEX
+#if !PSI_THRD_LITE_HAS_FUTEX || defined( PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE )
+#define PSI_SWEATER_CONDVAR_SEMAPHORE 1
 #include "condvar.hpp"
 #include "mutex.hpp"
 
 #include <mutex>
-#endif // Apple
+#else
+#define PSI_SWEATER_CONDVAR_SEMAPHORE 0
+#endif
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {
@@ -65,19 +72,27 @@ public:
     void wait(                          ) noexcept;
     void wait( std::uint32_t spin_count ) noexcept;
 
-#if !defined( __APPLE__ ) // see the condvar include note above ///////////////
+    // Approximate signaled-but-unconsumed token count (negative: that many
+    // waiters in debt/parked) -- a single relaxed load, for load-balancing
+    // heuristics (see generic.cpp's next_dispatch_target). Instantly stale;
+    // never use for correctness decisions.
+    std::int32_t pending() const noexcept { return static_cast<std::int32_t>( value_.load( std::memory_order_relaxed ) ); }
+
+#if !PSI_SWEATER_CONDVAR_SEMAPHORE // futex impl //////////////////////////////
 
 private:
-    using signed_futex_value_t =  std::make_signed_t< futex::value_type >;
-    enum state : signed_futex_value_t { locked = 0, contested = -1 };
-
-    signed_futex_value_t load( std::memory_order ) const noexcept;
+    using signed_futex_value_t = std::make_signed_t< futex::value_type >;
 
     bool try_decrement( signed_futex_value_t & last_value ) noexcept;
 
 private:
-    futex                               value_   = { state::locked };
-    std::atomic<hardware_concurrency_t> waiters_ = 0                ;
+    // Exact sleeper accounting (see futex_semaphore.cpp's design-doc comment):
+    // tokens and wake credits are SEPARATE words -- spinners/arrivals contend
+    // only on value_, parked workers are woken through credits_ which only the
+    // sleep path consumes.
+    std::atomic<signed_futex_value_t>   value_    = 0    ; // token count; negative = sleepers in debt
+    futex                               credits_  = { 0 }; // wake credits, consumed only by the sleep path
+    std::atomic<hardware_concurrency_t> sleepers_ = 0    ; // exact count of workers parked (or committed to park) on credits_
 
 #else // condvar impl for Apple (see above) ///////////////////////////////////
 

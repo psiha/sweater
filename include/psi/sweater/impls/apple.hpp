@@ -132,22 +132,23 @@ public:
         }
         else
         {
-#       if defined( __clang__ )
-            /// \note "ObjC++ attempts to copy lambdas, preventing capture of
-            /// move-only types". https://llvm.org/bugs/show_bug.cgi?id=20534
-            ///                               (14.01.2016.) (Domagoj Saric)
-            detail::in_flight_inc();
-            __block auto moveable_work( std::forward<F>( work ) );
-            dispatch_async( default_queue, ^(){
-                struct in_flight_guard
-                {
-                    ~in_flight_guard() noexcept { detail::in_flight_dec(); }
-                } const guard{};
-                moveable_work();
-            } );
-#       else
-            /// \note Still no block support in GCC.
-            ///                               (10.06.2017.) (Domagoj Saric)
+            // Plain-function dispatch for ALL compilers -- the former
+            // clang-only path (a __block variable captured by an ObjC block,
+            // the workaround for blocks copying rather than moving lambdas,
+            // https://llvm.org/bugs/show_bug.cgi?id=20534) is gone for a
+            // correctness reason: __block does not move the captured object
+            // into the block, it places it in a SHARED byref cell that the
+            // caller's stack scope and the (heap-copied) block both reference,
+            // destroyed by whichever side releases last. For dispatch()'s
+            // promise-holding lambda that made the closure's destructor
+            // (~promise reads the shared state's __has_value) run on the
+            // CALLER thread ordered against the worker's set_value only by
+            // the blocks runtime's uninstrumented refcounting -- flagged by
+            // TSan, and one refcount-ordering subtlety more than this needs:
+            // a plain heap allocation handed to dispatch_async_f is destroyed
+            // exactly once, on the worker, sequenced after execution (and is
+            // no extra cost -- Block_copy heap-allocates the block AND the
+            // byref cell anyway).
             auto const p_heap_work( new Functor( std::forward<F>( work ) ) );
             detail::in_flight_inc();
             dispatch_async_f
@@ -160,12 +161,11 @@ public:
                     {
                         ~in_flight_guard() noexcept { detail::in_flight_dec(); }
                     } const guard{};
-                    auto & __restrict the_work{ *static_cast<Functor const *>( p_context ) };
+                    auto & __restrict the_work{ *static_cast<Functor *>( p_context ) };
                     the_work();
                     delete &the_work;
                 }
             );
-#       endif // compiler
         }
     }
 

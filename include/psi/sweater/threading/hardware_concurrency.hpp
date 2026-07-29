@@ -43,6 +43,7 @@
 #   endif // platform
 #endif // PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
 
+#include <cstddef>
 #include <cstdint>
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
@@ -54,6 +55,23 @@ using hardware_concurrency_t = std::uint8_t;
 #else
 using hardware_concurrency_t = std::uint16_t; // e.g. Intel MIC
 #endif
+
+// False-sharing (destructive-interference) granularity, for padding hot
+// cross-thread data apart. Deliberately NOT std::hardware_destructive_
+// interference_size: libc++ long shipped none at all and GCC's value is a
+// -mtune-dependent guess (up to 256 on AArch64) that its own documentation
+// warns against using in headers/ABI. Apple Silicon's is genuinely 128
+// (sysctl hw.cachelinesize; the L2 prefetches line pairs) and 128 is the
+// safe upper bound for other big AArch64 cores too; everything else common
+// today is 64.
+inline constexpr std::size_t destructive_interference_size
+{
+#ifdef __aarch64__
+    128
+#else
+     64
+#endif
+};
 
 hardware_concurrency_t hardware_concurrency_current() noexcept;
 hardware_concurrency_t get_hardware_concurrency_max() noexcept;

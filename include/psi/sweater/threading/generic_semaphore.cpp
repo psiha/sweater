@@ -13,16 +13,35 @@
 ///
 ////////////////////////////////////////////////////////////////////////////////
 //------------------------------------------------------------------------------
-#if defined( __APPLE__ ) // must match semaphore.hpp's futexless-layout selection exactly
 #include "semaphore.hpp"
+
+#if PSI_SWEATER_CONDVAR_SEMAPHORE // selection made in semaphore.hpp
 
 #include "cpp/spin_lock.hpp"
 
 #include <algorithm>
+#ifdef PSI_SWEATER_SEMA_STATS
+#include <cinttypes>
+#include <cstdio>
+#endif
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {
 //------------------------------------------------------------------------------
+
+#ifdef PSI_SWEATER_SEMA_STATS // A/B instrumentation, mirrors futex_semaphore.cpp's
+namespace
+{
+    std::atomic<std::uint64_t> sema_signals{ 0 }, sema_notifies{ 0 }, sema_parks{ 0 };
+    struct sema_stats_printer
+    {
+        ~sema_stats_printer() { std::fprintf( stderr, "[SEMA condvar] signals=%" PRIu64 " notifies=%" PRIu64 " parks=%" PRIu64 "\n", sema_signals.load(), sema_notifies.load(), sema_parks.load() ); }
+    } const sema_stats_printer_instance;
+} // anonymous namespace
+#define PSI_SEMA_COUNT( which ) which.fetch_add( 1, std::memory_order_relaxed )
+#else
+#define PSI_SEMA_COUNT( which )
+#endif // PSI_SWEATER_SEMA_STATS
 
 #ifndef NDEBUG
 semaphore::~semaphore() noexcept
@@ -39,6 +58,7 @@ void semaphore::signal( hardware_concurrency_t const count ) noexcept
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
     BOOST_ASSUME( count == 1 );
 #endif // PSI_SWEATER_EXACT_WORKER_SELECTION
+    PSI_SEMA_COUNT( sema_signals );
     auto const old_value{ value_.fetch_add( count, std::memory_order_release ) };
     if ( old_value > 0 )
     {
@@ -55,6 +75,7 @@ void semaphore::signal( hardware_concurrency_t const count ) noexcept
         if ( !waiters_ ) // unknown whether condvar notify can avoid syscalls when there are no waiters
             return;
     }
+    PSI_SEMA_COUNT( sema_notifies );
     condition_.notify_one();
 #else
     auto const to_wake{ std::min( static_cast<hardware_concurrency_t>( -old_value ), count ) };
@@ -67,10 +88,14 @@ void semaphore::signal( hardware_concurrency_t const count ) noexcept
     if ( to_wake < waiters_ )
     {
         for ( auto notified{ 0U }; notified < to_wake; ++notified )
+        {
+            PSI_SEMA_COUNT( sema_notifies );
             condition_.notify_one();
+        }
     }
     else
     {
+        PSI_SEMA_COUNT( sema_notifies );
         condition_.notify_all();
     }
 #endif // PSI_SWEATER_EXACT_WORKER_SELECTION
@@ -107,7 +132,10 @@ void semaphore::wait() noexcept
     std::unique_lock<mutex> lock{ mutex_ };
     ++waiters_;
     while ( to_release_ == 0 ) // support spurious wakeups
+    {
+        PSI_SEMA_COUNT( sema_parks );
         condition_.wait( lock );
+    }
     --to_release_;
     --waiters_;
 }
@@ -115,4 +143,4 @@ void semaphore::wait() noexcept
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
 //------------------------------------------------------------------------------
-#endif // !Linux && !POSIX
+#endif // PSI_SWEATER_CONDVAR_SEMAPHORE

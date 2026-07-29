@@ -469,7 +469,7 @@ private:
 
 private:
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
-    struct alignas( 64 ) worker_thread : thrd_lite::thread
+    struct alignas( thrd_lite::destructive_interference_size ) worker_thread : thrd_lite::thread
     {
         using thrd_lite::thread::operator=;
 
@@ -478,9 +478,14 @@ private:
         bool enqueue(                     work_t &&                                         , my_queue & ) noexcept;
         bool enqueue( std::move_iterator< work_t * >, hardware_concurrency_t number_of_items, my_queue &, bool notify_worker = true ) noexcept;
 
-        thrd_lite::semaphore                      event_;
-        thrd_lite::spin_lock                      token_mutex_; // producer tokens are not thread safe (support concurrent spread_the_sweat calls)
-        std::optional<my_queue::producer_token_t> token_;
+        // event_ gets its own cache line: the worker side spins/waits on (and
+        // CASes) its words while the producer side takes token_mutex_ and
+        // manipulates token_ on every enqueue -- sharing a line makes every
+        // producer token operation a coherence miss against the worker's spin
+        // (measured on the fire path's flat profile).
+        alignas( thrd_lite::destructive_interference_size ) thrd_lite::semaphore event_;
+        alignas( thrd_lite::destructive_interference_size ) thrd_lite::spin_lock token_mutex_; // producer tokens are not thread safe (support concurrent spread_the_sweat calls)
+        std::optional<my_queue::producer_token_t>                                token_;
 #   ifdef __linux__
         pid_t thread_id_ = 0;
 #   endif // Linux

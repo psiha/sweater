@@ -94,17 +94,20 @@ else()
     set( sweater_apple_embedded FALSE )
 endif()
 
-# The futex-backed BARRIER serves every platform with a futex backend (macOS
-# through __ulock); Apple's embedded OSes keep the condvar-based
-# generic_barrier (see barrier.hpp). The SEMAPHORE stays condvar-based on all
-# of Apple — measured faster there for the signal-heavy fire path (see
-# semaphore.hpp).
+# Both the BARRIER and the SEMAPHORE are futex-backed on every platform with
+# a futex backend (macOS through __ulock); Apple's embedded OSes have no
+# futex backend at all and keep the condvar-based generic variants (see
+# barrier.hpp / semaphore.hpp -- the latter also documents the semaphore
+# protocol history behind this selection).
+# PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE forces the condvar semaphore anywhere,
+# purely as an A/B knob.
+option( PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE "Force the condvar-based semaphore (A/B knob)" OFF )
 if ( sweater_apple_embedded )
     set_source_files_properties( ${src_root}/threading/futex_barrier.cpp   PROPERTIES HEADER_FILE_ONLY ON )
 else()
     set_source_files_properties( ${src_root}/threading/generic_barrier.cpp PROPERTIES HEADER_FILE_ONLY ON )
 endif()
-if ( APPLE )
+if ( sweater_apple_embedded OR PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE )
     set_source_files_properties( ${src_root}/threading/futex_semaphore.cpp   PROPERTIES HEADER_FILE_ONLY ON )
 else()
     set_source_files_properties( ${src_root}/threading/generic_semaphore.cpp PROPERTIES HEADER_FILE_ONLY ON )
@@ -142,9 +145,9 @@ endif()
 # __ulock_wait/__ulock_wake -- PRIVATE Darwin syscalls, see the design-doc
 # comment at the top of apple/futex.cpp (the single place to swap to the
 # public os_sync_wait_on_address API when the deployment floor allows). Now a
-# load-bearing backend on macOS: the futex-based BARRIER (and futex_rw_mutex)
-# run on it -- the semaphore stays condvar-backed there (measured faster for
-# its signal-heavy pattern; see semaphore.hpp). macOS ONLY: private syscalls
+# load-bearing backend on macOS: the futex-based BARRIER, SEMAPHORE (see
+# semaphore.hpp's selection-history comment) and futex_rw_mutex
+# run on it. macOS ONLY: private syscalls
 # are App Store rejection material on Apple's embedded OSes, which therefore
 # have no futex backend at all (see futex.hpp).
 set( sources_threading_apple
@@ -220,6 +223,11 @@ endif()
 # its consumers.
 if ( PSI_SWEATER_IMPL )
     target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_IMPL=${PSI_SWEATER_IMPL} )
+endif()
+# PUBLIC for the same ODR reason: semaphore.hpp's layout selection reaches
+# consumers through impls/generic.hpp.
+if ( PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE )
+    target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE )
 endif()
 
 if ( WIN32 )
