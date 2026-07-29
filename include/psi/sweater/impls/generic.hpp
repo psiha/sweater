@@ -368,7 +368,7 @@ public:
         if ( PSI_UNLIKELY( !dispatch_succeeded ) )
         {
             auto pair( thrd_lite::make_outcome_promise_future<result_t>() );
-            pair.first.set( thrd_lite::outcome_result<result_t>{ std::make_exception_ptr( std::bad_alloc() ) } );
+            pair.first.set_exception( std::make_exception_ptr( std::bad_alloc() ) );
             future = std::move( pair.second );
         }
         return future;

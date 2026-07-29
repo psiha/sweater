@@ -1,131 +1,56 @@
 //==============================================================================
 // Tests for psi::thrd_lite::outcome_promise/outcome_future (outcome_future.hpp)
-// -- the Outcome-based peer to thrd_lite::promise/future (future_test.cpp),
-// independent of any sweater shop/dispatch_outcome() usage. Only built when
-// PSI_SWEATER_WITH_OUTCOME=ON (see test/CMakeLists.txt).
+// -- the Outcome-based peer to thrd_lite::promise/future. The shared contract
+// (with future_test.cpp) lives in future_contract_test.hpp as a gtest
+// type-parameterized suite; this file supplies the Kind, instantiates it, and
+// adds the one invariant unique to this Kind (get() never throwing). Only
+// built when PSI_SWEATER_WITH_OUTCOME=ON (see test/CMakeLists.txt).
 //==============================================================================
+
+#include "future_contract_test.hpp"
 
 #include <psi/sweater/threading/outcome_future.hpp>
 
-#include <gtest/gtest.h>
-
-#include <atomic>
-#include <chrono>
 #include <stdexcept>
-#include <thread>
-#include <utility>
+#include <type_traits>
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {
 //------------------------------------------------------------------------------
 
-TEST( ThrdLiteOutcomeFuture, ValueSameThread )
+struct OutcomeFutureKind
 {
-    auto pair( make_outcome_promise_future<int>() );
-    pair.first.set( 42 );
-    auto const result( pair.second.get() );
-    ASSERT_TRUE( result.has_value() );
-    EXPECT_EQ( result.value(), 42 );
-}
+    template <typename T> using future_type  = outcome_future<T>;
+    template <typename T> using promise_type = outcome_promise<T>;
 
-TEST( ThrdLiteOutcomeFuture, VoidValueSameThread )
-{
-    auto pair( make_outcome_promise_future<void>() );
-    pair.first.set( detail::outcome_ns::success() );
-    auto const result( pair.second.get() );
-    EXPECT_TRUE( result.has_value() );
-}
+    template <typename T>
+    static std::pair<promise_type<T>, future_type<T>> make() { return make_outcome_promise_future<T>(); }
 
-TEST( ThrdLiteOutcomeFuture, ExceptionSameThread )
-{
-    auto pair( make_outcome_promise_future<int>() );
-    pair.first.set( outcome_result<int>{ std::make_exception_ptr( std::runtime_error{ "boom" } ) } );
-    auto const result( pair.second.get() );
-    ASSERT_TRUE( result.has_exception() );
-    EXPECT_THROW( std::rethrow_exception( result.exception() ), std::runtime_error );
-}
+    template <typename T>
+    static T get_value( future_type<T> & f )
+    {
+        auto result( f.get() );
+        EXPECT_TRUE( result.has_value() );
+        if constexpr ( !std::is_void_v<T> )
+            return std::move( result ).value();
+    }
 
-TEST( ThrdLiteOutcomeFuture, RunCapturesResult )
-{
-    auto pair( make_outcome_promise_future<int>() );
-    pair.first.run( []() noexcept { return 7; } );
-    auto const result( pair.second.get() );
-    ASSERT_TRUE( result.has_value() );
-    EXPECT_EQ( result.value(), 7 );
-}
+    template <typename T>
+    static void expect_exception( future_type<T> & f )
+    {
+        EXPECT_TRUE( f.get().has_exception() );
+    }
+}; // struct OutcomeFutureKind
 
-TEST( ThrdLiteOutcomeFuture, RunCapturesException )
-{
-    auto pair( make_outcome_promise_future<int>() );
-    pair.first.run( []() -> int { throw std::runtime_error{ "boom" }; } );
-    auto const result( pair.second.get() );
-    ASSERT_TRUE( result.has_exception() );
-    EXPECT_THROW( std::rethrow_exception( result.exception() ), std::runtime_error );
-}
+INSTANTIATE_TYPED_TEST_SUITE_P( Outcome, FutureContract, OutcomeFutureKind );
 
-TEST( ThrdLiteOutcomeFuture, GetNeverThrows )
+// Unique to this Kind -- thrd_lite::future<T>::get() throws by design, so
+// this isn't part of the shared FutureContract suite.
+TEST( ThrdLiteOutcomeFutureOnly, GetNeverThrows )
 {
     auto pair( make_outcome_promise_future<int>() );
     pair.first.run( []() -> int { throw std::runtime_error{ "boom" }; } );
     EXPECT_NO_THROW( { auto const result( pair.second.get() ); (void)result; } );
-}
-
-TEST( ThrdLiteOutcomeFuture, WaitThenGet )
-{
-    auto pair( make_outcome_promise_future<int>() );
-    pair.first.set( 3 );
-    pair.second.wait(); // idempotent -- must not consume/hang a second call
-    auto const result( pair.second.get() );
-    ASSERT_TRUE( result.has_value() );
-    EXPECT_EQ( result.value(), 3 );
-}
-
-// No explicit wait()/get() at all -- the future's destructor must still block
-// until the promise side completes (same lifetime contract as future.hpp's
-// thrd_lite::future -- see its file-level note on why this has to be
-// refcounted, not singly owned).
-TEST( ThrdLiteOutcomeFuture, DestructorWaitsForCompletion )
-{
-    std::atomic<bool> completed{ false };
-    {
-        auto pair( make_outcome_promise_future<void>() );
-        std::thread worker
-        {
-            [ promise = std::move( pair.first ), &completed ]() mutable noexcept
-            {
-                std::this_thread::sleep_for( std::chrono::milliseconds{ 20 } );
-                completed.store( true, std::memory_order_release );
-                promise.set( detail::outcome_ns::success() );
-            }
-        };
-        worker.detach();
-    }
-    EXPECT_TRUE( completed.load( std::memory_order_acquire ) );
-}
-
-TEST( ThrdLiteOutcomeFuture, CrossThreadHandoff )
-{
-    auto pair( make_outcome_promise_future<int>() );
-    std::thread worker
-    {
-        [ promise = std::move( pair.first ) ]() mutable noexcept
-        {
-            promise.run( []() noexcept { return 99; } );
-        }
-    };
-    auto const result( pair.second.get() );
-    ASSERT_TRUE( result.has_value() );
-    EXPECT_EQ( result.value(), 99 );
-    worker.join();
-}
-
-TEST( ThrdLiteOutcomeFuture, BrokenPromiseWhenDroppedIncomplete )
-{
-    auto pair( make_outcome_promise_future<int>() );
-    { outcome_promise<int> dropped( std::move( pair.first ) ); } // destroyed without set()/run()
-    auto const result( pair.second.get() );
-    ASSERT_TRUE( result.has_exception() );
-    EXPECT_THROW( std::rethrow_exception( result.exception() ), broken_promise );
 }
 
 //------------------------------------------------------------------------------

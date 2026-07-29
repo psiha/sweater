@@ -84,11 +84,24 @@ namespace detail
         outcome_state( outcome_state const & ) = delete;
         outcome_state & operator=( outcome_state const & ) = delete;
 
+        // Accepts anything outcome_result<T> is constructible from -- a plain
+        // value, a std::exception_ptr, an already-built outcome_result<T>...
+        // -- with one special case: outcome_result<void> has no default
+        // constructor (Outcome spells void success as success(), not {}),
+        // so a bare set_value() (T=void, no args -- the same call shape
+        // thrd_lite::promise<void>::set_value() accepts) is routed there.
         template <typename ... Args>
-        void set( Args && ... args ) noexcept( std::is_nothrow_constructible_v<outcome_result<T>, Args && ...> )
+        void set_value( Args && ... args ) noexcept
+        (
+            ( std::is_void_v<T> && sizeof...( Args ) == 0 ) ||
+            std::is_nothrow_constructible_v<outcome_result<T>, Args && ...>
+        )
         {
             BOOST_ASSERT( !completed_ );
-            ::new ( static_cast<void *>( &storage_ ) ) outcome_result<T>( std::forward<Args>( args ) ... );
+            if constexpr ( std::is_void_v<T> && sizeof...( Args ) == 0 )
+                ::new ( static_cast<void *>( &storage_ ) ) outcome_result<T>( outcome_ns::success() );
+            else
+                ::new ( static_cast<void *>( &storage_ ) ) outcome_result<T>( std::forward<Args>( args ) ... );
             completed_ = true;
             completion_.signal();
         }
@@ -156,11 +169,21 @@ public:
 
     ~outcome_promise() noexcept { abandon(); }
 
+    /// Same shape as thrd_lite::promise<T>::set_value(): accepts a plain
+    /// value (or, since outcome_result<T> also has an implicit
+    /// std::exception_ptr constructor, an exception -- set_exception()
+    /// below is the named convenience for that case).
     template <typename ... Args>
-    void set( Args && ... args ) noexcept( noexcept( std::declval<detail::outcome_state<T> &>().set( std::forward<Args>( args ) ... ) ) )
+    void set_value( Args && ... args ) noexcept( noexcept( std::declval<detail::outcome_state<T> &>().set_value( std::forward<Args>( args ) ... ) ) )
     {
         BOOST_ASSERT( p_state_ );
-        p_state_->set( std::forward<Args>( args ) ... );
+        p_state_->set_value( std::forward<Args>( args ) ... );
+    }
+
+    void set_exception( std::exception_ptr p ) noexcept
+    {
+        BOOST_ASSERT( p_state_ );
+        p_state_->set_value( outcome_result<T>{ std::move( p ) } );
     }
 
     /// Invoke work and route its result (or caught exception) into the
@@ -174,16 +197,16 @@ public:
             if constexpr ( std::is_void_v<T> )
             {
                 std::forward<F>( work )();
-                p_state_->set( detail::outcome_ns::success() );
+                p_state_->set_value();
             }
             else
             {
-                p_state_->set( outcome_result<T>{ std::forward<F>( work )() } );
+                p_state_->set_value( outcome_result<T>{ std::forward<F>( work )() } );
             }
         }
         BOOST_CATCH( ... )
         {
-            p_state_->set( outcome_result<T>{ std::current_exception() } );
+            p_state_->set_value( outcome_result<T>{ std::current_exception() } );
         }
         BOOST_CATCH_END
     }
@@ -201,7 +224,7 @@ private:
         if ( p_state_ )
         {
             if ( PSI_UNLIKELY( !p_state_->completed() ) )
-                p_state_->set( outcome_result<T>{ std::make_exception_ptr( broken_promise{} ) } );
+                p_state_->set_value( outcome_result<T>{ std::make_exception_ptr( broken_promise{} ) } );
             p_state_->release();
         }
     }
