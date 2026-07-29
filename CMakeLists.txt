@@ -39,7 +39,7 @@ CPMAddPackage( "gh:boostorg/preprocessor#${boost_ver}"    )
 
 # Unofficial psiha Boost bits.
 CPMAddPackage( "gh:psiha/config_ex#master"   ) # BOOST_ASSUME / BOOST_NOINLINE / ...
-CPMAddPackage( "gh:psiha/functionoid#master" ) # generic-impl work_t backend (sweater.cmake picks up functionoid_SOURCE_DIR)
+CPMAddPackage( "gh:psiha/functionoid#07b54e0e162f079fb3904839711f6345db75e790" ) # generic-impl work_t backend (sweater.cmake picks up functionoid_SOURCE_DIR)
 
 # An aggregate Boost::boost INTERFACE target so sweater.cmake's `if ( TARGET
 # Boost::boost )` linkage resolves the same way it does inside the rama host.

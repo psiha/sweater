@@ -90,10 +90,6 @@ std::uint32_t shop::caller_spin_count{ 100 * 1000 };
 #endif // PSI_SWEATER_USE_CALLER_THREAD
 #endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
 
-#if PSI_SWEATER_USE_PARALLELIZATION_COST
-std::uint8_t shop::min_parallel_iter_boost = min_parallel_iter_boost_weight;
-#endif // PSI_SWEATER_USE_PARALLELIZATION_COST
-
 auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_index ) noexcept
 {
     /// \note PSI_SWEATER_EXACT_WORKER_SELECTION requires the worker
