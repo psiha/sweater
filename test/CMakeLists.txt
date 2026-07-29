@@ -45,6 +45,11 @@ add_test( NAME sweater_rw_preference_test COMMAND sweater_rw_preference_test )
 # coverage, folded in above).
 sweater_add_test( sweater_futex_test futex_test.cpp )
 
+# Standalone psi::thrd_lite::promise/future pair (future.hpp) -- independent of
+# shop::dispatch()/dispatch_lite(), which get their own coverage in
+# smoke_test.cpp / sweat_shop_stress_test.cpp.
+sweater_add_test( sweater_future_test future_test.cpp )
+
 # Libuv backend tests — only when libuv headers + library are available.
 find_path( SWEATER_LIBUV_INCLUDE_DIR NAMES uv.h )
 find_library( SWEATER_LIBUV_LIBRARY NAMES uv libuv )

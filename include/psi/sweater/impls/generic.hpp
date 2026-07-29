@@ -20,6 +20,7 @@
 #include "../queues/mpmc_moodycamel.hpp"
 #include "../dispatch_tracking.hpp"
 #include "../threading/barrier.hpp"
+#include "../threading/future.hpp"
 #include "../threading/hardware_concurrency.hpp"
 #include "../threading/cpp/spin_lock.hpp"
 #include "../threading/semaphore.hpp"
@@ -288,6 +289,44 @@ public:
             typename future_wrapper::promise_t failed_promise;
             failed_promise.set_exception( std::make_exception_ptr( std::bad_alloc() ) );
             future = failed_promise.get_future();
+        }
+        return future;
+    }
+
+    /// Leaner alternative to dispatch(): same single-result contract, but the
+    /// completion is a thrd_lite::future (futex-signaled slot) instead of a
+    /// std::future (its own heap-allocated shared state + mutex/condvar) --
+    /// see threading/future.hpp for the rationale.
+    template <typename F>
+    auto dispatch_lite( F && work )
+    {
+        using Functor  = std::remove_reference_t<F>;
+        using result_t = decltype( std::declval<Functor &>()() );
+
+        struct lite_wrapper
+        {
+            lite_wrapper( F && work_source, thrd_lite::future<result_t> & future )
+                :
+                work( std::forward<F>( work_source ) )
+            {
+                auto pair( thrd_lite::make_promise_future<result_t>() );
+                promise = std::move( pair.first  );
+                future  = std::move( pair.second );
+            }
+
+            void operator()() noexcept { promise.run( work ); }
+
+            Functor                       work   ;
+            thrd_lite::promise<result_t>  promise;
+        }; // struct lite_wrapper
+
+        thrd_lite::future<result_t> future;
+        auto const dispatch_succeeded( this->create_fire_and_destroy<lite_wrapper>( std::forward<F>( work ), future ) );
+        if ( PSI_UNLIKELY( !dispatch_succeeded ) )
+        {
+            auto pair( thrd_lite::make_promise_future<result_t>() );
+            pair.first.set_exception( std::make_exception_ptr( std::bad_alloc() ) );
+            future = std::move( pair.second );
         }
         return future;
     }

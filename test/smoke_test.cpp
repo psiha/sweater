@@ -28,6 +28,20 @@ TEST( SweaterSmoke, DispatchReturnsValue )
     EXPECT_EQ( future.get(), 42 );
 }
 
+TEST( SweaterSmoke, DispatchLiteReturnsValue )
+{
+    psi::sweater::shop work_shop;
+    auto future{ work_shop.dispatch_lite( []() noexcept -> int { return 42; } ) };
+    EXPECT_EQ( future.get(), 42 );
+}
+
+TEST( SweaterSmoke, DispatchLiteVoidResult )
+{
+    psi::sweater::shop work_shop;
+    auto future{ work_shop.dispatch_lite( []() noexcept {} ) };
+    future.get(); // must not throw
+}
+
 TEST( SweaterSmoke, FireAndForgetRunsWork )
 {
     std::atomic<bool> done{ false };
