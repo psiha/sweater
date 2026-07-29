@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <memory>
 #include <stdexcept>
 #include <thread>
