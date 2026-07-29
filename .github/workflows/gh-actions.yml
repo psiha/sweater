@@ -22,6 +22,11 @@ jobs:
           - { os: ubuntu-latest, name: Clang,       cc: clang,  cxx: clang++, gen: '-G Ninja' }
           - { os: ubuntu-latest, name: GCC,         cc: gcc,    cxx: g++,     gen: '-G Ninja', container: 'gcc:15' }
           - { os: macos-26,      name: Apple-Clang, cc: clang,  cxx: clang++, gen: '-G Ninja' }
+          # Coverage for the opt-in Outcome variant (dispatch_outcome()/
+          # outcome_future.hpp, sweater.cmake's PSI_SWEATER_WITH_OUTCOME) --
+          # standalone (non-Boost) Outcome fetch path, since that's the one
+          # every other lane here would otherwise never exercise.
+          - { os: ubuntu-latest, name: Clang-Outcome, cc: clang, cxx: clang++, gen: '-G Ninja', outcome: 'ON' }
         build_type: [Debug, Release]
 
     steps:
@@ -41,7 +46,7 @@ jobs:
         git --version
 
     - name: Install LLVM/Clang 22
-      if: matrix.config.name == 'Clang'
+      if: matrix.config.name == 'Clang' || matrix.config.name == 'Clang-Outcome'
       # https://apt.llvm.org
       run: |
         wget https://apt.llvm.org/llvm.sh
@@ -79,6 +84,7 @@ jobs:
         -DCMAKE_C_COMPILER=${{ matrix.config.cc }}
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -DGitHubCIRun=true
+        -DPSI_SWEATER_WITH_OUTCOME=${{ matrix.config.outcome || 'OFF' }}
         -S ${{ steps.strings.outputs.source-dir }}
 
     - name: Build

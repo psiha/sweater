@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 
@@ -27,6 +28,39 @@ TEST( SweaterSmoke, DispatchReturnsValue )
     auto future{ work_shop.dispatch( []() noexcept -> int { return 42; } ) }; // non-const: std::future::get() (native impls) is mutable
     EXPECT_EQ( future.get(), 42 );
 }
+
+TEST( SweaterSmoke, DispatchLiteReturnsValue )
+{
+    psi::sweater::shop work_shop;
+    auto future{ work_shop.dispatch_lite( []() noexcept -> int { return 42; } ) };
+    EXPECT_EQ( future.get(), 42 );
+}
+
+TEST( SweaterSmoke, DispatchLiteVoidResult )
+{
+    psi::sweater::shop work_shop;
+    auto future{ work_shop.dispatch_lite( []() noexcept {} ) };
+    future.get(); // must not throw
+}
+
+#if PSI_SWEATER_HAS_OUTCOME
+TEST( SweaterSmoke, DispatchOutcomeReturnsValue )
+{
+    psi::sweater::shop work_shop;
+    auto future{ work_shop.dispatch_outcome( []() noexcept -> int { return 42; } ) };
+    auto const result( future.get() ); // noexcept -- never throws
+    ASSERT_TRUE( result.has_value() );
+    EXPECT_EQ( result.value(), 42 );
+}
+
+TEST( SweaterSmoke, DispatchOutcomeCapturesException )
+{
+    psi::sweater::shop work_shop;
+    auto future{ work_shop.dispatch_outcome( []() -> int { throw std::runtime_error{ "boom" }; } ) };
+    auto const result( future.get() );
+    ASSERT_TRUE( result.has_exception() );
+}
+#endif // PSI_SWEATER_HAS_OUTCOME
 
 TEST( SweaterSmoke, FireAndForgetRunsWork )
 {

@@ -16,11 +16,16 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include "../threading/hardware_concurrency.hpp"
+#include "../threading/future.hpp"
+#if PSI_SWEATER_HAS_OUTCOME
+#include "../threading/outcome_future.hpp"
+#endif
 #include "../spread_chunked.hpp"
 #include "../dispatch_tracking.hpp"
 
 #include <boost/assert.hpp>
 #include <cstdint>
+#include <exception>
 #include <future>
 #include <thread>
 #include <type_traits>
@@ -201,11 +206,56 @@ public:
                 {
                     promise.set_exception( std::current_exception() );
                 }
-                
+
             }
         );
         return future;
     }
+
+    /// Leaner alternative to dispatch(): see generic.hpp's dispatch_lite()
+    /// and threading/future.hpp for the rationale. thrd_lite::promise's
+    /// user-declared move constructor keeps this out of fire_and_forget()'s
+    /// trivially-copyable fast path above regardless of F -- it always takes
+    /// the heap-allocated path, same as dispatch() already does.
+    template <typename F>
+    static auto dispatch_lite( F && work )
+    {
+        using result_t = std::invoke_result_t<F>;
+
+        auto pair( thrd_lite::make_promise_future<result_t>() );
+        fire_and_forget
+        (
+            [promise = std::move( pair.first ), work = std::forward<F>( work )]
+            () mutable noexcept
+            {
+                promise.run( work );
+            }
+        );
+        return std::move( pair.second );
+    }
+
+#if PSI_SWEATER_HAS_OUTCOME
+    /// Third alternative to dispatch()/dispatch_lite(): see generic.hpp's
+    /// dispatch_outcome() and threading/outcome_future.hpp for the
+    /// rationale. Same trivially-copyable-fast-path note as dispatch_lite()
+    /// above applies to outcome_promise too.
+    template <typename F>
+    static auto dispatch_outcome( F && work )
+    {
+        using result_t = std::invoke_result_t<F>;
+
+        auto pair( thrd_lite::make_outcome_promise_future<result_t>() );
+        fire_and_forget
+        (
+            [promise = std::move( pair.first ), work = std::forward<F>( work )]
+            () mutable noexcept
+            {
+                promise.run( work );
+            }
+        );
+        return std::move( pair.second );
+    }
+#endif // PSI_SWEATER_HAS_OUTCOME
 
 private:
     static dispatch_queue_t const default_queue      ;

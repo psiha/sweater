@@ -97,7 +97,14 @@ TEST( SweatShopStress, ConcurrentProducersOnSharedShop )
                         work_shop.fire_and_forget( [&]() noexcept { fire_and_forget_count.fetch_add( 1, std::memory_order_relaxed ); } );
                         break;
                     case 1:
-                        work_shop.dispatch( [&]() noexcept -> int { dispatch_count.fetch_add( 1, std::memory_order_relaxed ); return 0; } ).wait();
+                        // Alternate dispatch()/dispatch_lite() -- both funnel into
+                        // dispatch_count the same way, so this adds concurrent-
+                        // producer stress coverage for the leaner completion path
+                        // without perturbing the per-kind count assertions below.
+                        if ( i % 2 == 0 )
+                            work_shop.dispatch     ( [&]() noexcept -> int { dispatch_count.fetch_add( 1, std::memory_order_relaxed ); return 0; } ).wait();
+                        else
+                            work_shop.dispatch_lite( [&]() noexcept -> int { dispatch_count.fetch_add( 1, std::memory_order_relaxed ); return 0; } ).wait();
                         break;
                     case 2:
                         work_shop.spread_the_sweat( 8, [&]( auto const start, auto const end ) noexcept
