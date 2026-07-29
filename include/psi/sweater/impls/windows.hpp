@@ -23,6 +23,9 @@
 #include "../dispatch_tracking.hpp"
 #include "../spread_chunked.hpp"
 #include "../threading/future.hpp"
+#if PSI_SWEATER_HAS_OUTCOME
+#include "../threading/outcome_future.hpp"
+#endif
 #include "../threading/hardware_concurrency.hpp"
 
 #include <boost/assert.hpp>
@@ -277,6 +280,26 @@ public:
         );
         return std::move( pair.second );
     }
+
+#if PSI_SWEATER_HAS_OUTCOME
+    /// Third alternative to dispatch()/dispatch_lite(): see generic.hpp's
+    /// dispatch_outcome() and threading/outcome_future.hpp for the rationale.
+    template <typename F>
+    static auto dispatch_outcome( F && work )
+    {
+        using result_t = std::invoke_result_t<std::decay_t<F> &>;
+
+        auto pair( thrd_lite::make_outcome_promise_future<result_t>() );
+
+        fire_and_forget(
+            [ p = std::move( pair.first ), f = std::forward<F>( work ) ]() mutable noexcept
+            {
+                p.run( f );
+            }
+        );
+        return std::move( pair.second );
+    }
+#endif // PSI_SWEATER_HAS_OUTCOME
 
 }; // class shop
 

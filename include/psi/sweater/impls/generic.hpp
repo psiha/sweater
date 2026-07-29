@@ -21,6 +21,9 @@
 #include "../dispatch_tracking.hpp"
 #include "../threading/barrier.hpp"
 #include "../threading/future.hpp"
+#if PSI_SWEATER_HAS_OUTCOME
+#include "../threading/outcome_future.hpp"
+#endif
 #include "../threading/hardware_concurrency.hpp"
 #include "../threading/cpp/spin_lock.hpp"
 #include "../threading/semaphore.hpp"
@@ -330,6 +333,47 @@ public:
         }
         return future;
     }
+
+#if PSI_SWEATER_HAS_OUTCOME
+    /// Third alternative to dispatch()/dispatch_lite(): completion is a
+    /// thrd_lite::outcome_future (threading/outcome_future.hpp) -- get() is
+    /// noexcept, the caller checks has_value()/has_exception() on the
+    /// returned outcome<T> instead of catching. Opt-in
+    /// (PSI_SWEATER_WITH_OUTCOME, see sweater.cmake).
+    template <typename F>
+    auto dispatch_outcome( F && work )
+    {
+        using Functor  = std::remove_reference_t<F>;
+        using result_t = decltype( std::declval<Functor &>()() );
+
+        struct outcome_wrapper
+        {
+            outcome_wrapper( F && work_source, thrd_lite::outcome_future<result_t> & future )
+                :
+                work( std::forward<F>( work_source ) )
+            {
+                auto pair( thrd_lite::make_outcome_promise_future<result_t>() );
+                promise = std::move( pair.first  );
+                future  = std::move( pair.second );
+            }
+
+            void operator()() noexcept { promise.run( work ); }
+
+            Functor                               work   ;
+            thrd_lite::outcome_promise<result_t>  promise;
+        }; // struct outcome_wrapper
+
+        thrd_lite::outcome_future<result_t> future;
+        auto const dispatch_succeeded( this->create_fire_and_destroy<outcome_wrapper>( std::forward<F>( work ), future ) );
+        if ( PSI_UNLIKELY( !dispatch_succeeded ) )
+        {
+            auto pair( thrd_lite::make_outcome_promise_future<result_t>() );
+            pair.first.set( thrd_lite::outcome_result<result_t>{ std::make_exception_ptr( std::bad_alloc() ) } );
+            future = std::move( pair.second );
+        }
+        return future;
+    }
+#endif // PSI_SWEATER_HAS_OUTCOME
 
     using cpu_affinity_mask = thrd_lite::thread::affinity_mask;
 

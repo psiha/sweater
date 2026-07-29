@@ -17,6 +17,9 @@
 //------------------------------------------------------------------------------
 #include "../threading/hardware_concurrency.hpp"
 #include "../threading/future.hpp"
+#if PSI_SWEATER_HAS_OUTCOME
+#include "../threading/outcome_future.hpp"
+#endif
 #include "../spread_chunked.hpp"
 #include "../dispatch_tracking.hpp"
 
@@ -233,6 +236,33 @@ public:
         );
         return std::move( pair.second );
     }
+
+#if PSI_SWEATER_HAS_OUTCOME
+    /// Third alternative to dispatch()/dispatch_lite(): see generic.hpp's
+    /// dispatch_outcome() and threading/outcome_future.hpp for the
+    /// rationale. Same trivially-copyable-fast-path note as dispatch_lite()
+    /// above applies to outcome_promise too.
+    template <typename F>
+    static auto dispatch_outcome( F && work )
+    {
+#       if     __cplusplus >= 201703L
+        using result_t = typename std::invoke_result_t<F>;
+#       else
+        using result_t = typename std::result_of<F()>::type;
+#       endif
+
+        auto pair( thrd_lite::make_outcome_promise_future<result_t>() );
+        fire_and_forget
+        (
+            [promise = std::move( pair.first ), work = std::forward<F>( work )]
+            () mutable noexcept
+            {
+                promise.run( work );
+            }
+        );
+        return std::move( pair.second );
+    }
+#endif // PSI_SWEATER_HAS_OUTCOME
 
 private:
     static dispatch_queue_t const default_queue      ;

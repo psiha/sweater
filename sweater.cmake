@@ -62,6 +62,13 @@ set( sources_queues
 source_group( "Queues" FILES ${sources_queues} )
 list( APPEND sweater_sources ${sources_queues} )
 
+# See the Outcome linkage block (below the Boost::boost linkage) for what
+# these gate; declared here, ahead of the sources_threading list below, so
+# outcome_future.hpp's presence in that list depends on the same read of
+# PSI_SWEATER_WITH_OUTCOME the linkage block uses.
+option( PSI_SWEATER_WITH_OUTCOME "Build the Outcome-based dispatch_outcome()/outcome_future<T> variant" OFF )
+option( PSI_SWEATER_OUTCOME_STANDALONE "When PSI_SWEATER_WITH_OUTCOME is ON: fetch standalone (non-Boost) Outcome via CPM instead of using Boost::boost's boost/outcome.hpp" ON )
+
 set( sources_threading
     ${src_root}/threading/barrier.hpp
     ${src_root}/threading/futex.hpp
@@ -76,11 +83,15 @@ set( sources_threading
     ${src_root}/threading/hardware_concurrency.cpp
     ${src_root}/threading/hardware_concurrency.hpp
     ${src_root}/threading/condvar.hpp
+    ${src_root}/threading/future.hpp
     ${src_root}/threading/mutex.hpp
     ${src_root}/threading/rw_mutex.hpp
     ${src_root}/threading/semaphore.hpp
     ${src_root}/threading/thread.hpp
 )
+if ( PSI_SWEATER_WITH_OUTCOME )
+    list( APPEND sources_threading ${src_root}/threading/outcome_future.hpp )
+endif()
 source_group( "ThrdLite" FILES ${sources_threading} )
 list( APPEND sweater_sources ${sources_threading} )
 
@@ -245,6 +256,50 @@ endif()
 # vs PUBLIC scope stays correct for both library kinds.
 if ( TARGET Boost::boost )
     target_link_libraries( psi_sweater ${_sweater_scope} Boost::boost )
+endif()
+
+# ── Outcome (optional, opt-in) ───────────────────────────────────────────────
+# psi::thrd_lite::outcome_promise/outcome_future (threading/outcome_future.hpp)
+# and shop::dispatch_outcome() build atop ned14/outcome's outcome<T> (value /
+# std::error_code / std::exception_ptr) as a THIRD alternative to dispatch()/
+# dispatch_lite() -- always noexcept to CONSUME (no throwing get(); callers
+# check has_value()/has_exception()). Off by default: most consumers of this
+# library don't want a new dependency pulled in just for this. Options
+# declared near sources_threading above (outcome_future.hpp's inclusion in
+# that list depends on PSI_SWEATER_WITH_OUTCOME too); resolved here.
+# ON  (default) PSI_SWEATER_OUTCOME_STANDALONE: fetch the standalone
+#     (non-Boost) ned14/outcome single header via CPM. What sweater's own
+#     gh-actions CI uses -- the CPM-assembled Boost::boost aggregate above
+#     does not include Outcome.
+# OFF: use <boost/outcome.hpp> from an already-existing Boost::boost target
+#     instead (a host project supplying a full, real Boost distribution --
+#     IDE/vcpkg/system install -- already has it there; no extra fetch, no
+#     second copy of Outcome alongside the host's own).
+if ( PSI_SWEATER_WITH_OUTCOME )
+    target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_HAS_OUTCOME=1 )
+    if ( PSI_SWEATER_OUTCOME_STANDALONE )
+        target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_OUTCOME_STANDALONE=1 )
+        # A single amalgamated header is all that's needed (no status-code/
+        # wg14_result/doc submodules, no CMake support in that repo) -- fetch
+        # it directly, same file(DOWNLOAD) pattern already used above for
+        # get_cpm.cmake itself, rather than CPMAddPackage cloning the whole
+        # repo (and its submodules) just to reach one file.
+        set( _sweater_outcome_dir "${CMAKE_CURRENT_BINARY_DIR}/deps/outcome-standalone" )
+        file( DOWNLOAD
+            "https://raw.githubusercontent.com/ned14/outcome/v2.2.15/single-header/outcome.hpp"
+            "${_sweater_outcome_dir}/outcome.hpp"
+            EXPECTED_HASH SHA256=c83881b9d0866e9b39b87888238ae6169347e1b442a800d2a20c1fefff362907
+        )
+        add_library( sweater_outcome_standalone INTERFACE )
+        target_include_directories( sweater_outcome_standalone INTERFACE "${_sweater_outcome_dir}" )
+        target_link_libraries( psi_sweater ${_sweater_scope} sweater_outcome_standalone )
+    else()
+        target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_OUTCOME_STANDALONE=0 )
+        if ( NOT TARGET Boost::boost )
+            message( FATAL_ERROR "PSI_SWEATER_WITH_OUTCOME=ON with PSI_SWEATER_OUTCOME_STANDALONE=OFF requires an existing Boost::boost target providing boost/outcome.hpp (a full Boost distribution, not the config_ex/assert/container/core/preprocessor aggregate this standalone build assembles)" )
+        endif()
+        # boost/outcome.hpp is already reachable through the Boost::boost link above.
+    endif()
 endif()
 
 # ── generic-impl backing dependencies ────────────────────────────────────────

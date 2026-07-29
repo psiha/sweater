@@ -50,6 +50,13 @@ sweater_add_test( sweater_futex_test futex_test.cpp )
 # smoke_test.cpp / sweat_shop_stress_test.cpp.
 sweater_add_test( sweater_future_test future_test.cpp )
 
+# Standalone psi::thrd_lite::outcome_promise/outcome_future pair
+# (outcome_future.hpp) -- only built when the Outcome dependency is opted
+# into (see sweater.cmake's PSI_SWEATER_WITH_OUTCOME block).
+if ( PSI_SWEATER_WITH_OUTCOME )
+    sweater_add_test( sweater_outcome_future_test outcome_future_test.cpp )
+endif()
+
 # Libuv backend tests — only when libuv headers + library are available.
 find_path( SWEATER_LIBUV_INCLUDE_DIR NAMES uv.h )
 find_library( SWEATER_LIBUV_LIBRARY NAMES uv libuv )
