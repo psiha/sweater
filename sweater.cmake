@@ -250,12 +250,26 @@ if ( WIN32 )
     target_link_libraries( psi_sweater ${_sweater_scope} Synchronization )
 endif()
 
-# Boost (header-only here: config_ex, assert, container, core, ...). Supplied by
-# the host project as the Boost::boost INTERFACE target; CPM-provided in the
-# standalone build. Linked here (rather than by the consumer) so the INTERFACE
-# vs PUBLIC scope stays correct for both library kinds.
+# Boost (header-only here: config_ex, assert, core, ...). Supplied by the host
+# project as the Boost::boost INTERFACE target; CPM-provided in the standalone
+# build. Linked here (rather than by the consumer) so the INTERFACE vs PUBLIC
+# scope stays correct for both library kinds.
 if ( TARGET Boost::boost )
     target_link_libraries( psi_sweater ${_sweater_scope} Boost::boost )
+endif()
+
+# psi::vm::fc_vector — fixed-capacity worker pool when
+# PSI_SWEATER_MAX_HARDWARE_CONCURRENCY > 0 (mobile). Desktop builds leave
+# MAX=0 and use std::span + heap allocation instead, so the header is not
+# pulled in there. Prefer an already-built psi_vm target; otherwise a sibling
+# submodule at ../vm (host layout: deps/psiha/vm).
+if ( TARGET psi_vm )
+    target_link_libraries( psi_sweater ${_sweater_scope} psi_vm )
+else()
+    set( _sweater_vm_sibling "${CMAKE_CURRENT_LIST_DIR}/../vm/include" )
+    if ( EXISTS "${_sweater_vm_sibling}/psi/vm/containers/fc_vector.hpp" )
+        target_include_directories( psi_sweater ${_sweater_scope} "${_sweater_vm_sibling}" )
+    endif()
 endif()
 
 # ── Outcome (optional, opt-in) ───────────────────────────────────────────────

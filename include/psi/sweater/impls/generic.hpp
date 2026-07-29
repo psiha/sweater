@@ -32,7 +32,7 @@
 #include <boost/core/no_exceptions_support.hpp>
 #include <boost/config_ex.hpp>
 #if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
-#include <boost/container/static_vector.hpp>
+#include <psi/vm/containers/fc_vector.hpp>
 #endif // PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
 #include <psi/functionoid/functionoid.hpp>
 
@@ -626,7 +626,7 @@ private:
 #   else
 #       define NUM_THREAD_CORRECTIONS PSI_SWEATER_USE_CALLER_THREAD
 #   endif
-    using pool_threads_t = container::static_vector<worker_thread, PSI_SWEATER_MAX_HARDWARE_CONCURRENCY - NUM_THREAD_CORRECTIONS>;
+    using pool_threads_t = psi::vm::fc_vector<worker_thread, PSI_SWEATER_MAX_HARDWARE_CONCURRENCY - NUM_THREAD_CORRECTIONS>;
 #   undef NUM_THREAD_CORRECTIONS
 #else
     using pool_threads_t = std::span<worker_thread>;
