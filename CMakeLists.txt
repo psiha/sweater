@@ -38,6 +38,11 @@ CPMAddPackage( "gh:boostorg/core#${boost_ver}"            )
 CPMAddPackage( "gh:boostorg/preprocessor#${boost_ver}"    )
 
 # Unofficial psiha Boost bits.
+# Fetched explicitly (not just left to functionoid's transitive pull) and
+# BEFORE functionoid below so PSI_COLD's include dir gets wired regardless
+# of functionoid's own dependency graph - CPM dedupes by package name on
+# first-request-wins, so whichever request comes first controls the source.
+CPMAddPackage( "gh:psiha/build#master" ) # PSI_COLD
 CPMAddPackage( "gh:psiha/config_ex#master"   ) # BOOST_ASSUME / BOOST_NOINLINE / ...
 CPMAddPackage( "gh:psiha/functionoid#07b54e0e162f079fb3904839711f6345db75e790" ) # generic-impl work_t backend (sweater.cmake picks up functionoid_SOURCE_DIR)
 

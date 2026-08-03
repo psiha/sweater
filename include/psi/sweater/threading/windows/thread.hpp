@@ -16,6 +16,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include <boost/assert.hpp>
+#include <psi/build/attributes.hpp>
 #include <windows.h>
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
@@ -78,7 +79,7 @@ public:
         DWORD_PTR value_ = 0;
     }; // class affinity_mask
 
-    [[gnu::cold]]
+    PSI_COLD
     auto bind_to_cpu( affinity_mask const mask ) noexcept
     {
         return ::SetThreadAffinityMask( get_handle(), mask.value_ ) != 0;

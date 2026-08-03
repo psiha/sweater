@@ -14,6 +14,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //------------------------------------------------------------------------------
 #include "generic.hpp"
+#include <psi/build/attributes.hpp>
 #include "../dispatch_tracking.hpp"
 //------------------------------------------------------------------------------
 #if PSI_SWEATER_EXACT_WORKER_SELECTION && defined( _WIN32 ) && !defined( _WIN64 )
@@ -336,7 +337,7 @@ bool shop::set_priority( thrd_lite::priority const new_priority ) noexcept
 #endif // !Emscripten
 }
 
-[[gnu::cold]]
+PSI_COLD
 bool shop::bind_worker
 (
     hardware_concurrency_t const worker_index,
@@ -393,7 +394,7 @@ bool shop::bind_worker_to_cpu( hardware_concurrency_t const worker_index, unsign
 #endif
 }
 
-[[gnu::cold]]
+PSI_COLD
 void shop::set_max_allowed_threads( hardware_concurrency_t const max_threads )
 {
     BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue."    );
@@ -412,7 +413,7 @@ hardware_concurrency_t shop::number_of_items() const noexcept
 }
 
 #if PSI_SWEATER_HMP
-[[gnu::cold]]
+PSI_COLD
 void shop::configure_hmp( hmp_clusters_info const config, std::uint8_t const number_of_clusters )
 {
     BOOST_ASSERT( number_of_clusters <= config.max_clusters );
@@ -456,7 +457,7 @@ void shop::configure_hmp( hmp_clusters_info const config, std::uint8_t const num
 }
 #endif // PSI_SWEATER_HMP
 
-[[gnu::cold]]
+PSI_COLD
 void shop::create_pool( hardware_concurrency_t const size )
 {
     BOOST_ASSERT_MSG( size <= thrd_lite::get_hardware_concurrency_max(), "Requested parallelism level not offered in hardware." );
@@ -487,7 +488,7 @@ void shop::create_pool( hardware_concurrency_t const size )
 }
 
 
-[[gnu::cold]]
+PSI_COLD
 void shop::stop_and_destroy_pool() noexcept
 {
     brexit_.store( true, std::memory_order_relaxed );

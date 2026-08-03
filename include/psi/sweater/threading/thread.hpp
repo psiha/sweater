@@ -16,6 +16,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include "condvar.hpp"
+#include <psi/build/attributes.hpp>
 #include "mutex.hpp"
 #ifdef _WIN32
 #include "windows/thread.hpp"
@@ -178,7 +179,7 @@ public:
     static auto hardware_concurrency() noexcept { return hardware_concurrency_max; }
 
 private:
-    [[gnu::cold]]
+    PSI_COLD
     void create( thread_procedure const start_routine, void * const arg )
     {
         BOOST_ASSERT_MSG( !joinable(), "A thread already created" );
