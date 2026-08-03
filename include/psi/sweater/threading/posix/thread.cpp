@@ -14,6 +14,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //------------------------------------------------------------------------------
 #include "thread.hpp"
+#include <psi/build/attributes.hpp>
 
 #ifdef __APPLE__
 #   include <mach/thread_act.h>
@@ -129,7 +130,7 @@ bool thread_impl::bind_to_cpu( [[ maybe_unused ]] affinity_mask const mask ) noe
 #endif
 }
 
-[[gnu::cold]]
+PSI_COLD
 bool thread_impl::bind_to_cpu( pid_t const thread_id, affinity_mask const mask ) noexcept
 {
 #ifdef __linux__

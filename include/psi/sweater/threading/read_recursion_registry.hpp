@@ -16,6 +16,7 @@
 #pragma once
 //------------------------------------------------------------------------------
 #include <boost/assert.hpp>
+#include <psi/build/attributes.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -142,7 +143,7 @@ private:
 // no storage) in release builds.
 // ---------------------------------------------------------------------------
 #ifndef NDEBUG
-[[ gnu::cold ]] inline void on_ro_acquire( void const * const m )
+PSI_COLD inline void on_ro_acquire( void const * const m )
 {
     BOOST_ASSERT_MSG
     (

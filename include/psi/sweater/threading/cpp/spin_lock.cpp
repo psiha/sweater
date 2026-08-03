@@ -14,6 +14,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //------------------------------------------------------------------------------
 #include "spin_lock.hpp"
+#include <psi/build/attributes.hpp>
 
 #include "../hardware_concurrency.hpp"
 
@@ -55,7 +56,7 @@ namespace detail
     template void underflow_checked_dec( std::atomic<std::uint32_t> &                ) noexcept;
 } // detail
 
-[[gnu::cold]]
+PSI_COLD
 void nop() noexcept // 'minimally-hot' spin nop
 {
     // TODO http://open-std.org/JTC1/SC22/WG21/docs/papers/2016/p0514r0.pdf

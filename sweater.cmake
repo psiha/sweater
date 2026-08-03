@@ -225,6 +225,9 @@ add_library( psi_sweater STATIC ${sweater_sources} )
 add_library( psi::sweater ALIAS psi_sweater )
 
 target_include_directories( psi_sweater ${_sweater_scope} "${CMAKE_CURRENT_LIST_DIR}/include" )
+if ( build_SOURCE_DIR )
+    target_include_directories( psi_sweater ${_sweater_scope} "${build_SOURCE_DIR}/include" ) # PSI_COLD
+endif()
 if ( PSI_SWEATER_LIBUV_INCLUDE_DIR )
     target_include_directories( psi_sweater PRIVATE "${PSI_SWEATER_LIBUV_INCLUDE_DIR}" )
 endif()
