@@ -88,3 +88,19 @@ if ( SWEATER_LIBUV_INCLUDE_DIR AND SWEATER_LIBUV_LIBRARY )
     target_include_directories( sweater_shop_bench PRIVATE "${SWEATER_LIBUV_INCLUDE_DIR}" )
     target_link_libraries     ( sweater_shop_bench PRIVATE "${SWEATER_LIBUV_LIBRARY}" )
 endif()
+
+# Module correctness smoke test (module.cmake, PSI_SWEATER_MODULE) — only built when the option
+# is on, so it adds nothing to the default (off) CI matrix.
+if ( PSI_SWEATER_MODULE AND TARGET psi_sweater_module )
+    add_executable( sweater_module_smoke_test EXCLUDE_FROM_ALL module_smoke_test.cpp )
+    # psi_sweater_module supplies the declarations (import psi.sweater;); psi::sweater supplies
+    # the real out-of-line definitions those declarations point at (the thread-pool worker loop,
+    # the futex/semaphore/barrier backends, ...).
+    target_link_libraries( sweater_module_smoke_test PRIVATE psi::sweater_module psi::sweater )
+    set_target_properties( sweater_module_smoke_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test"
+        CXX_SCAN_FOR_MODULES ON
+        DISABLE_PRECOMPILE_HEADERS ON
+    )
+    add_test( NAME sweater_module_smoke_test COMMAND sweater_module_smoke_test )
+endif()

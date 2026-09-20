@@ -73,6 +73,7 @@ endif()
 ###################
 
 include( ${CMAKE_CURRENT_LIST_DIR}/sweater.cmake )
+include( ${CMAKE_CURRENT_LIST_DIR}/module.cmake )
 
 
 ###################
