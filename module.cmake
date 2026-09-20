@@ -1,0 +1,141 @@
+# Optional C++20 named module support for psi::sweater (opt-in, off by default).
+#
+# Adds a target, `psi_sweater_module` (alias `psi::sweater_module`), exporting psi::sweater's
+# public headers as `import psi.sweater;` instead of textual `#include`. Purely additive: the
+# existing `psi_sweater` target, its sources, and every consumer vendoring these headers directly
+# are unaffected regardless of whether this option exists.
+#
+# Same shape as psiha/vm's and psiha/functionoid's own module.cmake (see psiha/vm PR
+# feat/module-support): the global module fragment carries the STL plus the macro-only psiha deps
+# these headers use (boost/assert.hpp, boost/config_ex.hpp) textually; the purview
+# (`export extern "C++"`) carries every real header via file(GLOB_RECURSE), filtered to the
+# platform this configure targets - mirroring sweater.cmake's own HEADER_FILE_ONLY exclusions for
+# its compiled sources, applied here to the header set the module purview flattens into one TU.
+#
+# Toolchain: clang-cl and the GNU-driver clang only; MSVC and GCC get a warning, not a hard error,
+# if the option is set there anyway.
+
+option( PSI_SWEATER_MODULE "Build psi.sweater as a C++20 named module (opt-in; requires clang-cl or clang)" OFF )
+
+if ( PSI_SWEATER_MODULE )
+    if ( NOT ( CMAKE_CXX_COMPILER_ID MATCHES Clang ) )
+        message( WARNING "PSI_SWEATER_MODULE requires clang-cl or clang; ignored on ${CMAKE_CXX_COMPILER_ID}." )
+    else()
+        if ( CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC" )
+            cmake_path( GET CMAKE_CXX_COMPILER PARENT_PATH _psi_sweater_llvm_bin )
+            find_program( PSI_SWEATER_CLANG_SCAN_DEPS clang-scan-deps HINTS "${_psi_sweater_llvm_bin}" REQUIRED )
+            string( CONCAT CMAKE_CXX_SCANDEP_SOURCE
+                "\"${PSI_SWEATER_CLANG_SCAN_DEPS}\" -format=p1689 -- <CMAKE_CXX_COMPILER> <DEFINES> <INCLUDES> <FLAGS>"
+                " /TP <SOURCE> /c /Fo<OBJECT> /clang:-MT /clang:<DYNDEP_FILE> /clang:-MD /clang:-MF /clang:<DEP_FILE>"
+                " > <DYNDEP_FILE>.tmp && \"${CMAKE_COMMAND}\" -E rename <DYNDEP_FILE>.tmp <DYNDEP_FILE>" )
+            set( CMAKE_CXX_MODULE_MAP_FORMAT clang )
+            set( CMAKE_CXX_MODULE_MAP_FLAG "@<MODULE_MAP_FILE>" )
+            set( CMAKE_CXX_COMPILE_BMI "<CMAKE_CXX_COMPILER> <DEFINES> <INCLUDES> <FLAGS> /clang:-o<OBJECT> /clang:--precompile /TP <SOURCE>" )
+        endif()
+
+        file( GLOB_RECURSE psi_sweater_module_headers RELATIVE "${CMAKE_CURRENT_LIST_DIR}/include" "${CMAKE_CURRENT_LIST_DIR}/include/*.hpp" )
+
+        # Mirror sweater.cmake's own platform split for its compiled sources (see the
+        # HEADER_FILE_ONLY properties above this file's include() point): only one OS's
+        # thread-primitive backend is ever meant to be visible in a given configure.
+        if ( WIN32 )
+            list( FILTER psi_sweater_module_headers EXCLUDE REGEX "threading/(posix|linux|apple|emscripten)/" )
+        elseif ( APPLE )
+            list( FILTER psi_sweater_module_headers EXCLUDE REGEX "threading/(windows|linux|emscripten)/" )
+        elseif ( ANDROID OR CMAKE_SYSTEM_NAME MATCHES "Linux" )
+            list( FILTER psi_sweater_module_headers EXCLUDE REGEX "threading/(windows|apple|emscripten)/" )
+        elseif ( EMSCRIPTEN )
+            list( FILTER psi_sweater_module_headers EXCLUDE REGEX "threading/(windows|posix|apple|linux)/" )
+        endif()
+
+        # impls/*.hpp are NOT platform-guarded by their own filename (apple.hpp unconditionally
+        # #includes <dispatch/dispatch.h> at file scope, for instance) - sweater.hpp already picks
+        # exactly one via its own textual `#if defined(__APPLE__)` / `defined(_WIN32)` / ... chain,
+        # the same way any ordinary (non-module) consumer gets exactly one. Globbing all of them
+        # into the purview would both fail to compile on every platform but one AND, if it somehow
+        # compiled, declare more than one backend's symbols in the same TU. Exclude the directory
+        # entirely and let sweater.hpp's own dispatch (already reached via the plain #include below)
+        # choose the right one, exactly as it already does outside of modules.
+        list( FILTER psi_sweater_module_headers EXCLUDE REGEX "impls/" )
+
+        # threading/outcome_future.hpp #errors outright unless PSI_SWEATER_HAS_OUTCOME is defined
+        # (set only when the OFF-by-default PSI_SWEATER_WITH_OUTCOME is turned on) - the same
+        # optional-dependency shape as psiha/vm's jemalloc/tcmalloc/mimalloc allocator adapters.
+        # A consumer building with Outcome enabled still includes it directly after importing
+        # psi.sweater, same as today.
+        if ( NOT PSI_SWEATER_WITH_OUTCOME )
+            list( FILTER psi_sweater_module_headers EXCLUDE REGEX "threading/outcome_future\\.hpp$" )
+        endif()
+
+        set( _psi_sweater_module_purview "${CMAKE_CURRENT_BINARY_DIR}/psi_sweater_module_purview.hpp" )
+        set( _psi_sweater_module_content "// Generated by module.cmake - every psi::sweater public header, cumulative.\n" )
+        foreach( h ${psi_sweater_module_headers} )
+            string( APPEND _psi_sweater_module_content "#include <${h}>\n" )
+        endforeach()
+        file( WRITE "${_psi_sweater_module_purview}" "${_psi_sweater_module_content}" )
+
+        set( _psi_sweater_module_unit "${CMAKE_CURRENT_BINARY_DIR}/psi_sweater_module.cppm" )
+        file( WRITE "${_psi_sweater_module_unit}" "\
+module;
+#if defined( __x86_64__ ) || defined( _M_X64 )
+#include <immintrin.h>
+#endif
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#undef ERROR
+#endif
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <bit>
+#include <cassert>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <span>
+#include <thread>
+#include <type_traits>
+#include <tuple>
+#include <utility>
+#include <boost/assert.hpp>
+#include <boost/config_ex.hpp>
+export module psi.sweater;
+export extern \"C++\"
+{
+#include \"${_psi_sweater_module_purview}\"
+}
+" )
+
+        add_library( psi_sweater_module STATIC )
+        add_library( psi::sweater_module ALIAS psi_sweater_module )
+        target_compile_features( psi_sweater_module PUBLIC cxx_std_23 )
+        target_sources( psi_sweater_module PUBLIC FILE_SET CXX_MODULES BASE_DIRS "${CMAKE_CURRENT_BINARY_DIR}" FILES "${_psi_sweater_module_unit}" )
+        # Declarations only; a consumer wanting the real out-of-line definitions (the thread-pool
+        # worker loop, the futex/semaphore/barrier backends, ...) links psi::sweater alongside
+        # psi::sweater_module explicitly, same split as psiha/vm's own module (see its
+        # feat/module-support module.cmake for why this isn't a plain PUBLIC link to psi_sweater).
+        target_include_directories( psi_sweater_module PUBLIC
+            "${CMAKE_CURRENT_LIST_DIR}/include"
+            "${build_SOURCE_DIR}/include"
+        )
+        if ( TARGET Boost::boost )
+            target_link_libraries( psi_sweater_module PUBLIC Boost::boost )
+        endif()
+        if ( TARGET Psi::Functionoid )
+            target_link_libraries( psi_sweater_module PUBLIC Psi::Functionoid )
+        endif()
+        if ( TARGET concurrentqueue )
+            target_include_directories( psi_sweater_module PUBLIC "${CMAKE_BINARY_DIR}/_deps/cq" )
+        endif()
+        target_compile_options( psi_sweater_module PRIVATE
+            $<$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>:/clang:-std=gnu++2c /clang:-Wno-include-angled-in-module-purview /clang:-Wno-reserved-module-identifier>
+            $<$<NOT:$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>>:-Wno-include-angled-in-module-purview -Wno-reserved-module-identifier>
+        )
+    endif()
+endif()
