@@ -30,6 +30,34 @@ sweater_add_test( sweater_shop_stress_test  sweat_shop_stress_test.cpp )
 # comment). mutex_test_traits.hpp is a header-only test helper, not a target.
 sweater_add_test( sweater_rw_mutex_contract_test rw_mutex_contract_test.cpp )
 
+# Futex-traffic bounds of the futex_rw_mutex family (a wake per writer sleep, never per
+# reader release). futex_rw_mutex.cpp and the platform futex backend are compiled
+# straight into this executable with the call-counting hook enabled -- the
+# library itself is deliberately not linked, so the hook never reaches it.
+if ( WIN32 )
+    set( sweater_counted_futex_backend ../include/psi/sweater/threading/windows/futex.cpp )
+elseif ( APPLE )
+    set( sweater_counted_futex_backend ../include/psi/sweater/threading/apple/futex.cpp )
+else()
+    set( sweater_counted_futex_backend ../include/psi/sweater/threading/linux/futex.cpp )
+endif()
+add_executable( sweater_futex_rw_mutex_wake_count_test
+    futex_rw_mutex_wake_count_test.cpp
+    ../include/psi/sweater/threading/futex_rw_mutex.cpp
+    ${sweater_counted_futex_backend}
+)
+target_compile_definitions( sweater_futex_rw_mutex_wake_count_test PRIVATE PSI_THRD_LITE_FUTEX_RW_MUTEX_COUNTERS )
+target_include_directories( sweater_futex_rw_mutex_wake_count_test PRIVATE ../include )
+if ( build_SOURCE_DIR ) # psi/build/attributes.hpp (the library target gets this through sweater.cmake)
+    target_include_directories( sweater_futex_rw_mutex_wake_count_test PRIVATE "${build_SOURCE_DIR}/include" )
+endif()
+target_link_libraries( sweater_futex_rw_mutex_wake_count_test PRIVATE GTest::gtest_main Boost::boost )
+if ( WIN32 )
+    target_link_libraries( sweater_futex_rw_mutex_wake_count_test PRIVATE Synchronization )
+endif()
+set_target_properties( sweater_futex_rw_mutex_wake_count_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
+add_test( NAME sweater_futex_rw_mutex_wake_count_test COMMAND sweater_futex_rw_mutex_wake_count_test )
+
 # Type-identity checks only (see rw_preference_test.cpp's header comment); compiles to
 # zero tests where reader_preferring_rw_mutex is not the glibc NP-rwlock-kind mechanism
 # (Windows SRWLOCK, macOS pthread_rwlock -- neither offers a kind-setting API), see
