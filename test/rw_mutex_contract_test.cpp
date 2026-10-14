@@ -562,6 +562,72 @@ TYPED_TEST( FutexOnlyContract, StressMutualExclusionAndProgress )
     EXPECT_FALSE( m.is_locked() );
 }
 
+// Sustained read churn (readers re-acquire back to back, so the reader count keeps
+// passing through zero) must neither starve a writer nor break exclusion: the
+// writer needs a fixed number of acquisitions within a bounded time.
+TYPED_TEST( FutexOnlyContract, WriterProgressesUnderReaderChurn )
+{
+    TypeParam m;
+    std::atomic<bool> stop            { false };
+    std::atomic<bool> violation       { false };
+    std::atomic<bool> writer_active   { false };
+    std::atomic<int>  active_readers  { 0 };
+    std::atomic<int>  reader_rounds   { 0 };
+
+    static constexpr int reader_threads = 6;
+    static constexpr int writes_wanted  = 50;
+
+    std::vector<std::thread> readers;
+    readers.reserve( reader_threads );
+    for ( int t{ 0 }; t < reader_threads; ++t )
+    {
+        readers.emplace_back( [&]
+        {
+            while ( !stop.load( std::memory_order_relaxed ) )
+            {
+                m.acquire_ro();
+                if ( writer_active.load( std::memory_order_acquire ) )
+                {
+                    violation = true;
+                }
+                active_readers.fetch_add( 1, std::memory_order_acq_rel );
+                active_readers.fetch_sub( 1, std::memory_order_acq_rel );
+                m.release_ro();
+                reader_rounds.fetch_add( 1, std::memory_order_relaxed );
+                std::this_thread::yield();
+            }
+        } );
+    }
+
+    while ( reader_rounds.load( std::memory_order_relaxed ) < 1000 ) // let the churn get going first
+    {
+        std::this_thread::yield();
+    }
+    auto const deadline{ std::chrono::steady_clock::now() + std::chrono::seconds{ 60 } };
+    int writes{ 0 };
+    while ( writes != writes_wanted && std::chrono::steady_clock::now() < deadline )
+    {
+        m.acquire_rw();
+        writer_active.store( true, std::memory_order_release );
+        if ( active_readers.load( std::memory_order_acquire ) != 0 )
+        {
+            violation = true;
+        }
+        writer_active.store( false, std::memory_order_release );
+        m.release_rw();
+        ++writes;
+    }
+    stop = true;
+    for ( auto & reader : readers )
+    {
+        reader.join();
+    }
+
+    EXPECT_FALSE( violation.load() );
+    EXPECT_EQ( writes, writes_wanted ) << "the writer starved behind the reader churn";
+    EXPECT_FALSE( m.is_locked() );
+}
+
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
 //------------------------------------------------------------------------------

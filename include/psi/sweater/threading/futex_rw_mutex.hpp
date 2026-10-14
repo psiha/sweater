@@ -21,6 +21,7 @@
 #include <boost/assert.hpp>
 
 #include <climits>
+#include <cstdint>
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {
@@ -69,14 +70,17 @@ namespace psi::thrd_lite
 // bits):
 //
 //   bit  (W-1)      : writer_locked_bit  -- a writer currently holds the lock
-//   bit  (W-2)      : writer_waiting_bit -- at least one writer is waiting; new
+//   bit  (W-2)      : writer_waiting_bit -- at least one writer wants the lock; new
 //                      readers must not admit (this is what makes the lock
-//                      writer-preferring, mirroring rw_mutex's pthread NP kind)
-//   bits 0..(W-3)   : reader_count       -- readers currently holding the lock
+//                      writer-preferring, mirroring rw_mutex's pthread NP kind).
+//                      Admission policy only: it plays no part in wake decisions.
+//   bit  (W-3)      : reader_parked_bit  -- a reader announced it is about to sleep
+//   bit  (W-4)      : writer_parked_bit  -- a writer announced it is about to sleep
+//   bits 0..(W-5)   : reader_count       -- readers currently holding the lock
 //
 // Free state is exactly 0. Writer-held state has writer_locked_bit set and
 // reader_count == 0 (mutually exclusive by construction: acquire_rw only
-// transitions 0 -> writer_locked_bit).
+// transitions to writer_locked_bit from a state with reader_count == 0).
 //
 // ---------------------------------------------------------------------------
 // Algorithm (writer-preferring, non-recursive -- same contract as rw_mutex)
@@ -86,22 +90,41 @@ namespace psi::thrd_lite
 //   then retry from scratch. FUTEX_WAIT /
 //   WaitOnAddress atomically re-checks the value before parking, so a state change
 //   between our load and the wait call is never a missed wakeup.
-// release_ro: fetch_sub(1); if that was the last reader AND a writer is waiting,
-//   wake_one() (only a parked writer can be waiting at that point -- a reader
-//   cannot be parked while another reader holds the lock and no writer is queued,
-//   since acquire_ro's fast CAS path would have admitted it immediately).
-// acquire_rw: if state == 0, CAS 0 -> writer_locked_bit and return. Otherwise
-//   ensure writer_waiting_bit is set (best-effort CAS; failure just means someone
-//   else set it or the state changed, either way retry) and park. Multiple queued
-//   writers all share the one writer_waiting_bit and are woken together on
-//   release (thundering-herd on multi-writer contention is a known, documented
-//   simplification -- see "Known limitations" below).
+// release_ro: fetch_sub(1); if that was the last reader AND writer_parked_bit is
+//   set, fetch_and(~writer_parked_bit) and wake_all() only if THIS call was the one
+//   that cleared the bit. At most one wake per writer sleep announcement, and no
+//   syscall at all while no writer is about to sleep -- however often the reader
+//   count passes through zero (it does so constantly under reader preference).
+// acquire_rw: if reader_count == 0 and the lock is not held, CAS to
+//   writer_locked_bit and return. Otherwise set writer_waiting_bit (from the first
+//   failed attempt on, so writer preference starts immediately), re-read the word for
+//   a bounded number of spins (readers under churn pass through zero for an instant;
+//   a writer that sleeps through each such instant costs a wait/wake pair every time
+//   round), then announce (CAS-set writer_parked_bit onto the observed word; a lost
+//   CAS means the word changed, retry) and park on the announced value. Multiple
+//   queued writers share the bits and are all woken together (thundering-herd on
+//   multi-writer contention is a known, documented simplification -- see "Known
+//   limitations" below).
 // release_rw: exchange(0); wake_all() only when the exchanged-out state carries a
-//   parked-announcement bit (writer_waiting_bit or reader_parked_bit -- every
+//   parked-announcement bit (reader_parked_bit or writer_parked_bit -- every
 //   parker sets its category's bit before parking, so an uncontended release
 //   skips the wake syscall entirely: the same no-waiter fast path
-//   pthread_cond_signal has). The announce bits are cleared only here; a writer
-//   taking the lock preserves them (others may still be parked on them).
+//   pthread_cond_signal has). A writer taking the lock preserves the announce
+//   bits (others may still be parked on them); they are cleared by release_rw or,
+//   for writer_parked_bit, by the release_ro that wakes the writers.
+//
+// No lost wakeup: a parker sleeps only in wait_if_equal( v ) with its announce bit
+// in v, and the futex re-checks the word against v atomically with going to sleep.
+// The bit leaves the word only through a clearing read-modify-write
+// (release_ro's fetch_and, release_rw's exchange), and the clearer wakes everyone
+// listening if it saw the bit set. So either the clear precedes the sleep (the
+// re-check fails, the parker re-evaluates) or it follows it (the clearer's wake
+// finds the parker). Only one clearer sees a given bit set, hence at most one wake
+// per announcement. The last reader's fetch_sub reads every announcement CASed in
+// before it; a later announcement CASes against a reader_count that fetch_sub
+// already changed and fails (or, after another reader entered, is released by that
+// reader). A woken writer that finds the lock still unavailable simply announces
+// again.
 //
 // ---------------------------------------------------------------------------
 // Wake targeting via futex bitsets (Linux only, transparently ignored elsewhere)
@@ -117,7 +140,8 @@ namespace psi::thrd_lite
 // writer_locked_bit cannot be set (mutual exclusion with active readers), so any
 // reader parked at that exact moment can only be one that arrived AFTER
 // writer_waiting_bit was set (queued behind the same writer this wake is FOR) --
-// waking it too would be pure waste, never a missed wakeup. release_rw still wakes
+// waking it too would be pure waste, never a missed wakeup. (Where the bitset is
+// ignored every parked thread is woken instead: once per writer sleep, bounded.) release_rw still wakes
 // EITHER category (either_wait_bits): after an exclusive release, both a queued
 // writer and a fresh reader parked behind writer_locked_bit alone are eligible.
 //
@@ -136,9 +160,12 @@ namespace psi::thrd_lite
 //   (matches futex semantics in general, not a regression vs the OS rwlocks this
 //   is compared against -- neither pthread_rwlock nor SRWLOCK document strict
 //   FIFO writer ordering either).
-// - reader_count width is (W-3) bits: 29 bits (Linux/generic uint32_t) or 13 bits
+// - reader_count width is (W-4) bits: 28 bits (Linux/generic uint32_t) or 12 bits
 //   (Windows uint16_t) -- effectively unbounded for any realistic thread count,
 //   asserted in debug builds (see acquire_ro).
+// - A word that keeps changing (readers entering/leaving) makes a parking writer's
+//   futex re-check fail, so the writer loops through wait_if_equal: syscalls issued
+//   by the writer itself, never by the readers (their wake condition is above).
 // ---------------------------------------------------------------------------
 
 class futex_rw_mutex
@@ -216,14 +243,21 @@ protected:
 
     bool try_acquire_ro_core( state_t reader_blocking_bits ) noexcept;
 
+    // The read-release step shared by both admission policies (they differ only in
+    // the read-recursion bookkeeping around it): drops one read hold and wakes the
+    // announced writers if that was the last one.
+    void release_ro_core() noexcept;
+
 protected: // exposed for reader_preferring_futex_rw_mutex below, which reimplements the
            // read side against this same state word/bit layout
     static constexpr unsigned  state_bits          = sizeof( state_t ) * CHAR_BIT;
     static constexpr state_t   writer_locked_bit    = state_t( state_t{ 1 } << ( state_bits - 1 ) );
     static constexpr state_t   writer_waiting_bit   = state_t( state_t{ 1 } << ( state_bits - 2 ) );
-    static constexpr state_t   reader_parked_bit    = state_t( state_t{ 1 } << ( state_bits - 3 ) ); // a reader parked behind writer_locked_bit announced itself (enables release_rw's no-waiter fast path)
-    static constexpr state_t   parked_bits          = state_t( writer_waiting_bit | reader_parked_bit );
-    static constexpr state_t   reader_mask          = state_t( reader_parked_bit - 1 );
+    static constexpr state_t   reader_parked_bit    = state_t( state_t{ 1 } << ( state_bits - 3 ) ); // a reader blocked behind a writer announced itself (enables the no-waiter fast paths)
+    static constexpr state_t   writer_parked_bit    = state_t( state_t{ 1 } << ( state_bits - 4 ) ); // a writer blocked behind readers/a writer announced itself (see release_ro_core)
+    static constexpr state_t   parked_bits          = state_t( reader_parked_bit | writer_parked_bit );
+    static constexpr state_t   reader_mask          = state_t( writer_parked_bit - 1 );
+    static_assert( reader_mask >= 0xF, "the futex word is too narrow for the four flag bits plus a usable reader_count" ); // 28 bits with a 32-bit word, 12 with the 16-bit Windows one
 
     // futex::wait_if_equal/wake_all bitset categories (see the design-doc comment
     // above) -- these live in the syscall's separate bitset argument, not the state
@@ -235,6 +269,19 @@ protected: // exposed for reader_preferring_futex_rw_mutex below, which reimplem
 
     futex state_ = { 0 };
 }; // class futex_rw_mutex
+
+#ifdef PSI_THRD_LITE_FUTEX_RW_MUTEX_COUNTERS
+// Test-only observation hook, compiled in only where futex_rw_mutex.cpp is built with
+// this macro (the library proper never is): counts the lock's own futex traffic.
+struct futex_rw_mutex_counters
+{
+    std::atomic<std::uint64_t> writer_announces; // writer_parked_bit CAS-set by acquire_rw
+    std::atomic<std::uint64_t> writer_waits    ; // wait_if_equal calls issued by acquire_rw
+    std::atomic<std::uint64_t> release_ro_wakes; // wake_all calls issued by release_ro
+    std::atomic<std::uint64_t> release_rw_wakes; // wake_all calls issued by release_rw
+};
+extern futex_rw_mutex_counters futex_rw_mutex_call_counters;
+#endif
 
 // writer_preferring_futex_rw_mutex: futex_rw_mutex's default (and only, until the
 // subclass below) algorithm already IS writer-preferring -- this alias exists purely so
