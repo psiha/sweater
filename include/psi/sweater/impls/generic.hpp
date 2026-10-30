@@ -464,7 +464,7 @@ private:
 #       if PSI_SWEATER_EXACT_WORKER_SELECTION
             if ( !thrd_lite::slow_thread_signals )
             {
-                enqueue_succeeded = this->next_dispatch_target().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+                enqueue_succeeded = this->enqueue_fire( self_destructed_work{ std::forward<Args>( args )... } );
             }
             else
 #       endif
@@ -516,7 +516,7 @@ private:
 #       if PSI_SWEATER_EXACT_WORKER_SELECTION
             if ( !thrd_lite::slow_thread_signals )
             {
-                enqueue_succeeded = this->next_dispatch_target().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+                enqueue_succeeded = this->enqueue_fire( self_destructed_work{ std::forward<Args>( args )... } );
             }
             else
 #       endif
@@ -567,6 +567,11 @@ private:
         // producer token operation a coherence miss against the worker's spin
         // (measured on the fire path's flat profile).
         alignas( thrd_lite::destructive_interference_size ) thrd_lite::semaphore event_;
+        // Set while the worker runs an item (so, unlike event_'s tokens, also
+        // while it runs one it was woken for): queuing behind it then leaves
+        // the item waiting for however long that one takes. Shares event_'s
+        // line - dispatch reads both together.
+        std::atomic<bool> executing_{ false };
         alignas( thrd_lite::destructive_interference_size ) thrd_lite::spin_lock token_mutex_; // producer tokens are not thread safe (support concurrent spread_the_sweat calls)
         std::optional<my_queue::producer_token_t>                                token_;
 #   ifdef __linux__
@@ -580,9 +585,15 @@ private:
     // worker nobody signals never reaches it. Always targeting the first worker
     // therefore runs every dispatched item on that one thread with the rest of
     // the pool asleep - i.e. no concurrency at all on the fire-and-forget
-    // dispatch path. spread_the_sweat is unaffected: it targets workers
-    // explicitly and wakes each one it uses.
+    // dispatch path. For the same reason an item must never be left queued
+    // only behind a worker that is busy running something else while other
+    // workers sleep: enqueue_on() and the worker loop move it on to an idle
+    // worker then (move_queued_work_off()). spread_the_sweat is unaffected:
+    // it targets workers explicitly and wakes each one it uses.
     worker_thread & next_dispatch_target() noexcept;
+    bool            enqueue_fire        ( work_t && ) noexcept;
+    bool            enqueue_on          ( worker_thread &, work_t && ) noexcept;
+    void            move_queued_work_off( worker_thread & busy ) noexcept;
 
 #if defined( __ANDROID__ )
     // Partial fix attempt for slow thread synchronization on older Android
