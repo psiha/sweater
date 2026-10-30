@@ -78,6 +78,18 @@ public:
     // never use for correctness decisions.
     std::int32_t pending() const noexcept { return static_cast<std::int32_t>( value_.load( std::memory_order_relaxed ) ); }
 
+    // Takes a signaled token if one is available, never blocks.
+    bool try_wait() noexcept
+    {
+        auto value{ value_.load( std::memory_order_relaxed ) };
+        while ( value > 0 )
+        {
+            if ( value_.compare_exchange_weak( value, value - 1, std::memory_order_acquire, std::memory_order_relaxed ) )
+                return true;
+        }
+        return false;
+    }
+
 #if !PSI_SWEATER_CONDVAR_SEMAPHORE // futex impl //////////////////////////////
 
 private:

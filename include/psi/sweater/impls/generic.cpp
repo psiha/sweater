@@ -175,6 +175,38 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
 
             work_t work;
 
+            auto const run
+            {
+                [ & ]() noexcept
+                {
+#               if PSI_SWEATER_EXACT_WORKER_SELECTION
+                    // Work queued on this worker since it last looked now
+                    // waits behind the item about to run - possibly for long
+                    // - so it is moved on to an idle worker. The
+                    // store -> fence -> token check half of the pairing with
+                    // enqueue_on()'s signal -> fence -> executing_ load:
+                    // either the enqueuer sees this worker busy or this sees
+                    // its token (a token for work that was stolen meanwhile
+                    // just finds nothing to move).
+                    auto & self{ parent.pool_[ worker_index ] };
+                    if ( !thrd_lite::slow_thread_signals )
+                    {
+                        self.executing_.store( true, std::memory_order_relaxed );
+                        std::atomic_thread_fence( std::memory_order_seq_cst );
+                        if ( work_event.try_wait() ) [[ unlikely ]]
+                            parent.move_queued_work_off( self );
+                    }
+#               endif // EWS
+                    events::worker_work_begin( worker_index );
+                    work();
+                    parent.work_completed();
+                    events::worker_work_end  ( worker_index );
+#               if PSI_SWEATER_EXACT_WORKER_SELECTION
+                    self.executing_.store( false, std::memory_order_relaxed );
+#               endif // EWS
+                }
+            };
+
             // One-shot per-worker init hook (weak no-op unless a consumer
             // overrides it — e.g. rama installs mimalloc's mi_thread_init).
             events::worker_thread_init( worker_index );
@@ -188,19 +220,13 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
                     PSI_LIKELY( queue.dequeue_from_producer( work, *producer_token ) )
                 ) [[ likely ]]
                 {
-                    events::worker_work_begin( worker_index );
-                    work();
-                    parent.work_completed();
-                    events::worker_work_end  ( worker_index );
+                    run();
                 }
 #           endif // EWS
                 // Work stealing for EWS
                 while ( queue.dequeue( work, consumer_token ) ) [[ likely ]]
                 {
-                    events::worker_work_begin( worker_index );
-                    work();
-                    parent.work_completed();
-                    events::worker_work_end  ( worker_index );
+                    run();
                 }
 
                 if ( PSI_UNLIKELY( exit.load( std::memory_order_relaxed ) ) )
@@ -1028,15 +1054,84 @@ shop::worker_thread & shop::next_dispatch_target() noexcept
     // where it matters (items long enough to overlap) and traded for syscall
     // elision only where it does not (items shorter than the dispatch cost).
     // The stealing dequeue path remains the backstop for any imbalance.
+    // The token count says nothing about the item the worker is running (it
+    // consumed that token when it woke up), so a worker busy with a long item
+    // shows no backlog: executing_ covers that - an item queued behind it
+    // would wait for that item to finish while the rest of the pool sleeps
+    // (the sleeping workers would only steal it once signalled).
     constexpr std::int32_t sticky_dispatch_depth{ 2 };
-    auto rotor { dispatch_rotor_.load( std::memory_order_relaxed ) };
-    auto target{ &pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ] };
-    if ( target->event_.pending() > sticky_dispatch_depth )
+    auto const takes_work
     {
-        rotor  = dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) + 1;
-        target = &pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ];
+        []( worker_thread const & worker ) noexcept
+        {
+            return
+                !worker.executing_.load( std::memory_order_relaxed ) &&
+                ( worker.event_.pending() <= sticky_dispatch_depth );
+        }
+    };
+    auto const rotor { dispatch_rotor_.load( std::memory_order_relaxed ) };
+    auto &     target{ pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ] };
+    if ( takes_work( target ) ) [[ likely ]]
+        return target;
+    for ( hardware_concurrency_t step{ 1 }; step < workers; ++step )
+    {
+        auto & candidate{ pool_[ static_cast<hardware_concurrency_t>( ( rotor + step ) % workers ) ] };
+        if ( takes_work( candidate ) )
+        {
+            dispatch_rotor_.store( rotor + step, std::memory_order_relaxed );
+            return candidate;
+        }
     }
-    return *target;
+    // Everyone is busy or backlogged: spread the backlog round-robin.
+    auto const next{ dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) + 1 };
+    return pool_[ static_cast<hardware_concurrency_t>( next % workers ) ];
+}
+
+bool shop::enqueue_fire( work_t && work ) noexcept
+{
+    return enqueue_on( next_dispatch_target(), std::move( work ) );
+}
+
+// The target may have started running an item since it was picked, leaving
+// the work queued behind it: the signal -> fence -> executing_ load half of the
+// pairing with the worker loop's executing_ store -> fence -> token check.
+bool shop::enqueue_on( worker_thread & target, work_t && work ) noexcept
+{
+    auto const enqueued{ target.enqueue( std::move( work ), queue_ ) };
+    std::atomic_thread_fence( std::memory_order_seq_cst );
+    if ( target.executing_.load( std::memory_order_relaxed ) ) [[ unlikely ]]
+        move_queued_work_off( target );
+    return enqueued;
+}
+
+// Moves an item queued on a busy worker to one that is not running anything.
+// Should that one start running an item meanwhile (seen through the same
+// signal -> fence -> executing_ pairing, unless it saw the token itself and
+// moves the item on) the search continues from there. With every worker busy
+// the item stays where it is: whoever finishes first picks it up.
+void shop::move_queued_work_off( worker_thread & busy ) noexcept
+{
+    auto const workers{ number_of_worker_threads() };
+    auto const first  { static_cast<hardware_concurrency_t>( &busy - &pool_[ 0 ] ) };
+    auto *     source { &busy };
+    work_t     work;
+    for ( hardware_concurrency_t step{ 1 }; step < workers; ++step )
+    {
+        auto & candidate{ pool_[ static_cast<hardware_concurrency_t>( ( first + step ) % workers ) ] };
+        if ( candidate.executing_.load( std::memory_order_relaxed ) )
+            continue;
+        if ( !queue_.dequeue_from_producer( work, *source->token_ ) )
+            return; // already picked up
+        if ( !candidate.enqueue( std::move( work ), queue_ ) ) [[ unlikely ]]
+        {   // back into the slot it was just taken from
+            BOOST_VERIFY( source->enqueue( std::move( work ), queue_ ) );
+            return;
+        }
+        std::atomic_thread_fence( std::memory_order_seq_cst );
+        if ( !candidate.executing_.load( std::memory_order_relaxed ) )
+            return;
+        source = &candidate;
+    }
 }
 
 void shop::worker_thread::notify() noexcept { event_.signal(); }
