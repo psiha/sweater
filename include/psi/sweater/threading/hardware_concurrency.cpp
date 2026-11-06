@@ -23,8 +23,16 @@
 #   include <emscripten/threading.h>
 #endif // __EMSCRIPTEN_PTHREADS__
 #ifdef __linux__
+#   include <sched.h>
 #   include <sys/sysinfo.h>
+
+#   include <cerrno>
+#   include <cstdlib>
 #endif // __linux__
+
+#ifdef _WIN32
+#   include <windows.h>
+#endif // _WIN32
 
 #if PSI_SWEATER_DOCKER_LIMITS
 #   include <boost/assert.hpp>
@@ -45,6 +53,8 @@
 #   pragma detect_mismatch( "PSI_SWEATER_MAX_HARDWARE_CONCURRENCY", BOOST_PP_STRINGIZE( PSI_SWEATER_MAX_HARDWARE_CONCURRENCY ) )
 #endif // _MSC_VER
 
+#include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <thread>
 //------------------------------------------------------------------------------
@@ -57,6 +67,79 @@ __attribute__(( weak )) int get_nprocs_conf() noexcept { return static_cast< int
 namespace psi::thrd_lite
 {
 //------------------------------------------------------------------------------
+
+#if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY != 1
+
+namespace
+{
+    // The number of CPUs this process is allowed to run on (its affinity mask /
+    // cpuset), or 0 when that cannot be determined or is not restricted in a way
+    // that can be expressed as a count (e.g. a Windows process spanning several
+    // processor groups). A pool sized from the machine CPU count instead of this
+    // number oversubscribes the CPUs it can actually use, e.g. under taskset.
+    unsigned affinity_cpu_count() noexcept
+    {
+#   if defined( __linux__ )
+        // The mask size is not known up front: grow until the kernel accepts it.
+        for ( auto cpus{ std::size_t( 1024 ) }; cpus <= std::size_t( 1 << 20 ); cpus *= 2 )
+        {
+            auto const set{ CPU_ALLOC( cpus ) };
+            auto const bytes{ CPU_ALLOC_SIZE( cpus ) };
+            if ( !set )
+                return 0;
+            auto const result{ ::sched_getaffinity( 0, bytes, set ) };
+            auto const count{ ( result == 0 ) ? static_cast<unsigned>( CPU_COUNT_S( bytes, set ) ) : 0U };
+            CPU_FREE( set );
+            if ( result == 0 )
+                return count;
+            if ( errno != EINVAL )
+                return 0;
+        }
+        return 0;
+#   elif defined( _WIN32 )
+        USHORT groups[ 2 ];
+        USHORT group_count{ 2 };
+        if
+        (
+            !::GetProcessGroupAffinity( ::GetCurrentProcess(), &group_count, groups ) ||
+            ( group_count != 1 )
+        )
+            return 0;
+        DWORD_PTR process_mask;
+        DWORD_PTR system_mask;
+        if ( !::GetProcessAffinityMask( ::GetCurrentProcess(), &process_mask, &system_mask ) )
+            return 0;
+        return static_cast<unsigned>( std::popcount( static_cast<std::uintptr_t>( process_mask ) ) );
+#   else
+        return 0;
+#   endif
+    }
+
+    // The CPUs of the machine (configured, not just the ones currently online).
+    unsigned machine_cpu_count() noexcept
+    {
+        return static_cast<unsigned>
+        (
+#   if defined( __EMSCRIPTEN_PTHREADS__ )
+            emscripten_has_threading_support() ? emscripten_num_logical_cores() : 1
+#   elif defined( __linux__ )
+            // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
+            get_nprocs_conf()
+#   else
+            std::thread::hardware_concurrency()
+#   endif
+        );
+    }
+
+    // Applies the affinity restriction (if any) to a CPU count; never below 1.
+    unsigned restrict_to_affinity( unsigned const cpus ) noexcept
+    {
+        auto const affinity{ affinity_cpu_count() };
+        return std::max( ( affinity != 0 ) ? std::min( cpus, affinity ) : cpus, 1U );
+    }
+} // anonymous namespace
+
+#endif // PSI_SWEATER_MAX_HARDWARE_CONCURRENCY != 1
 
 #if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY == 1
 
@@ -105,8 +188,17 @@ namespace
         return std::max( static_cast<int>( ( quota + period / 2 ) / period ), 1 );
     }
 
-    // cgroup v2: "$MAX $PERIOD" in <dir>/cpu.max, where MAX is the quota in
+    // cgroup v2 cpu.max contents: "$MAX $PERIOD", where MAX is the quota in
     // microseconds or the literal "max" for an unconstrained cgroup.
+    int cpus_from_cpu_max( char const * const value_pair ) noexcept
+    {
+        char * period_ptr;
+        auto const quota{ std::strtol( value_pair, &period_ptr, 10 ) };
+        if ( period_ptr == value_pair ) // "max"
+            return -1;
+        return cpus_from_quota( quota, std::strtol( period_ptr, nullptr, 10 ) );
+    }
+
     int read_quota_v2( char const * const dir ) noexcept
     {
         char path[ path_size ];
@@ -114,11 +206,7 @@ namespace
         char value_pair[ 128 ];
         if ( !read_text( path, value_pair, sizeof( value_pair ) ) )
             return -1;
-        char * period_ptr;
-        auto const quota{ std::strtol( value_pair, &period_ptr, 10 ) };
-        if ( period_ptr == value_pair ) // "max"
-            return -1;
-        return cpus_from_quota( quota, std::strtol( period_ptr, nullptr, 10 ) );
+        return cpus_from_cpu_max( value_pair );
     }
 
     // cgroup v1: the quota/period pair as separate files.
@@ -248,44 +336,61 @@ namespace
     } const docker_quota __attribute__(( init_priority( 101 ) ));
 } // anonymous namespace
 
+// Computed once, on first use (the pool is sized from it, so it must not change
+// under a running process): the CPU count of the machine, restricted to the CPUs
+// this process may run on (affinity mask / cpuset) and to the CPU quota of its
+// cgroup, never below 1.
 hardware_concurrency_t get_hardware_concurrency_max() noexcept
 {
-    // Obey docker limits even when someone attempts to create a pool with
-    // more threads than allowed by the Docker container but return the number
-    // of all CPUs when there is no Docker CPU quota in place.
-    return static_cast<hardware_concurrency_t>( ( docker_quota != -1 ) ? docker_quota : get_nprocs_conf() );
+    static auto const value
+    {
+        []() noexcept
+        {
+            // Obey docker limits even when someone attempts to create a pool with
+            // more threads than allowed by the Docker container but use the number
+            // of all CPUs when there is no Docker CPU quota in place.
+            auto const machine{ machine_cpu_count() };
+            auto const limited{ ( docker_quota != -1 ) ? std::min( machine, static_cast<unsigned>( docker_quota ) ) : machine };
+            return static_cast<hardware_concurrency_t>( restrict_to_affinity( limited ) );
+        }()
+    };
+    return value;
 }
 
-hardware_concurrency_t hardware_concurrency_current() noexcept { return static_cast<hardware_concurrency_t>( ( docker_quota != -1 ) ? docker_quota : get_nprocs() ); }
+hardware_concurrency_t hardware_concurrency_current() noexcept
+{
+    auto const online{ ( docker_quota != -1 ) ? static_cast<unsigned>( docker_quota ) : static_cast<unsigned>( get_nprocs() ) };
+    return static_cast<hardware_concurrency_t>( restrict_to_affinity( online ) );
+}
 
 #else // generic/standard impl
 
+// Computed once, on first use (the pool is sized from it, so it must not change
+// under a running process): the CPU count of the machine restricted to the CPUs
+// this process may run on (affinity mask / cpuset), never below 1.
 hardware_concurrency_t get_hardware_concurrency_max() noexcept
 {
-    return static_cast<hardware_concurrency_t>
-    (
-#   if defined( __EMSCRIPTEN_PTHREADS__ )
-        emscripten_has_threading_support() ? emscripten_num_logical_cores() : 1
-#   elif defined( __linux__ )
-        // libcpp std::thread::hardware_concurrency() returns the dynamic number of active cores.
-        get_nprocs_conf()
-#   else
-        std::thread::hardware_concurrency()
-#   endif
-    );
+    static auto const value{ static_cast<hardware_concurrency_t>( restrict_to_affinity( machine_cpu_count() ) ) };
+    return value;
 }
 
 hardware_concurrency_t hardware_concurrency_current() noexcept
 {
     return static_cast<hardware_concurrency_t>
     (
+        restrict_to_affinity
+        (
+            static_cast<unsigned>
+            (
 #   if defined( __EMSCRIPTEN_PTHREADS__ )
-        get_hardware_concurrency_max()
+                get_hardware_concurrency_max()
 #   elif defined( __linux__ )
-        get_nprocs()
+                get_nprocs()
 #   else
-        std::thread::hardware_concurrency()
+                std::thread::hardware_concurrency()
 #   endif
+            )
+        )
     );
 }
 

@@ -73,6 +73,22 @@ add_test( NAME sweater_rw_preference_test COMMAND sweater_rw_preference_test )
 # coverage, folded in above).
 sweater_add_test( sweater_futex_test futex_test.cpp )
 
+# Pool sizing: follows the process's affinity mask (the test re-launches itself restricted).
+sweater_add_test( sweater_hardware_concurrency_test hardware_concurrency_test.cpp )
+
+# cgroup CPU quota text parsing (pure functions): hardware_concurrency.cpp is compiled
+# straight into the executable with the opt-in cgroup support enabled.
+if ( CMAKE_SYSTEM_NAME STREQUAL "Linux" )
+    add_executable( sweater_cgroup_quota_test cgroup_quota_test.cpp )
+    target_include_directories( sweater_cgroup_quota_test PRIVATE ../include )
+    if ( build_SOURCE_DIR )
+        target_include_directories( sweater_cgroup_quota_test PRIVATE "${build_SOURCE_DIR}/include" )
+    endif()
+    target_link_libraries( sweater_cgroup_quota_test PRIVATE GTest::gtest_main Boost::boost )
+    set_target_properties( sweater_cgroup_quota_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
+    add_test( NAME sweater_cgroup_quota_test COMMAND sweater_cgroup_quota_test )
+endif()
+
 # Standalone psi::thrd_lite::promise/future pair (future.hpp) -- independent of
 # shop::dispatch()/dispatch_lite(), which get their own coverage in
 # smoke_test.cpp / sweat_shop_stress_test.cpp.
