@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <new>
 #include <thread>
 //------------------------------------------------------------------------------
 #if PSI_SWEATER_EXACT_WORKER_SELECTION && defined( _WIN32 ) && !defined( _WIN64 )
@@ -71,6 +72,26 @@ namespace events
 
 #undef WEAK
 } // namespace events
+
+namespace
+{
+    // The pool the current thread is a worker of, and which of its workers it
+    // is. Asking the shop's item counter instead whether a spread is a
+    // recursive one does not work: an item is counted only after it was
+    // queued, so it can already be running (and spreading) while the shop
+    // still looks empty.
+    constinit thread_local shop const *           this_threads_shop  { nullptr };
+    constinit thread_local hardware_concurrency_t this_threads_worker{ 0       };
+
+    // Out of line: called once per worker thread, and kept out of the code
+    // generated for the worker loop.
+    BOOST_NOINLINE
+    void this_thread_is_worker( shop const & parent, hardware_concurrency_t const worker_index ) noexcept
+    {
+        this_threads_shop   = &parent;
+        this_threads_worker = worker_index;
+    }
+} // anonymous namespace
 
 #if PSI_SWEATER_HMP
 bool shop::hmp = true;
@@ -228,6 +249,8 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
             // One-shot per-worker init hook (weak no-op unless a consumer
             // overrides it — e.g. rama installs mimalloc's mi_thread_init).
             events::worker_thread_init( worker_index );
+
+            this_thread_is_worker( parent, worker_index );
 
             for ( ; ; )
             {
@@ -479,7 +502,9 @@ bool shop::bind_worker_to_cpu( hardware_concurrency_t const worker_index, unsign
 PSI_COLD
 void shop::set_max_allowed_threads( hardware_concurrency_t const max_threads )
 {
-    BOOST_ASSERT_MSG( queue_.empty(), "Cannot change parallelism level while items are in queue."    );
+    // Invitations to a spread that has already completed may still be queued
+    // (see spread_with_helpers()): the workers discard them as they stop.
+    BOOST_ASSERT_MSG( queue_.empty() || ( number_of_items() <= queued_helpers_.load( std::memory_order_relaxed ) ), "Cannot change parallelism level while items are in queue." );
     BOOST_ASSERT_MSG( !hmp          , "Cannot change number of workers directly when HMP is enabled" );
     stop_and_destroy_pool();
     create_pool( max_threads - PSI_SWEATER_USE_CALLER_THREAD );
@@ -580,6 +605,17 @@ void shop::stop_and_destroy_pool() noexcept
     wake_all_workers();
     for ( auto & worker : pool_ )
         worker.join();
+    // Whatever the workers left queued (they do not stop before the queue is
+    // empty, this is the backstop) is run here: in particular, the
+    // invitations to a spread hold a reference to it.
+    {
+        work_t work;
+        while ( queue_.dequeue( work, consumer_token_ ) )
+        {
+            work();
+            work_completed();
+        }
+    }
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
     idle_.reset();
 #endif
@@ -715,6 +751,14 @@ bool shop::spread_work
     thrd_lite::barrier completion_barrier;
     work_part_template.target_as<spread_work_base>().p_completion_barrier = &completion_barrier;
 
+    // Recursive spread_the_sweat calls: the calling worker cannot wait for
+    // parts queued behind the very item it is running.
+    if ( PSI_UNLIKELY( this_threads_shop == this ) ) [[ unlikely ]]
+    {
+        events::spread_recursive_call( this_threads_worker, number_of_items() );
+        return spread_with_helpers( work_part_template, iterations, parallelizable_iterations_count, completion_barrier, true );
+    }
+
     auto const items_in_shop{ number_of_items() };
     if ( PSI_UNLIKELY( items_in_shop ) ) [[ unlikely ]]
     {
@@ -733,18 +777,15 @@ bool shop::spread_work
         }
 #   endif // single CPU Docker
 
-        // Support recursive spread_the_sweat calls: for now just perform
-        // everything in the caller.
-        auto const this_thread{ thrd_lite::thread::get_active_thread_id() };
-        for ( auto const & worker : pool_ )
+#   if PSI_SWEATER_USE_CALLER_THREAD
+        // Every worker is taken: rather than queue everything and wait for the
+        // work already in the shop, the caller starts on its own iterations
+        // and the workers join in as they become free.
+        if ( items_in_shop >= number_of_workers() )
         {
-            if ( PSI_UNLIKELY( worker.get_id() == this_thread ) ) [[ unlikely ]]
-            {
-                events::spread_recursive_call( static_cast<hardware_concurrency_t>( &worker - &pool_.front() ), items_in_shop );
-                perform_caller_work( iterations, work_part_template, completion_barrier );
-                return true;
-            }
+            return spread_with_helpers( work_part_template, iterations, parallelizable_iterations_count, completion_barrier, false );
         }
+#   endif // PSI_SWEATER_USE_CALLER_THREAD
     }
 
 #if !PSI_SWEATER_USE_PARALLELIZATION_COST
@@ -754,6 +795,11 @@ bool shop::spread_work
     auto const actual_number_of_workers{ number_of_workers() };
     auto const free_workers            { static_cast<hardware_concurrency_t>( std::max<int>( 0, actual_number_of_workers - items_in_shop ) ) };
     auto const max_work_parts          { free_workers ? free_workers : number_of_worker_threads() }; // prefer using any available worker - otherwise queue and wait
+#if PSI_SWEATER_USE_CALLER_THREAD
+    // A caller that takes part never gets here with every worker taken (see
+    // above), so it never queues everything and waits.
+    BOOST_ASSUME( free_workers );
+#endif // PSI_SWEATER_USE_CALLER_THREAD
     auto const queue_and_wait          { !free_workers };
     auto const use_caller_thread       { PSI_SWEATER_USE_CALLER_THREAD && !queue_and_wait };
 
@@ -1061,6 +1107,189 @@ bool shop::spread_work
     return enqueue_succeeded;
 }
 
+
+// A spread whose iterations are claimed, piece by piece, by whoever gets to
+// them, instead of being handed out up front. Used when the caller cannot count
+// on the workers: it is itself a worker of this pool (a recursive spread) or
+// every worker is taken. The caller claims pieces like everybody else, so the
+// spread completes even if no worker ever turns up, and it waits only for
+// pieces that are already running. What is queued for the workers is an
+// invitation to help, not a part of the work: one that is picked up after the
+// last piece was claimed does nothing. Invitations outlive the call (hence the
+// heap and the reference count), but the caller's work object is touched only
+// between a successful claim and the arrival that follows it, both of which
+// happen while the caller is still inside the call.
+// An invitation is an item of the shop like any other until a worker gets to
+// it: it counts in number_of_items(), so a spread from outside the pool that
+// finds one queued takes the path for a shop that has work, and whoever takes
+// items from the queue (a worker, or an outside caller waiting for its own
+// spread) may pick it up and help with a spread that is not its own until its
+// pieces run out. A worker that waits for its own nested spread never does:
+// it takes nothing from the queue.
+struct alignas( thrd_lite::destructive_interference_size ) shop::shared_spread
+{
+    using cursor_t = std::uint64_t; // wider than iterations_t: late claims overshoot the end
+
+    shared_spread
+    (
+        shop                         &       parent_shop,
+        spread_work_template_t const &       work_part_template,
+        iterations_t                   const iterations,
+        iterations_t                   const iterations_per_piece,
+        hardware_concurrency_t         const invitations
+    ) noexcept
+        :
+        parent    { parent_shop          },
+        piece     { work_part_template   },
+        end       { iterations           },
+        piece_size{ iterations_per_piece },
+        references{ static_cast<hardware_concurrency_t>( invitations + 1 ) }
+    {
+        piece.target_as<spread_work_base>().p_completion_barrier = &running;
+    }
+
+    bool all_claimed() const noexcept { return next.load( std::memory_order_relaxed ) >= end; }
+
+    void run_pieces() noexcept
+    {
+        // Claims are made with an arrival already announced: once the caller
+        // has seen a claim fail and, after that, nobody announced, every later
+        // claim fails as well.
+        running.add_expected_arrival();
+        for ( ; ; )
+        {
+            auto const start{ next.fetch_add( piece_size ) };
+            if ( start >= end )
+                break;
+            auto   claimed{ piece };
+            auto & setup  { claimed.target_as<spread_work_base>() };
+            setup.start_iteration = static_cast<iterations_t>( start );
+            setup.  end_iteration = static_cast<iterations_t>( std::min<cursor_t>( start + piece_size, end ) );
+            running.add_expected_arrival();
+            claimed(); // arrives
+        }
+        running.arrive();
+    }
+
+    void release() noexcept
+    {
+        if ( references.fetch_sub( 1, std::memory_order_acq_rel ) == 1 )
+            delete this;
+    }
+
+    struct invitation
+    {
+        void operator()() noexcept
+        {
+            auto & spread{ *p_spread };
+            auto & parent{ spread.parent };
+            auto const still_queued{ parent.queued_helpers_.fetch_sub( 1, std::memory_order_relaxed ) - 1 };
+            if ( !spread.all_claimed() )
+            {
+                // Pass the wake on before starting: the caller woke only one
+                // of the sleeping workers, and each worker that finds something
+                // left to do wakes two more, for as long as invitations are
+                // waiting.
+                if ( still_queued > 0 )
+                    parent.wake_idle( 2, ( this_threads_shop == &parent ) ? this_threads_worker : no_worker );
+                spread.run_pieces();
+            }
+            spread.release();
+        }
+        shared_spread * p_spread;
+    }; // struct invitation
+
+    shop                              & parent    ;
+    spread_work_template_t              piece     ;
+    cursor_t                      const end       ;
+    iterations_t                  const piece_size;
+    thrd_lite::barrier                  running   ; // pieces being run and claims being made
+    std::atomic<hardware_concurrency_t> references;
+    alignas( thrd_lite::destructive_interference_size )
+    std::atomic<cursor_t>               next{ 0 } ;
+}; // struct shared_spread
+
+BOOST_NOINLINE
+bool shop::spread_with_helpers
+(
+    spread_work_template_t const &       work_part_template,
+    iterations_t                   const iterations,
+    iterations_t                         parallelizable_iterations_count,
+    thrd_lite::barrier           &       completion_barrier,
+    bool                           const caller_is_worker
+) noexcept
+{
+#if !PSI_SWEATER_USE_PARALLELIZATION_COST
+    parallelizable_iterations_count = 1;
+#endif // PSI_SWEATER_USE_PARALLELIZATION_COST
+
+    auto const worker_threads{ static_cast<hardware_concurrency_t>( number_of_worker_threads() ) };
+    auto const other_workers { static_cast<hardware_concurrency_t>( worker_threads - caller_is_worker ) };
+    auto const parts         { static_cast<hardware_concurrency_t>( std::min<iterations_t>( std::max<iterations_t>( 1, iterations / parallelizable_iterations_count ), other_workers + 1U ) ) };
+    // An invitation stays queued until a worker gets to it, so a caller that
+    // keeps spreading while the workers stay busy must not keep adding them:
+    // never more outstanding than there are workers to pick them up. The
+    // limit is the shop's, not the spread's: while one spread's invitations
+    // wait for busy workers, other spreads started in the meantime invite
+    // fewer workers, or none and run on their caller. The room is claimed
+    // with the add itself (and the excess given back) so that concurrent
+    // callers cannot overbook it.
+    auto const wanted_most   { static_cast<hardware_concurrency_t>( parts - 1 ) };
+    auto const outstanding   { queued_helpers_.fetch_add( wanted_most, std::memory_order_relaxed ) };
+    auto const room          { static_cast<hardware_concurrency_t>( std::max<std::int64_t>( 0, std::int64_t{ worker_threads } - outstanding ) ) };
+    auto const wanted        { std::min<hardware_concurrency_t>( wanted_most, room ) };
+    queued_helpers_.fetch_sub( wanted_most - wanted, std::memory_order_relaxed );
+
+    shared_spread * p_spread{ nullptr };
+    if ( wanted )
+    {
+        // A few pieces per participant, so that whoever is faster, or turns
+        // up later, still finds some left. Not the adaptive division of the
+        // plain path: that one grows when callers stall waiting for parts that
+        // were handed out up front, which cannot happen here, and every piece
+        // is a claim on a counter that all the participants share.
+        auto const piece_size{ std::max<iterations_t>( 1, iterations / ( static_cast<iterations_t>( wanted + 1 ) * spread_work_stealing_division_min ) ) };
+        p_spread = new ( std::nothrow ) shared_spread{ *this, work_part_template, iterations, piece_size, wanted };
+    }
+    if ( !p_spread )
+    {
+        queued_helpers_.fetch_sub( wanted, std::memory_order_relaxed );
+        perform_caller_work( iterations, work_part_template, completion_barrier );
+        return true;
+    }
+
+    hardware_concurrency_t invited{ 0 };
+    for ( ; invited < wanted; ++invited )
+    {
+        work_added_untracked();
+        if ( PSI_UNLIKELY( !queue_.enqueue( shared_spread::invitation{ p_spread } ) ) )
+        {
+            work_completed();
+            break;
+        }
+    }
+    for ( auto unsent{ invited }; unsent < wanted; ++unsent )
+    {
+        queued_helpers_.fetch_sub( 1, std::memory_order_relaxed );
+        p_spread->release();
+    }
+    if ( invited )
+        wake_idle( 1, caller_is_worker ? this_threads_worker : no_worker ); // the helpers wake the rest, see shared_spread::invitation
+
+    events::caller_work_begin( iterations );
+    work_added_untracked();
+    p_spread->run_pieces();
+    work_completed      ();
+    events::caller_work_end();
+
+    events::caller_join_begin( false );
+    p_spread->running.wait();
+    events::caller_join_end();
+
+    p_spread->release();
+    events::spread_end( invited, true );
+    return true;
+}
 
 void shop::wake_all_workers() noexcept
 {

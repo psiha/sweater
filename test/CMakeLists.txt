@@ -24,6 +24,12 @@ endfunction()
 sweater_add_test( sweater_smoke_test        smoke_test.cpp             )
 sweater_add_test( sweater_shop_stress_test  sweat_shop_stress_test.cpp )
 
+# Spreads started while the generic pool already has work (from one of its workers, or
+# with every worker taken). Built where the generic pool is the library's implementation.
+if ( PSI_SWEATER_IMPL STREQUAL "generic" OR ( NOT PSI_SWEATER_IMPL AND NOT WIN32 AND NOT APPLE ) )
+    sweater_add_test( sweater_nested_spread_test nested_spread_test.cpp )
+endif()
+
 # Consolidated TYPED_TEST_SUITE coverage for rw_mutex/futex_rw_mutex and their
 # reader/writer-preferring variants -- supersedes the former sweater_rw_mutex_test
 # and sweater_rrw_mutex_test targets (see rw_mutex_contract_test.cpp's header

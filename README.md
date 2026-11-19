@@ -78,7 +78,29 @@ Current test targets (`test/`, GoogleTest):
   so it was never meant to be tracked there at all) — a permanent leak that would
   eventually make `wait_until_idle()` return false forever. See `work_added_untracked()`
   in `impls/generic.hpp`/`generic.cpp`.
+- `sweater_nested_spread_test` — `spread_the_sweat` on a generic pool that already has
+  work (built where the generic pool is the library's implementation): free workers
+  join a spread started from one of the pool's own workers; every worker spreading at
+  the same time completes with each iteration run exactly once; with the rest of the
+  pool held, a worker (or a thread outside the pool) runs its spread by itself and
+  returns, and spreading over and over in that state leaves nothing queued behind; a
+  single free worker joins a spread started from a held one; spreads from outside the
+  pool and spreads from its workers running at the same time each run every iteration
+  exactly once.
 - `sweater_libuv_test` — optional, only built when libuv headers/library are found.
+
+**The iterations of `spread_the_sweat` do not all run on the calling thread — also
+when the call is made from inside work running on the pool.** On the generic
+implementation a spread started from one of the pool's own workers (a nested spread)
+is shared with the workers that are free, and the caller waits for the iterations they
+run. Work passed to a nested spread must therefore follow the same rules as work passed to any other spread: it cannot rely on
+thread-local state of the caller, and it must not take a lock the caller holds. That
+includes the read side of `rw_mutex` and of `rrw_mutex`: `rrw_mutex` recognises a
+recursive read by the thread that holds the lock, an iteration on another thread is a
+new reader, and a new reader waits behind a queued writer, which waits for the caller,
+which waits for the iteration. A loop that is too small to be worth sharing can say so
+with `parallelizable_iterations_count`: when that leaves a single part, the caller runs
+all of it.
 
 **`shop::~shop()` does not drain fire_and_forget work on every backend.** The
 generic (Linux) implementation owns a joinable worker-thread pool whose loop

@@ -167,6 +167,15 @@ public:
     /// For GCD dispatch_apply/OMP-like parallel loops.
     /// \details Guarantees that <VAR>work</VAR> will not be called more than
     /// <VAR>iterations</VAR> times (even if number_of_workers() > iterations).
+    /// \note <VAR>work</VAR> runs on the calling thread and on any of the
+    /// pool's threads, also when the call is made from inside work that is
+    /// itself running on the pool (a nested spread): the caller waits for
+    /// iterations that other threads are running. Whatever <VAR>work</VAR>
+    /// needs must therefore not depend on the calling thread: thread-local
+    /// state of the caller is not visible to it, and a lock that the caller
+    /// holds must not be taken by <VAR>work</VAR> - not even a shared or a
+    /// recursive one, which is handed to the thread that holds it but not to
+    /// another one once a writer waits for it.
     template <typename F>
     bool spread_the_sweat( iterations_t const iterations, F && __restrict work, iterations_t const parallelizable_iterations_count = 1 ) noexcept
     {
@@ -420,6 +429,20 @@ private:
         iterations_t           parallelizable_iterations_count
     ) noexcept;
 
+    // A spread that cannot simply hand its iterations out: one started from a
+    // worker of this pool, or one that finds every worker taken (see
+    // shared_spread in generic.cpp).
+    struct shared_spread;
+
+    bool spread_with_helpers
+    (
+        spread_work_template_t const & work_part_template,
+        iterations_t                   iterations,
+        iterations_t                   parallelizable_iterations_count,
+        thrd_lite::barrier           & completion_barrier,
+        bool                           caller_is_worker
+    ) noexcept;
+
     template <typename Functor, typename ... Args>
     bool create_fire_and_destroy( Args && ... args ) noexcept
     (
@@ -583,9 +606,12 @@ private:
     void work_added          ( hardware_concurrency_t items = 1 ) noexcept;
     // Untracked: used by spread_the_sweat's dispatch paths, which have no
     // matching in_flight_dec() anywhere (spread_the_sweat is synchronous --
-    // the completion_barrier already blocks the caller until all dispatched
-    // parts finish, so there is no fire-and-move-on window for in_flight_count()/
-    // wait_until_idle() to observe). Routing spread through the tracked
+    // the caller is blocked until every iteration has run, so there is no
+    // fire-and-move-on window for in_flight_count()/wait_until_idle() to
+    // observe). What a spread may leave queued after it returns are
+    // invitations to help (see spread_with_helpers()): they are counted in
+    // number_of_items() until a worker discards them, and they run none of
+    // the caller's work. Routing spread through the tracked
     // work_added() above would increment the counter once per dispatched part
     // (or once per call, depending on the code path) with nothing to ever
     // decrement it back -- a permanent leak.
@@ -696,6 +722,9 @@ private:
 
     // Caller work-stealing 'explicit' token (still a question whether worth it).
     thrd_lite::spin_lock       consumer_token_mutex_;
+    // Invitations to help with a spread that are still queued (see
+    // spread_with_helpers()).
+    std::atomic<std::uint32_t> queued_helpers_ = 0;
     my_queue::consumer_token_t consumer_token_;
 
 #if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
