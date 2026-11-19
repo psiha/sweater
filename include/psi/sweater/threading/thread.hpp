@@ -108,23 +108,7 @@ public:
         {
             void * context;
             new ( &context ) Functor( std::forward<F>( functor ) );
-            create
-            (
-                []( void * context ) noexcept -> ret_t
-                {
-#               if defined(__GNUC__) && !defined(__clang__)
-#                   pragma GCC diagnostic push
-#                   pragma GCC diagnostic ignored "-Wstrict-aliasing"
-#               endif // GCC
-                    auto & tiny_functor( reinterpret_cast<Functor &>( context ) );
-#               if defined(__GNUC__) && !defined(__clang__)
-#                   pragma GCC diagnostic pop
-#               endif // GCC
-                    tiny_functor();
-                    return 0;
-                },
-                context
-            );
+            create( &invoke_tiny_functor<Functor>, context );
         }
         else
         if constexpr ( noexcept( Functor( std::forward<F>( functor ) ) ) )
@@ -162,6 +146,19 @@ public:
         return *this;
     }
 
+    /// Starts a thread like operator=( F && ), for a functor that fits into a
+    /// pointer, but reports a thread that could not be created with false
+    /// instead of an exception (or a termination with exceptions disabled).
+    template <class F>
+    [[ nodiscard ]] bool try_start( F && functor ) noexcept
+    {
+        using Functor = std::decay_t<F>;
+        static_assert( detail::fits_into_a_pointer< Functor > );
+        void * context;
+        new ( &context ) Functor( std::forward<F>( functor ) );
+        return try_create( &invoke_tiny_functor<Functor>, context );
+    }
+
     auto native_handle() const noexcept { return handle_; }
 
     bool joinable() const noexcept { return native_handle() != native_handle_type{}; }
@@ -179,12 +176,33 @@ public:
     static auto hardware_concurrency() noexcept { return hardware_concurrency_max; }
 
 private:
+    // The thread procedure of a functor that fits into a pointer: the functor
+    // lives in the (void *) context itself.
+    template <class Functor>
+    static std::invoke_result_t<thread_procedure, void *> invoke_tiny_functor( void * context ) noexcept
+    {
+#   if defined(__GNUC__) && !defined(__clang__)
+#       pragma GCC diagnostic push
+#       pragma GCC diagnostic ignored "-Wstrict-aliasing"
+#   endif // GCC
+        auto & tiny_functor( reinterpret_cast<Functor &>( context ) );
+#   if defined(__GNUC__) && !defined(__clang__)
+#       pragma GCC diagnostic pop
+#   endif // GCC
+        tiny_functor();
+        return 0;
+    }
+
+    bool try_create( thread_procedure const start_routine, void * const arg ) noexcept
+    {
+        BOOST_ASSERT_MSG( !joinable(), "A thread already created" );
+        return !thread_impl::create( start_routine, arg );
+    }
+
     PSI_COLD
     void create( thread_procedure const start_routine, void * const arg )
     {
-        BOOST_ASSERT_MSG( !joinable(), "A thread already created" );
-        auto const error( thread_impl::create( start_routine, arg ) );
-        if ( PSI_UNLIKELY( error ) )
+        if ( PSI_UNLIKELY( !try_create( start_routine, arg ) ) )
         {
 #       ifdef BOOST_NO_EXCEPTIONS
             std::terminate();

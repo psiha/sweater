@@ -44,6 +44,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <new>
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
 #include <optional>
 #endif
@@ -457,9 +458,13 @@ private:
                     p_functor = nullptr;
                 #endif // NDEBUG
                 } // void operator()
+                void discard() noexcept { delete p_functor; } // work that will not run
                 Functor * __restrict p_functor = nullptr;
             }; // struct self_destructed_work
             static_assert( std::is_trivially_destructible_v<self_destructed_work> );
+
+            if ( PSI_UNLIKELY( this->pool_.empty() ) )
+                return fire_on_a_detached_thread( self_destructed_work{ std::forward<Args>( args )... } );
 
 #       if PSI_SWEATER_EXACT_WORKER_SELECTION
             if ( !thrd_lite::slow_thread_signals )
@@ -511,8 +516,13 @@ private:
                     } eh_safe_destructor{ work };
                     work();
                 } // void operator()
+                void discard() noexcept { reinterpret_cast<Functor &>( storage ).~Functor(); } // work that will not run
                 alignas( alignof( Functor ) ) char storage[ sizeof( Functor ) ];
             }; // struct self_destructed_work
+
+            if ( PSI_UNLIKELY( this->pool_.empty() ) )
+                return fire_on_a_detached_thread( self_destructed_work{ std::forward<Args>( args )... } );
+
 #       if PSI_SWEATER_EXACT_WORKER_SELECTION
             if ( !thrd_lite::slow_thread_signals )
             {
@@ -530,6 +540,33 @@ private:
 
         this->work_added( enqueue_succeeded );
         return PSI_LIKELY( enqueue_succeeded );
+    }
+
+    // A parallelism of one leaves the pool empty (the caller of a spread is the
+    // one thread): a fired item then gets a detached thread of its own that
+    // owns it and touches nothing of the shop, so the shop does not wait for it
+    // (also not in its destructor). No thread setup: it inherits that of the
+    // firing thread. A thread that cannot be started is a failed fire.
+    template <typename Work>
+    static bool fire_on_a_detached_thread( Work && work ) noexcept
+    {
+        auto const p_work{ new ( std::nothrow ) Work{ std::move( work ) } };
+        if ( !p_work )
+        {
+            work.discard();
+            return false;
+        }
+        detail::in_flight_inc(); // the in_flight_dec() is in the work
+        thrd_lite::thread thread;
+        if ( !thread.try_start( [ p_work ]() noexcept { ( *p_work )(); delete p_work; } ) )
+        {
+            detail::in_flight_dec();
+            p_work->discard();
+            delete p_work;
+            return false;
+        }
+        thread.detach();
+        return true;
     }
 
     void wake_all_workers() noexcept;

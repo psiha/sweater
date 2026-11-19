@@ -344,6 +344,8 @@ bool shop::bind_worker
     cpu_affinity_mask      const mask
 ) noexcept
 {
+    if ( worker_index >= number_of_worker_threads() ) // e.g. an empty pool (a parallelism of one)
+        return false;
     auto & thread{ pool_[ worker_index ] };
     auto succeeded{ thread.bind_to_cpu( mask ) };
     if ( !succeeded )
