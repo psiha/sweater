@@ -375,7 +375,7 @@ bool shop::bind_worker
         hmp = hmp_setting;
 #       endif // PSI_SWEATER_HMP
         BOOST_ASSERT( result != 2 );
-        succeeded |= ( result == 0 );
+        succeeded |= ( result == 1 ); // the bool of thread::bind_to_cpu()
 #       endif // EWS or spread version
 #   endif // Linux
     }
