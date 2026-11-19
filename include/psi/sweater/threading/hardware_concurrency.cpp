@@ -25,6 +25,7 @@
 #ifdef __linux__
 #   include <sched.h>
 #   include <sys/sysinfo.h>
+#   include <unistd.h>
 
 #   include <cerrno>
 #   include <cstdlib>
@@ -77,6 +78,15 @@ namespace
     // that can be expressed as a count (e.g. a Windows process spanning several
     // processor groups). A pool sized from the machine CPU count instead of this
     // number oversubscribes the CPUs it can actually use, e.g. under taskset.
+    //
+    // On Linux a mask belongs to a thread, not to the process: the one read
+    // here is that of the thread group leader (the main thread), which is what
+    // taskset and a cpuset give a process at its start and what its other
+    // threads inherit. Reading the calling thread's own mask instead would
+    // report 1 from a worker bound to a single CPU (see shop::bind_worker()),
+    // and a library loaded from such a thread would size its pool from that.
+    // A main thread that narrows its own mask after the start is still taken
+    // at its word.
     unsigned affinity_cpu_count() noexcept
     {
 #   if defined( __linux__ )
@@ -87,7 +97,7 @@ namespace
             auto const bytes{ CPU_ALLOC_SIZE( cpus ) };
             if ( !set )
                 return 0;
-            auto const result{ ::sched_getaffinity( 0, bytes, set ) };
+            auto const result{ ::sched_getaffinity( ::getpid(), bytes, set ) };
             auto const count{ ( result == 0 ) ? static_cast<unsigned>( CPU_COUNT_S( bytes, set ) ) : 0U };
             CPU_FREE( set );
             if ( result == 0 )
@@ -339,7 +349,8 @@ namespace
 // Computed once, on first use (the pool is sized from it, so it must not change
 // under a running process): the CPU count of the machine, restricted to the CPUs
 // this process may run on (affinity mask / cpuset) and to the CPU quota of its
-// cgroup, never below 1.
+// cgroup, never below 1. A mask or quota changed later (taskset -p, a cpuset
+// or cpu.max rewritten under the running process) is not followed.
 hardware_concurrency_t get_hardware_concurrency_max() noexcept
 {
     static auto const value
@@ -359,8 +370,10 @@ hardware_concurrency_t get_hardware_concurrency_max() noexcept
 
 hardware_concurrency_t hardware_concurrency_current() noexcept
 {
-    auto const online{ ( docker_quota != -1 ) ? static_cast<unsigned>( docker_quota ) : static_cast<unsigned>( get_nprocs() ) };
-    return static_cast<hardware_concurrency_t>( restrict_to_affinity( online ) );
+    // As in the max getter: a quota above the CPU count does not add CPUs.
+    auto const online { static_cast<unsigned>( get_nprocs() ) };
+    auto const limited{ ( docker_quota != -1 ) ? std::min( online, static_cast<unsigned>( docker_quota ) ) : online };
+    return static_cast<hardware_concurrency_t>( restrict_to_affinity( limited ) );
 }
 
 #else // generic/standard impl

@@ -9,6 +9,8 @@
 
 #include <psi/sweater/sweater.hpp>
 
+#include "affinity_relaunch.hpp"
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -173,6 +175,19 @@ TEST( SweatShopStress, InFlightTrackingIsProcessWideNotPerShop )
     EXPECT_TRUE( wait_until_idle( stress_deadline ) );
     (void)idle_shop;
 }
+
+// The same cases with the whole process on one CPU, where the pool is sized
+// for a parallelism of one.
+#if defined( __linux__ ) || defined( _WIN32 )
+TEST( SweatShopStress, EveryCaseWithOneCpu )
+{
+    if ( test::restricted_cpus() )
+        GTEST_SKIP() << "this is the restricted child";
+    if ( test::available_cpu_count() < 1 )
+        GTEST_SKIP() << "the affinity mask of the process cannot be read";
+    EXPECT_TRUE( test::run_under_affinity( 1, "SweatShopStress.*-SweatShopStress.EveryCaseWithOneCpu" ) );
+}
+#endif
 
 //------------------------------------------------------------------------------
 } // namespace psi::sweater

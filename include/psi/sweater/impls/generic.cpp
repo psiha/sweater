@@ -344,6 +344,8 @@ bool shop::bind_worker
     cpu_affinity_mask      const mask
 ) noexcept
 {
+    if ( worker_index >= number_of_worker_threads() ) // e.g. an empty pool (a parallelism of one)
+        return false;
     auto & thread{ pool_[ worker_index ] };
     auto succeeded{ thread.bind_to_cpu( mask ) };
     if ( !succeeded )
@@ -375,7 +377,7 @@ bool shop::bind_worker
         hmp = hmp_setting;
 #       endif // PSI_SWEATER_HMP
         BOOST_ASSERT( result != 2 );
-        succeeded |= ( result == 0 );
+        succeeded |= ( result == 1 ); // the bool of thread::bind_to_cpu()
 #       endif // EWS or spread version
 #   endif // Linux
     }
