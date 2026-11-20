@@ -38,9 +38,12 @@ public:
     spin_lock(                   ) noexcept = default;
     spin_lock( spin_lock const & ) = delete;
 
-    void lock    () noexcept;
-    bool try_lock() noexcept;
-    void unlock  () noexcept;
+    // Inline: these sit on every enqueue of the fire path, where an
+    // out-of-line call per operation costs a call/return pair each.
+    // http://locklessinc.com/articles/locks
+    void lock    () noexcept { while ( !try_lock() ) [[ unlikely ]] { nop(); } }
+    bool try_lock() noexcept { return !flag_.test_and_set( std::memory_order_acquire ); }
+    void unlock  () noexcept { flag_.clear( std::memory_order_release ); }
 
 private:
     std::atomic_flag flag_

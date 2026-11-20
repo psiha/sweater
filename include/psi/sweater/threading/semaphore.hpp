@@ -84,6 +84,8 @@ private:
     using signed_futex_value_t = std::make_signed_t< futex::value_type >;
 
     bool try_decrement( signed_futex_value_t & last_value ) noexcept;
+    // signal()'s part that runs only when a waiter is in debt (old_value < 0)
+    void signal_in_debt( signed_futex_value_t old_value, hardware_concurrency_t count ) noexcept;
 
 private:
     // Exact sleeper accounting (see futex_semaphore.cpp's design-doc comment):
@@ -107,6 +109,20 @@ private:
 
 
 }; // class semaphore
+
+#if !PSI_SWEATER_CONDVAR_SEMAPHORE && !defined( PSI_SWEATER_SEMA_STATS )
+// Inline fast path: the fire path signals once per item, and with nobody in
+// debt a signal is a single fetch_add - an out-of-line call would cost a
+// call/return pair on top of it. The rest is in futex_semaphore.cpp.
+inline void semaphore::signal( hardware_concurrency_t const count /*= 1*/ ) noexcept
+{
+    if ( !count ) [[ unlikely ]]
+        return;
+    auto const old_value{ value_.fetch_add( static_cast<signed_futex_value_t>( count ), std::memory_order_release ) };
+    if ( old_value < 0 ) [[ unlikely ]]
+        signal_in_debt( old_value, count );
+}
+#endif // futex impl without stats
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite

@@ -79,11 +79,6 @@ void nop() noexcept // 'minimally-hot' spin nop
 
 void nops( std::uint8_t const count ) noexcept { for ( auto i{ 0 }; i < count; ++i ) nop(); }
 
-// http://locklessinc.com/articles/locks
-void spin_lock::lock    () noexcept { while ( PSI_UNLIKELY( !try_lock() ) ) [[ unlikely ]] { nop(); } }
-bool spin_lock::try_lock() noexcept { return !flag_.test_and_set( std::memory_order_acquire ); }
-void spin_lock::unlock  () noexcept { flag_.clear( std::memory_order_release ); }
-
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
 //------------------------------------------------------------------------------

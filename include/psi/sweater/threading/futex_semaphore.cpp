@@ -127,21 +127,28 @@ semaphore::~semaphore() noexcept
 }
 #endif // !NDEBUG
 
+// https://softwareengineering.stackexchange.com/questions/340284/mutex-vs-semaphore-how-to-implement-them-not-in-terms-of-the-other
+#ifdef PSI_SWEATER_SEMA_STATS // out of line, to count every signal (semaphore.hpp has the inline one)
 void semaphore::signal( hardware_concurrency_t const count /*= 1*/ ) noexcept
 {
-    // https://softwareengineering.stackexchange.com/questions/340284/mutex-vs-semaphore-how-to-implement-them-not-in-terms-of-the-other
-
-#if PSI_SWEATER_EXACT_WORKER_SELECTION && !defined( __ANDROID__ )
-    BOOST_ASSUME( count == 1 );
-#endif // PSI_SWEATER_EXACT_WORKER_SELECTION
     if ( PSI_UNLIKELY( !count ) )
         return;
 
     PSI_SEMA_COUNT( sema_signals );
     auto const old_value{ value_.fetch_add( static_cast<signed_futex_value_t>( count ), std::memory_order_release ) };
-    if ( old_value >= 0 )
-        return; // nobody in debt -- no sleeper can exist for these tokens
+    if ( old_value < 0 )
+        signal_in_debt( old_value, count );
+}
+#endif // PSI_SWEATER_SEMA_STATS
 
+// Called with old_value < 0 only: with a non-negative one nobody is in debt,
+// so no sleeper can exist for these tokens.
+void semaphore::signal_in_debt( signed_futex_value_t const old_value, hardware_concurrency_t const count ) noexcept
+{
+    BOOST_ASSUME( old_value < 0 );
+#if PSI_SWEATER_EXACT_WORKER_SELECTION && !defined( __ANDROID__ )
+    BOOST_ASSUME( count == 1 );
+#endif // PSI_SWEATER_EXACT_WORKER_SELECTION
     // Deposit BEFORE reading sleepers_ (the seq_cst store->load half of the
     // Dekker pairing documented above).
     auto const to_wake{ std::min( static_cast<hardware_concurrency_t>( -old_value ), count ) };

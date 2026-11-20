@@ -113,6 +113,7 @@ endif()
 # PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE forces the condvar semaphore anywhere,
 # purely as an A/B knob.
 option( PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE "Force the condvar-based semaphore (A/B knob)" OFF )
+option( PSI_SWEATER_SEMA_STATS "Count semaphore signals/wakes/parks and print them at exit (A/B instrumentation)" OFF )
 if ( sweater_apple_embedded )
     set_source_files_properties( ${src_root}/threading/futex_barrier.cpp   PROPERTIES HEADER_FILE_ONLY ON )
 else()
@@ -242,6 +243,12 @@ endif()
 # consumers through impls/generic.hpp.
 if ( PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE )
     target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_FORCE_CONDVAR_SEMAPHORE )
+endif()
+# Selects the out-of-line, counting semaphore::signal(); semaphore.hpp switches
+# between the inline and the out-of-line one on it, so every TU must agree
+# (hence the public scope).
+if ( PSI_SWEATER_SEMA_STATS )
+    target_compile_definitions( psi_sweater ${_sweater_scope} PSI_SWEATER_SEMA_STATS )
 endif()
 
 if ( WIN32 )
