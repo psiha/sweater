@@ -131,8 +131,8 @@ TEST( SweatShopStress, ConcurrentProducersOnSharedShop )
     EXPECT_EQ( spread_count          .load(), expected_per_kind * 8 );
 }
 
-// psi::sweater::detail::g_in_flight (dispatch_tracking.hpp) is a SINGLE
-// process-wide atomic counter, not one per shop. This means wait_until_idle()
+// The in-flight count of psi::sweater::detail (dispatch_tracking.hpp) is a
+// SINGLE process-wide count, not one per shop. This means wait_until_idle()
 // called while only caring about one shop's work can still observe -- and
 // block on -- a completely unrelated shop's in-flight work. This is surprising
 // and easy to miss (there is no per-shop overload to reach for instead); pin it
