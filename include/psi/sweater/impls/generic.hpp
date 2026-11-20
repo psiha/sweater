@@ -575,7 +575,15 @@ private:
     // wait_until_idle()): used only by the fire_and_forget/dispatch path, whose
     // self_destructed_work wrapper pairs every increment here with an
     // in_flight_dec() once the (asynchronous, fire-and-move-on) work runs.
-    void work_added          ( hardware_concurrency_t items = 1 ) noexcept;
+    // Inline (as are work_added_untracked() and work_completed()): the
+    // fire path calls it once per item, and an out-of-line call would cost a
+    // call/return pair on top of the fetch_add.
+    //...mrmlj...allowing underflow/overflow because of late fetch_add in fire_and_forget and concurrent invocation 'races'
+    void work_added          ( hardware_concurrency_t const items = 1 ) noexcept
+    {
+        work_items_.fetch_add( items, std::memory_order_acquire );
+        if ( items ) { detail::in_flight_inc(); }
+    }
     // Untracked: used by spread_the_sweat's dispatch paths, which have no
     // matching in_flight_dec() anywhere (spread_the_sweat is synchronous --
     // the completion_barrier already blocks the caller until all dispatched
@@ -584,8 +592,8 @@ private:
     // work_added() above would increment the counter once per dispatched part
     // (or once per call, depending on the code path) with nothing to ever
     // decrement it back -- a permanent leak.
-    void work_added_untracked( hardware_concurrency_t items = 1 ) noexcept;
-    void work_completed(                                        ) noexcept;
+    void work_added_untracked( hardware_concurrency_t const items = 1 ) noexcept { work_items_.fetch_add( items, std::memory_order_acquire ); }
+    void work_completed      (                                        ) noexcept { /*thrd_lite::detail::underflow_checked_dec( work_items_ );*/ work_items_.fetch_sub( 1, std::memory_order_release ); }
 
 private:
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
@@ -593,7 +601,7 @@ private:
     {
         using thrd_lite::thread::operator=;
 
-        void notify() noexcept;
+        void notify() noexcept { event_.signal(); }
 
         bool enqueue(                     work_t &&                                         , my_queue & ) noexcept;
         bool enqueue( std::move_iterator< work_t * >, hardware_concurrency_t number_of_items, my_queue &, bool notify_worker = true ) noexcept;
