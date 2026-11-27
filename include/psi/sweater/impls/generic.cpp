@@ -45,23 +45,15 @@ namespace events
 #   define WEAK
 #endif
 
-    WEAK void caller_stalled           ( std::uint8_t /*current_work_stealing_division*/                                                   ) noexcept {}
     WEAK void caller_join_begin        ( bool /*spinning*/                                                                                 ) noexcept {}
     WEAK void caller_join_end          (                                                                                                   ) noexcept {}
     WEAK void caller_work_begin        (                                          std::uint32_t /*iterations*/                             ) noexcept {}
     WEAK void caller_work_end          (                                                                                                   ) noexcept {}
-    WEAK void caller_stolen_work_begin (                                                                                                   ) noexcept {}
-    WEAK void caller_stolen_work_end   ( std::uint32_t          /*stolen_items*/                                                           ) noexcept {}
-    WEAK void worker_enqueue_begin     ( hardware_concurrency_t /*worker_index*/, std::uint32_t /*begin_iter*/, std::uint32_t /*end_iter*/ ) noexcept {}
-    WEAK void worker_enqueue_end       ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
     WEAK void worker_work_begin        ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
     WEAK void worker_work_end          ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
     WEAK void worker_sleep_begin       ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
     WEAK void worker_sleep_end         ( hardware_concurrency_t /*worker_index*/                                                           ) noexcept {}
     WEAK void worker_bulk_enqueue_begin( hardware_concurrency_t /*number_of_workers*/                                                      ) noexcept {}
-    WEAK void worker_bulk_enqueue_end  (                                                                                                   ) noexcept {}
-    WEAK void worker_bulk_signal_begin ( hardware_concurrency_t /*number_of_workers*/                                                      ) noexcept {}
-    WEAK void worker_bulk_signal_end   (                                                                                                   ) noexcept {}
 
     WEAK void spread_begin             ( std::uint32_t /*iterations*/                                                                      ) noexcept {}
     WEAK void spread_preexisting_work  (                                          hardware_concurrency_t /*items_in_shop*/                 ) noexcept {}
@@ -648,99 +640,22 @@ void shop::perform_caller_work
     events::caller_work_end();
 }
 
-// Inter-spread work stealing (as another dynamic way of handling heterogenous
-// CPU configurations, unbalanced loads by other/background processes,
-// inconsistent/slow/unpredictable behaviour of OS thread signaling and
-// managment primitevs) is implemented by splitting/dividing per-core work
-// chunks/items or, IOW, producing more smaller/shorter work items.
-// This incurrs an overhead (produces more queue traffic) which is negligible
-// compared to practical runtime speedups and it (the queue based approach) is
-// required for a dispatcher which supports concurrent and recursive dispatches.
-std::uint8_t const spread_work_stealing_division_min{  4 };
-std::uint8_t const spread_work_stealing_division_max{ 16 }; // has to be limited (among other reasons) not to overflow hardware_concurrency_t
-std::atomic<std::uint8_t> shop::spread_work_stealing_division{ spread_work_stealing_division_min };
-
-#if PSI_SWEATER_EXACT_WORKER_SELECTION
-auto shop::dispatch_workers
-(
-    hardware_concurrency_t               worker_index,
-    iterations_t                         iteration,
-    hardware_concurrency_t         const max_parts,
-    iterations_t                   const iterations_per_part,
-    iterations_t                   const parts_with_extra_iteration,
-    iterations_t                   const iterations, // total/max for the whole spread (not necessarily all for this call)
-    thrd_lite::barrier           &       completion_barrier,
-    spread_work_template_t const &       work_part_template
-) noexcept
-{
-    auto const stealing_division{ spread_work_stealing_division.load( std::memory_order_relaxed ) };
-    BOOST_ASSUME( stealing_division >= spread_work_stealing_division_min );
-    BOOST_ASSUME( stealing_division <= spread_work_stealing_division_max );
-    auto const slice_div
-    {
-        static_cast<std::uint8_t>
-        (
-            std::min<iterations_t>( stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
-        )
-    };
-#ifdef BOOST_MSVC
-    auto const slices{ static_cast<work_t *>( alloca( slice_div * sizeof( work_t ) ) ) };
-#else
-    alignas( work_t ) char slices_storage[ slice_div * sizeof( work_t ) ];
-    auto const slices{ reinterpret_cast<work_t *>( slices_storage ) };
-#endif // BOOST_MSVC
-
-    for ( auto work_part{ 0U }; work_part < max_parts && iteration != iterations; ++work_part )
-    {
-        auto const start_iteration{ iteration };
-        auto const extra_iteration{ work_part < parts_with_extra_iteration };
-        auto const   end_iteration{ static_cast<iterations_t>( start_iteration + iterations_per_part + extra_iteration ) };
-        events::worker_enqueue_begin( worker_index, start_iteration, end_iteration );
-        auto const slice_iter            { ( iterations_per_part + extra_iteration ) / slice_div };
-        auto       first_slice_extra_iter{ ( iterations_per_part + extra_iteration ) % slice_div };
-        hardware_concurrency_t number_of_slices{ 0 };
-        for ( auto iter{ start_iteration }; iter < end_iteration; )
-        {
-            BOOST_ASSUME( number_of_slices < slice_div );
-            auto & work_chunk { *new ( &slices[ number_of_slices++ ] ) work_t{ work_part_template } };
-            auto & chunk_setup{ work_chunk.target_as<spread_work_base>() };
-            chunk_setup.start_iteration = iter;
-            chunk_setup.  end_iteration = iter + first_slice_extra_iter + slice_iter;
-            BOOST_ASSERT( chunk_setup.p_completion_barrier == &completion_barrier );
-            BOOST_ASSERT( chunk_setup.start_iteration < chunk_setup.end_iteration );
-            first_slice_extra_iter = 0;
-            iter                   = chunk_setup.end_iteration;
-            // Have to do incremental/'dynamic' 'number of work parts' counting
-            // as the rounding and load balancing logic can produce a smaller
-            // number than the simple number_of_work_parts calculation in the
-            // non-HMP case.
-            completion_barrier.add_expected_arrival();
-            work_added_untracked();
-        }
-        BOOST_ASSERT( number_of_slices );
-        // Wake only the FIRST worker of this dispatch run (the wake-tree root);
-        // the rest are woken by the workers themselves (the worker loop) --
-        // off the caller's critical path.
-        BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_, /*notify:*/ work_part == 0 ) ); //...mrmlj...todo err handling
-        iteration = end_iteration;
-        events::worker_enqueue_end( worker_index );
-        ++worker_index;
-        for ( auto slice{ 0 }; slice < number_of_slices; ++slice )
-        {
-            slices[ slice ].~work_t();
-        }
-    }
-
-    return std::make_pair( worker_index, iteration );
-}
-#endif // PSI_SWEATER_EXACT_WORKER_SELECTION
+// Every spread hands its iterations out the same way: in pieces that are
+// claimed, one at a time, by whoever gets to them (see shared_spread), which is
+// also what balances the load between unequal cores, background load and slow
+// thread wake-ups, and what lets spreads be started concurrently and
+// recursively. A piece is a fixed fraction of a participant's even share, so
+// that whoever is faster, or turns up later, still finds some left: every piece
+// is a claim on a counter that all the participants share, which is what limits
+// how small they can get.
+std::uint8_t const spread_pieces_per_participant{ 4 };
 
 BOOST_NOINLINE
 bool shop::spread_work
 (
     spread_work_template_t       work_part_template,
     iterations_t           const iterations,
-    iterations_t                 parallelizable_iterations_count
+    iterations_t           const parallelizable_iterations_count
 ) noexcept
 {
     if ( PSI_UNLIKELY( iterations == 0 ) ) [[ unlikely ]]
@@ -751,367 +666,22 @@ bool shop::spread_work
     thrd_lite::barrier completion_barrier;
     work_part_template.target_as<spread_work_base>().p_completion_barrier = &completion_barrier;
 
-    // Recursive spread_the_sweat calls: the calling worker cannot wait for
-    // parts queued behind the very item it is running.
-    if ( PSI_UNLIKELY( this_threads_shop == this ) ) [[ unlikely ]]
-    {
+    // The calling worker of a recursive spread cannot wait for parts queued
+    // behind the very item it is running, and neither can anybody else count
+    // on the workers being there, which is why the caller is a participant
+    // like any other.
+    auto const caller_is_worker{ this_threads_shop == this };
+    if ( PSI_UNLIKELY( caller_is_worker ) ) [[ unlikely ]]
         events::spread_recursive_call( this_threads_worker, number_of_items() );
-        return spread_with_helpers( work_part_template, iterations, parallelizable_iterations_count, completion_barrier, true );
-    }
-
-    auto const items_in_shop{ number_of_items() };
-    if ( PSI_UNLIKELY( items_in_shop ) ) [[ unlikely ]]
-    {
+    else if ( auto const items_in_shop{ number_of_items() } ) [[ unlikely ]]
         events::spread_preexisting_work( items_in_shop );
-
-        // Support single-core Docker images (for other platforms assume no
-        // single core systems actually exist nowadays) - in case of
-        // concurrent spreads, err on the side of simplicity and perform
-        // the work immediately on the caller (overcommiting the single
-        // core).
-#   if PSI_SWEATER_USE_CALLER_THREAD && defined( __linux__ ) && !defined( __ANDROID__ )
-        if ( number_of_worker_threads() == 0 ) [[ unlikely ]]
-        {
-            perform_caller_work( iterations, work_part_template, completion_barrier );
-            return true;
-        }
-#   endif // single CPU Docker
-
-#   if PSI_SWEATER_USE_CALLER_THREAD
-        // Every worker is taken: rather than queue everything and wait for the
-        // work already in the shop, the caller starts on its own iterations
-        // and the workers join in as they become free.
-        if ( items_in_shop >= number_of_workers() )
-        {
-            return spread_with_helpers( work_part_template, iterations, parallelizable_iterations_count, completion_barrier, false );
-        }
-#   endif // PSI_SWEATER_USE_CALLER_THREAD
-    }
-
-#if !PSI_SWEATER_USE_PARALLELIZATION_COST
-    parallelizable_iterations_count = 1;
-#endif // PSI_SWEATER_USE_PARALLELIZATION_COST
-
-    auto const actual_number_of_workers{ number_of_workers() };
-    auto const free_workers            { static_cast<hardware_concurrency_t>( std::max<int>( 0, actual_number_of_workers - items_in_shop ) ) };
-    auto const max_work_parts          { free_workers ? free_workers : number_of_worker_threads() }; // prefer using any available worker - otherwise queue and wait
-#if PSI_SWEATER_USE_CALLER_THREAD
-    // A caller that takes part never gets here with every worker taken (see
-    // above), so it never queues everything and waits.
-    BOOST_ASSUME( free_workers );
-#endif // PSI_SWEATER_USE_CALLER_THREAD
-    auto const queue_and_wait          { !free_workers };
-    auto const use_caller_thread       { PSI_SWEATER_USE_CALLER_THREAD && !queue_and_wait };
-
-#if PSI_SWEATER_USE_CALLER_THREAD
-    completion_barrier.use_spin_wait( !queue_and_wait );
-#endif // PSI_SWEATER_USE_CALLER_THREAD
-
-    hardware_concurrency_t dispatched_parts;
-    bool enqueue_succeeded;
-#if PSI_SWEATER_HMP
-    static_assert( PSI_SWEATER_EXACT_WORKER_SELECTION );
-    // In case of recursive and concurrent (but incomplete) spreads we skip
-    // HMP logic (because the logic itself would need tweaking and
-    // additional tracking of which cluster cores/workers are actually
-    // free).
-    if ( hmp && !items_in_shop )
-    {
-        BOOST_ASSERT_MSG( hmp_clusters.number_of_clusters, "HMP not configured" );
-        BOOST_ASSUME( hmp_clusters.number_of_clusters <= hmp_clusters.max_clusters );
-        BOOST_ASSUME( !thrd_lite::slow_thread_signals );
-
-        // Leftovers of the original (pre-work-stealing/pre-July 2021) HMP
-        // logic which 'cooperate good enough' with the work-stealing logic
-        // performed in/by dispatch_workers(). TODO: revisit this for a new
-        // approach tailored around work-stealing.
-
-        std::uint8_t number_used_of_clusters{ 0 };
-        iterations_t hmp_distributions[ hmp_clusters.max_clusters ];
-        {
-            iterations_t iteration{ 0 };
-            for ( auto cluster{ 0 }; cluster < hmp_clusters.number_of_clusters; ++cluster )
-            {
-                auto const cluster_power              { hmp_clusters.power[ cluster ] };
-                auto const cluster_cores              { hmp_clusters.cores[ cluster ] };
-                auto const weight_factor              { hmp_clusters.max_power        };
-                auto const weighted_cluster_iterations{ iterations * cluster_power / weight_factor };
-                auto const remaining_iterations       { static_cast<iterations_t>( iterations - iteration ) };
-                auto const cluster_iterations
-                {
-                    std::min
-                    (
-                        remaining_iterations,
-                        std::max<iterations_t>
-                        (
-                            weighted_cluster_iterations,
-                            // this also makes sure we use all cores of this cluster
-                            // before moving to the next one (i.e. even if
-                            // parallelizable_iterations_count == 1)
-                            parallelizable_iterations_count * cluster_cores
-                        )
-                    )
-                };
-                if ( PSI_UNLIKELY( !cluster_iterations ) ) // handle small spreads (w/ iterations < number of cores)
-                    break;
-                hmp_distributions[ cluster ]  = cluster_iterations;
-                iteration                    += cluster_iterations;
-                ++number_used_of_clusters;
-            }
-            BOOST_ASSUME( iteration <= iterations );
-            BOOST_ASSUME( ( number_used_of_clusters > 0 ) && ( number_used_of_clusters <= hmp_clusters.max_clusters ) );
-            auto const remaining_iterations{ iterations - iteration };
-            BOOST_ASSERT( remaining_iterations < hmp_distributions[ number_used_of_clusters - 1 ] );
-            hmp_distributions[ 0 ] += remaining_iterations; // add to strongest cluster
-        }
-
-        iterations_t           caller_thread_end_iteration{ 0 };
-        iterations_t           iteration                  { 0 };
-        hardware_concurrency_t worker                     { 0 };
-        for ( auto cluster{ 0 }; cluster < number_used_of_clusters; ++cluster )
-        {
-            auto const cluster_iterations        { hmp_distributions [ cluster ]      };
-            auto       cluster_cores             { hmp_clusters.cores[ cluster ]      };
-            auto       per_core_iterations       { cluster_iterations / cluster_cores };
-            auto       parts_with_extra_iteration{ cluster_iterations % cluster_cores };
-
-            if ( use_caller_thread && ( cluster == 0 ) )
-            {
-                BOOST_ASSUME( iteration == 0 );
-                auto const extra_iteration{ parts_with_extra_iteration != 0 };
-                caller_thread_end_iteration  = per_core_iterations + extra_iteration;
-                iteration = caller_thread_end_iteration;
-                --cluster_cores;
-                parts_with_extra_iteration -= extra_iteration;
-            }
-
-            std::tie( worker, iteration ) = dispatch_workers( worker, iteration, cluster_cores, per_core_iterations, parts_with_extra_iteration, iterations, completion_barrier, work_part_template );
-        }
-        enqueue_succeeded = true; //...mrmlj...
-
-        if ( PSI_LIKELY( use_caller_thread ) ) [[ likely ]]
-        {
-            perform_caller_work( caller_thread_end_iteration, work_part_template, completion_barrier );
-        }
-
-        dispatched_parts = worker;
-    }
-    else // !HMP || items_in_shop
-#endif // PSI_SWEATER_HMP
-    {
-        auto parallelizable_parts           { std::max<iterations_t>( 1, iterations / parallelizable_iterations_count ) };
-        auto number_of_work_parts           { static_cast<hardware_concurrency_t>( std::min<iterations_t>( parallelizable_parts, max_work_parts ) ) };
-        auto number_of_dispatched_work_parts{ static_cast<hardware_concurrency_t>( std::max<int>( 0, number_of_work_parts - use_caller_thread ) ) };
-
-        auto iterations_per_part       { iterations / number_of_work_parts };
-        auto parts_with_extra_iteration{ iterations % number_of_work_parts };
-
-#   if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
-        BOOST_ASSUME( number_of_dispatched_work_parts <= ( PSI_SWEATER_MAX_HARDWARE_CONCURRENCY - PSI_SWEATER_USE_CALLER_THREAD ) );
-#   endif // PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
-
-        iterations_t iteration{ 0 };
-        iterations_t caller_thread_end_iteration{ 0 };
-        if ( use_caller_thread )
-        {
-            auto const extra_iteration{ parts_with_extra_iteration != 0 };
-            caller_thread_end_iteration  = iterations_per_part + extra_iteration;
-            iteration                    = caller_thread_end_iteration;
-            parts_with_extra_iteration  -= extra_iteration;
-        }
-
-#   if PSI_SWEATER_EXACT_WORKER_SELECTION
-        // When there are items_in_shop fallback to the shared queue (as
-        // there is currently no tracking which queues/workers are taken).
-        if ( !thrd_lite::slow_thread_signals && !items_in_shop ) [[ likely ]]
-        {
-            iteration = dispatch_workers( 0, iteration, number_of_dispatched_work_parts, iterations_per_part, parts_with_extra_iteration, iterations, completion_barrier, work_part_template ).second;
-            BOOST_ASSUME( iteration <= iterations );
-            enqueue_succeeded = true; //...mrmlj...
-        }
-        else
-#   endif
-        if ( PSI_LIKELY( number_of_dispatched_work_parts ) )
-        { // Also serves as a slow_thread_signals fallback and items_in_shop 'handler'.
-            if ( !items_in_shop )
-            {
-                // Slice up the parts for work stealing (unless there are other
-                // active spreads - there's work to steal so don't create
-                // unnecessary queue traffic).
-                auto const stealing_division{ spread_work_stealing_division.load( std::memory_order_relaxed ) };
-                BOOST_ASSUME( stealing_division <= spread_work_stealing_division_max );
-                BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
-                auto const slice_div
-                {
-                    static_cast<std::uint8_t>
-                    (
-                        std::min<iterations_t>( stealing_division, std::max<iterations_t>( iterations_per_part, 1 ) ) // handle zero iterations_per_part
-                    )
-                };
-                parts_with_extra_iteration      += ( iterations_per_part % slice_div ) * number_of_dispatched_work_parts;
-                iterations_per_part             /= slice_div;
-                number_of_dispatched_work_parts *= slice_div;
-                BOOST_ASSUME( iteration + iterations_per_part * number_of_dispatched_work_parts + parts_with_extra_iteration == iterations );
-            }
-
-            events::worker_bulk_enqueue_begin( number_of_dispatched_work_parts );
-            /// \note MSVC does not support VLAs but has an alloca that returns (16
-            /// byte) aligned memory. Clang's alloca is unaligned and it does not
-            /// support VLAs of non-POD types. GCC has a (16 byte) aligned alloca
-            /// and supports VLAs of non-POD types
-            /// (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=19131).
-            /// Regardless of any of this a work_t VLA is not used to avoid needless
-            /// default construction of its members.
-            /// The code below is safe with noexcept enqueue and noexcept
-            /// destructible and constructible work_ts.
-            ///                                   (21.01.2017.) (Domagoj Saric)
-#       ifdef BOOST_MSVC
-            auto const dispatched_work_parts{ static_cast<work_t *>( alloca( number_of_dispatched_work_parts * sizeof( work_t ) ) ) };
-#       else
-            alignas( work_t ) char dispatched_work_parts_storage[ number_of_dispatched_work_parts * sizeof( work_t ) ];
-            auto * const BOOST_MAY_ALIAS dispatched_work_parts{ reinterpret_cast<work_t *>( dispatched_work_parts_storage ) }; // GCC 11 ICEs w/o the asterisk
-#       endif // BOOST_MSVC
-
-            for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
-            {
-                auto const start_iteration{ iteration };
-                auto const extra_iteration{ work_part < parts_with_extra_iteration };
-                auto const end_iteration  { static_cast<iterations_t>( start_iteration + iterations_per_part + extra_iteration ) };
-                auto const placeholder{ &dispatched_work_parts[ work_part ] };
-                auto & work_chunk { *new ( placeholder ) work_t{ work_part_template } };
-                auto & chunk_setup{ work_chunk.target_as<spread_work_base>() };
-                chunk_setup.start_iteration = start_iteration;
-                chunk_setup.  end_iteration =   end_iteration;
-                BOOST_ASSUME( chunk_setup.start_iteration < chunk_setup.end_iteration );
-                iteration = end_iteration;
-            }
-            BOOST_ASSUME( iteration == iterations );
-
-            work_added_untracked( number_of_dispatched_work_parts );
-            // Has to be initialized before enqueuing (to support spinning waits in workers -
-            // where trivial work would get dequeued and executed (and 'arrived at') before
-            // this thread could enter the if ( enqueue_succeeded ) block and initialize the
-            // the barrier there).
-            completion_barrier.initialize( number_of_dispatched_work_parts );
-            enqueue_succeeded = queue_.enqueue_bulk
-            (
-                std::make_move_iterator( dispatched_work_parts ),
-                number_of_dispatched_work_parts
-            );
-            events::worker_bulk_enqueue_end();
-            if ( PSI_LIKELY( enqueue_succeeded ) )
-            {
-                events::worker_bulk_signal_begin( number_of_dispatched_work_parts );
-#           if !PSI_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ ) // Android also has the fallback work_semaphore_ for slow_thread_signals devices
-                if ( thrd_lite::slow_thread_signals )
-                    work_semaphore_.signal( number_of_dispatched_work_parts );
-                else
-#           endif
-                    wake_idle( number_of_dispatched_work_parts, no_worker );
-                events::worker_bulk_signal_end();
-            }
-            else
-            {
-                completion_barrier.initialize( 0 );
-                caller_thread_end_iteration = iterations;
-            }
-
-            for ( hardware_concurrency_t work_part{ 0 }; work_part < number_of_dispatched_work_parts; ++work_part )
-            {
-                dispatched_work_parts[ work_part ].~work_t();
-            }
-        }
-        else // no dispatched parts
-        {
-#       if PSI_SWEATER_USE_CALLER_THREAD
-            BOOST_ASSUME( caller_thread_end_iteration == iterations );
-            completion_barrier.initialize( 0 );
-            enqueue_succeeded = true;
-#       else
-            BOOST_UNREACHABLE();
-#       endif
-        }
-
-        if ( caller_thread_end_iteration ) // use_caller_thread or enqueue failed
-        {
-            perform_caller_work( caller_thread_end_iteration, work_part_template, completion_barrier );
-        }
-
-        dispatched_parts = number_of_dispatched_work_parts;
-    } // !HMP
-
-    // Caller work stealing
-    if ( !queue_and_wait && !queue_.empty() )
-    {
-        events::caller_stolen_work_begin();
-        work_t work;
-        std::uint32_t stolen_items{ 0 };
-        while ( true )
-        {
-            {
-                // Support concurrent spreads (tokens aren't thread-safe).
-                std::scoped_lock<thrd_lite::spin_lock> const token_lock{ consumer_token_mutex_ };
-                if ( !queue_.dequeue( work, consumer_token_ ) )
-                    break;
-            }
-            work();
-            work_completed();
-            ++stolen_items;
-        }
-        events::caller_stolen_work_end( stolen_items );
-    }
-
-#if PSI_SWEATER_USE_CALLER_THREAD
-    if ( !queue_and_wait )
-    {
-        if ( !completion_barrier.everyone_arrived() )
-        {
-            // Increase work-splitting if the worker has to wait/stall (having no work to steal).
-            BOOST_ASSUME( dispatched_parts );
-            events::caller_join_begin( use_caller_thread );
-            auto const stalled
-            {
-                completion_barrier.spin_wait
-                (
-#               if PSI_SWEATER_SPIN_BEFORE_SUSPENSION
-                    caller_spin_count
-#               endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
-                )
-            };
-            events::caller_join_end();
-            if ( stalled )
-            {
-                // Concurrent spreads race on this adaptive knob by design --
-                // relaxed atomics make that defined. CAS (rather than a blind
-                // store) so a concurrently-advanced value is never regressed;
-                // on CAS failure someone else already bumped it -- good enough,
-                // no retry needed for a monotone heuristic.
-                auto current{ spread_work_stealing_division.load( std::memory_order_relaxed ) };
-                events::caller_stalled( current );
-                if ( current < spread_work_stealing_division_max )
-                {
-                    spread_work_stealing_division.compare_exchange_strong( current, static_cast<std::uint8_t>( current + 1 ), std::memory_order_relaxed, std::memory_order_relaxed );
-                }
-            }
-        }
-    }
-    else
-#endif // PSI_SWEATER_USE_CALLER_THREAD
-    {
-        events::caller_join_begin( use_caller_thread );
-        completion_barrier.wait();
-        events::caller_join_end();
-    }
-
-    events::spread_end( dispatched_parts, use_caller_thread );
-    return enqueue_succeeded;
+    return spread_with_helpers( work_part_template, iterations, parallelizable_iterations_count, completion_barrier, caller_is_worker );
 }
 
-
 // A spread whose iterations are claimed, piece by piece, by whoever gets to
-// them, instead of being handed out up front. Used when the caller cannot count
-// on the workers: it is itself a worker of this pool (a recursive spread) or
-// every worker is taken. The caller claims pieces like everybody else, so the
+// them, instead of being handed out up front. The caller claims pieces like
+// everybody else (it may be a worker of this pool itself, or find the pool
+// busy, and so cannot count on the workers), so the
 // spread completes even if no worker ever turns up, and it waits only for
 // pieces that are already running. What is queued for the workers is an
 // invitation to help, not a part of the work: one that is picked up after the
@@ -1120,12 +690,9 @@ bool shop::spread_work
 // between a successful claim and the arrival that follows it, both of which
 // happen while the caller is still inside the call.
 // An invitation is an item of the shop like any other until a worker gets to
-// it: it counts in number_of_items(), so a spread from outside the pool that
-// finds one queued takes the path for a shop that has work, and whoever takes
-// items from the queue (a worker, or an outside caller waiting for its own
-// spread) may pick it up and help with a spread that is not its own until its
-// pieces run out. A worker that waits for its own nested spread never does:
-// it takes nothing from the queue.
+// it: it counts in number_of_items(), and the worker that picks it up helps
+// with a spread that is not its own until its pieces run out. A caller that
+// waits for its own spread never does: it takes nothing from the queue.
 struct alignas( thrd_lite::destructive_interference_size ) shop::shared_spread
 {
     using cursor_t = std::uint64_t; // wider than iterations_t: late claims overshoot the end
@@ -1243,13 +810,13 @@ bool shop::spread_with_helpers
     shared_spread * p_spread{ nullptr };
     if ( wanted )
     {
-        // A few pieces per participant, so that whoever is faster, or turns
-        // up later, still finds some left. Not the adaptive division of the
-        // plain path: that one grows when callers stall waiting for parts that
-        // were handed out up front, which cannot happen here, and every piece
-        // is a claim on a counter that all the participants share.
-        auto const piece_size{ std::max<iterations_t>( 1, iterations / ( static_cast<iterations_t>( wanted + 1 ) * spread_work_stealing_division_min ) ) };
+        // A few pieces per participant, see spread_pieces_per_participant.
+        auto const piece_size{ std::max<iterations_t>( 1, iterations / ( static_cast<iterations_t>( wanted + 1 ) * spread_pieces_per_participant ) ) };
         p_spread = new ( std::nothrow ) shared_spread{ *this, work_part_template, iterations, piece_size, wanted };
+#   if PSI_SWEATER_USE_CALLER_THREAD
+        if ( p_spread )
+            p_spread->running.use_spin_wait( !caller_is_worker );
+#   endif // PSI_SWEATER_USE_CALLER_THREAD
     }
     if ( !p_spread )
     {
@@ -1282,8 +849,25 @@ bool shop::spread_with_helpers
     work_completed      ();
     events::caller_work_end();
 
-    events::caller_join_begin( false );
-    p_spread->running.wait();
+    events::caller_join_begin( !caller_is_worker );
+#if PSI_SWEATER_USE_CALLER_THREAD
+    if ( !caller_is_worker )
+    {
+        // Somebody else's thread that has nothing else to do waits by
+        // spinning (a short spread is done by the time it would have fallen
+        // asleep); a worker leaves its core to the ones it waits for.
+        p_spread->running.spin_wait
+        (
+#       if PSI_SWEATER_SPIN_BEFORE_SUSPENSION
+            caller_spin_count
+#       endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
+        );
+    }
+    else
+#endif // PSI_SWEATER_USE_CALLER_THREAD
+    {
+        p_spread->running.wait();
+    }
     events::caller_join_end();
 
     p_spread->release();

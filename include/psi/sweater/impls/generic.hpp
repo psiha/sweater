@@ -115,8 +115,6 @@ public:
 #endif // PSI_SWEATER_USE_CALLER_THREAD
 #endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
 
-    static std::atomic<std::uint8_t> spread_work_stealing_division; // adaptive; raced by concurrent spreads by design (relaxed)
-
 private:
     struct worker_traits : psi::functionoid::default_traits
     {
@@ -408,20 +406,6 @@ private:
         thrd_lite::barrier           & completion_barrier
     ) noexcept;
 
-#if PSI_SWEATER_EXACT_WORKER_SELECTION
-    auto dispatch_workers
-    (
-        hardware_concurrency_t         worker_index,
-        iterations_t                   iteration,
-        hardware_concurrency_t         max_parts,
-        iterations_t                   per_part_iterations,
-        iterations_t                   parts_with_extra_iteration,
-        iterations_t                   iterations, // total/max for the whole spread (not necessary all for this call)
-        thrd_lite::barrier           & completion_barrier,
-        spread_work_template_t const & work_part_template
-    ) noexcept;
-#endif // PSI_SWEATER_EXACT_WORKER_SELECTION
-
     bool spread_work
     (
         spread_work_template_t work_part_template,
@@ -429,9 +413,8 @@ private:
         iterations_t           parallelizable_iterations_count
     ) noexcept;
 
-    // A spread that cannot simply hand its iterations out: one started from a
-    // worker of this pool, or one that finds every worker taken (see
-    // shared_spread in generic.cpp).
+    // The state of a spread, whose iterations are claimed piece by piece by the
+    // caller and the workers that turn up (see shared_spread in generic.cpp).
     struct shared_spread;
 
     bool spread_with_helpers
@@ -720,11 +703,10 @@ private:
     ///                                       (12.10.2016.) (Domagoj Saric)
     my_queue queue_;
 
-    // Caller work-stealing 'explicit' token (still a question whether worth it).
-    thrd_lite::spin_lock       consumer_token_mutex_;
     // Invitations to help with a spread that are still queued (see
     // spread_with_helpers()).
     std::atomic<std::uint32_t> queued_helpers_ = 0;
+    // For the last-resort drain of the queue (see stop_and_destroy_pool()).
     my_queue::consumer_token_t consumer_token_;
 
 #if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
