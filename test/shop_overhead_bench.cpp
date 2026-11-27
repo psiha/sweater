@@ -102,6 +102,47 @@ namespace
             name, spreads, iters, ns( dt, spreads ) );
     }
 
+    // fire_and_forget while every worker is busy: the items can only queue up,
+    // so this is the submit cost of a saturated pool (finding that nobody can
+    // take the item right away, and that nobody is worth waking). The workers
+    // are occupied by a spread whose parts block, started from a thread of its
+    // own (fired blockers cannot be used: before a pool finds an idle worker
+    // for work fired behind a busy one, they would just queue up behind each
+    // other).
+    template <typename Shop>
+    void bench_saturated( Shop & shop, char const * const name, unsigned const participants, std::uint32_t const n )
+    {
+        using iterations_t = typename Shop::iterations_t;
+
+        std::atomic<bool    > release{ false };
+        std::atomic<unsigned> started{ 0 };
+        std::atomic<std::uint32_t> done{ 0 };
+        std::thread holder{ [&]
+        {
+            shop.spread_the_sweat( participants, [&]( iterations_t, iterations_t ) noexcept
+            {
+                started.fetch_add( 1, std::memory_order_release );
+                while ( !release.load( std::memory_order_acquire ) ) { std::this_thread::sleep_for( std::chrono::microseconds{ 50 } ); } // not spinning: the pool is busy, not the machine
+            } );
+        } };
+        // (A pool that does not give each part its own worker leaves some blocked
+        // parts unstarted: the measurement then runs with the workers that it got.)
+        auto const give_up{ clk::now() + std::chrono::milliseconds{ 500 } };
+        while ( started.load( std::memory_order_acquire ) != participants && clk::now() < give_up ) { std::this_thread::yield(); }
+        auto const held{ started.load( std::memory_order_acquire ) };
+
+        auto const work{ [&done]() noexcept { done.fetch_add( 1, std::memory_order_relaxed ); } };
+        auto const t0{ clk::now() };
+        for ( std::uint32_t i{ 0 }; i < n; ++i ) { while ( !shop.fire_and_forget( work ) ) { std::this_thread::yield(); } }
+        auto const t_submitted{ clk::now() };
+        release.store( true, std::memory_order_release );
+        holder.join();
+        while ( done.load( std::memory_order_acquire ) != n ) { std::this_thread::yield(); }
+
+        std::println( "  {:8} fire_and_forget x{} on a saturated pool : {:8.1f} ns/op submit ({} of {} participants held)",
+            name, n, ns( t_submitted - t0, n ), held, participants );
+    }
+
     inline constexpr auto run_inline{ []( auto const & f ) { f(); } };
 
     template <typename Shop, typename RunInSubmitContext = decltype( run_inline ) const &>
@@ -184,6 +225,7 @@ int main()
     {
         psi::sweater::generic::shop shop;
         bench_backend( shop, "generic", shop.number_of_workers() );
+        bench_saturated( shop, "generic", shop.number_of_workers(), 100'000 ); // every worker, and the thread that spreads
     }
 #ifdef _WIN32
     {
