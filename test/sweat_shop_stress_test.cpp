@@ -176,6 +176,219 @@ TEST( SweatShopStress, InFlightTrackingIsProcessWideNotPerShop )
     (void)idle_shop;
 }
 
+namespace
+{
+    template <typename Predicate>
+    bool wait_for( Predicate const & predicate, std::chrono::steady_clock::duration const timeout )
+    {
+        auto const deadline{ std::chrono::steady_clock::now() + timeout };
+        while ( !predicate() )
+        {
+            if ( std::chrono::steady_clock::now() >= deadline )
+                return false;
+            std::this_thread::sleep_for( std::chrono::milliseconds{ 1 } );
+        }
+        return true;
+    }
+
+    // Occupies `blockers` workers with tasks that block until released, each
+    // fired only after the previous one has started (so every blocker holds a
+    // distinct worker - and each of them has to get past the ones already
+    // blocked), then fires `probes` short tasks: while at least one worker is
+    // still free they must all complete without the blockers being released. The release flag is raised on every exit path before the shop
+    // is destroyed (its destructor joins workers that would otherwise never
+    // finish their blocked task).
+    void probes_complete_while_workers_are_blocked( unsigned const blockers, unsigned const probes )
+    {
+        auto const let_idle_workers_fall_asleep{ [] { std::this_thread::sleep_for( std::chrono::milliseconds{ 50 } ); } };
+
+        shop work_shop;
+        std::atomic<bool    > release{ false };
+        std::atomic<unsigned> started{ 0     };
+        std::atomic<unsigned> probed { 0     };
+        struct release_guard
+        {
+            std::atomic<bool> & flag;
+            ~release_guard() { flag.store( true, std::memory_order_release ); flag.notify_all(); }
+        } const guard{ release };
+
+        // Workers still starting up would pick the blockers up regardless of
+        // where they were queued.
+        let_idle_workers_fall_asleep();
+
+        for ( auto b{ 0u }; b < blockers; ++b )
+        {
+            work_shop.fire_and_forget( [&]() noexcept
+            {
+                started.fetch_add( 1, std::memory_order_release );
+                release.wait( false, std::memory_order_acquire );
+            } );
+            ASSERT_TRUE( wait_for( [&] { return started.load( std::memory_order_acquire ) == b + 1; }, std::chrono::seconds{ 2 } ) )
+                << "blocker " << b << " did not start while " << work_shop.number_of_workers() - b << " workers were free";
+        }
+
+        // Workers woken along with the blockers would otherwise pick the probes
+        // up by chance while still looking for work.
+        let_idle_workers_fall_asleep();
+
+        for ( auto p{ 0u }; p < probes; ++p )
+        {
+            work_shop.fire_and_forget( [&]() noexcept { probed.fetch_add( 1, std::memory_order_release ); } );
+        }
+        EXPECT_TRUE( wait_for( [&] { return probed.load( std::memory_order_acquire ) == probes; }, std::chrono::seconds{ 2 } ) )
+            << probes - probed.load() << " of " << probes << " short tasks stayed queued behind " << blockers << " blocked task(s) despite idle workers";
+    }
+
+    // The worker threads that execute fire_and_forget work (the generic pool
+    // counts the calling thread, which only takes part in spread_the_sweat).
+    unsigned fire_workers( shop const & work_shop ) noexcept
+    {
+#   ifdef PSI_SWEATER_USE_CALLER_THREAD
+        unsigned const caller_thread{ PSI_SWEATER_USE_CALLER_THREAD };
+#   else
+        unsigned const caller_thread{ 0 };
+#   endif
+        return static_cast<unsigned>( work_shop.number_of_workers() ) - caller_thread;
+    }
+} // anonymous namespace
+
+// A long-running task must not hold back work fired after it while other
+// workers sit idle.
+TEST( SweatShopStress, IdleWorkerRunsWorkFiredBehindABlockedTask )
+{
+    shop const probe_shop;
+    if ( fire_workers( probe_shop ) < 2 )
+        GTEST_SKIP() << "needs at least two worker threads";
+    probes_complete_while_workers_are_blocked( 1, 3 );
+}
+
+// Same with all but one worker blocked: the remaining worker has to be found.
+TEST( SweatShopStress, LastIdleWorkerRunsWorkFiredBehindBlockedTasks )
+{
+    shop const probe_shop;
+    auto const workers{ fire_workers( probe_shop ) };
+    if ( workers < 2 )
+        GTEST_SKIP() << "needs at least two worker threads";
+    probes_complete_while_workers_are_blocked( workers - 1, 3 );
+}
+
+namespace
+{
+    // Workers held busy by tasks that block until released, one at a time (each
+    // fired only after the previous one started, so every task holds a distinct
+    // worker). The destructor releases them and waits for them to finish.
+    class held_workers
+    {
+    public:
+        explicit held_workers( shop & work_shop ) noexcept : shop_{ work_shop } {}
+        held_workers( held_workers const & ) = delete;
+        ~held_workers()
+        {
+            release();
+            while ( finished_.load( std::memory_order_acquire ) != fired_ )
+                std::this_thread::yield();
+        }
+
+        // Fires one more blocking task, without waiting for it to start.
+        void fire_one()
+        {
+            ++fired_;
+            shop_.fire_and_forget( [ this ]() noexcept
+            {
+                started_.fetch_add( 1, std::memory_order_release );
+                released_.wait( false, std::memory_order_acquire );
+                finished_.fetch_add( 1, std::memory_order_release );
+            } );
+        }
+
+        // Returns the number of workers that were held; below count if one of
+        // the tasks did not start.
+        unsigned hold( unsigned const count )
+        {
+            for ( auto i{ 0u }; i < count; ++i )
+            {
+                auto const started_before{ started_.load( std::memory_order_acquire ) };
+                fire_one();
+                if ( !wait_for( [ & ] { return started_.load( std::memory_order_acquire ) != started_before; }, std::chrono::seconds{ 2 } ) )
+                    return i;
+            }
+            return count;
+        }
+
+        void release() noexcept
+        {
+            released_.store( true, std::memory_order_release );
+            released_.notify_all();
+        }
+
+    private:
+        shop &                shop_    ;
+        unsigned              fired_   { 0     };
+        std::atomic<unsigned> started_ { 0     };
+        std::atomic<unsigned> finished_{ 0     };
+        std::atomic<bool    > released_{ false };
+    }; // class held_workers
+
+    template <typename Predicate>
+    bool spin_for( Predicate const & predicate, std::chrono::steady_clock::duration const timeout )
+    {
+        auto const deadline{ std::chrono::steady_clock::now() + timeout };
+        while ( !predicate() )
+        {
+            if ( std::chrono::steady_clock::now() >= deadline )
+                return false;
+            std::this_thread::yield();
+        }
+        return true;
+    }
+} // anonymous namespace
+
+// With half of the workers held (one at a time) and the pool asleep, a blocker
+// and a probe fired back to back: wherever in the pool they land (possibly the
+// same worker, which then runs the blocker first) the probe has to find an idle
+// worker, which has to be woken since all of them sleep.
+TEST( SweatShopStress, ProbeFiredAfterABlockerRunsWhileHalfThePoolIsHeld )
+{
+    std::atomic<unsigned> probed{ 0 }; // outlives the shop: a stranded probe still runs at its shutdown
+    shop work_shop;
+    auto const workers{ fire_workers( work_shop ) };
+    auto const held   { ( workers + 1 ) / 2 };
+    if ( held + 1 >= workers )
+        GTEST_SKIP() << "needs at least four worker threads";
+    for ( auto round{ 0u }; round < 20; ++round )
+    {
+        held_workers first_half{ work_shop };
+        ASSERT_EQ( first_half.hold( held ), held ) << "of " << workers << " workers";
+        std::this_thread::sleep_for( std::chrono::milliseconds{ 50 } ); // the rest of the pool falls asleep
+
+        held_workers blocker{ work_shop };
+        blocker.fire_one(); // not waiting for it to start: the probe is queued right behind it
+        work_shop.fire_and_forget( [ & ]() noexcept { probed.fetch_add( 1, std::memory_order_release ); } );
+        EXPECT_TRUE( spin_for( [ & ] { return probed.load( std::memory_order_acquire ) == round + 1; }, std::chrono::seconds{ 2 } ) ) << "round " << round;
+    }
+}
+
+// The same, but with a single worker left free and fired work arriving while it
+// finishes the previous item: the worker that is just finishing must not look
+// busy to the producer while also missing the item that was queued.
+TEST( SweatShopStress, ProbeFiredWhileTheLastFreeWorkerFinishesAnItemIsNotStranded )
+{
+    std::atomic<unsigned> done{ 0 }; // outlives the shop (see above)
+    shop work_shop;
+    auto const workers{ fire_workers( work_shop ) };
+    if ( workers < 2 )
+        GTEST_SKIP() << "needs at least two worker threads";
+    held_workers held{ work_shop };
+    ASSERT_EQ( held.hold( workers - 1 ), workers - 1 ) << "of " << workers << " workers";
+    for ( auto i{ 0u }; i < 4000; ++i )
+    {
+        work_shop.fire_and_forget( [ & ]() noexcept { done.fetch_add( 1, std::memory_order_release ); } );
+        work_shop.fire_and_forget( [ & ]() noexcept { done.fetch_add( 1, std::memory_order_release ); } );
+        ASSERT_TRUE( spin_for( [ & ] { return done.load( std::memory_order_acquire ) == 2 * ( i + 1 ); }, std::chrono::seconds{ 2 } ) )
+            << "iteration " << i << ": " << 2 * ( i + 1 ) - done.load() << " items stayed queued";
+    }
+}
+
 // The same cases with the whole process on one CPU, where the pool is sized
 // for a parallelism of one.
 #if defined( __linux__ ) || defined( _WIN32 )

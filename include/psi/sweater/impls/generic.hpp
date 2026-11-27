@@ -156,10 +156,6 @@ private:
 
     auto number_of_worker_threads() const noexcept;
 
-#if PSI_SWEATER_EXACT_WORKER_SELECTION
-    void propagate_spread_wake( hardware_concurrency_t worker_index ) noexcept;
-#endif // PSI_SWEATER_EXACT_WORKER_SELECTION
-
     auto worker_loop( hardware_concurrency_t worker_index ) noexcept;
 
 public:
@@ -469,7 +465,7 @@ private:
 #       if PSI_SWEATER_EXACT_WORKER_SELECTION
             if ( !thrd_lite::slow_thread_signals )
             {
-                enqueue_succeeded = this->next_dispatch_target().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+                enqueue_succeeded = this->enqueue_fire( self_destructed_work{ std::forward<Args>( args )... } );
             }
             else
 #       endif
@@ -526,7 +522,7 @@ private:
 #       if PSI_SWEATER_EXACT_WORKER_SELECTION
             if ( !thrd_lite::slow_thread_signals )
             {
-                enqueue_succeeded = this->next_dispatch_target().enqueue( self_destructed_work{ std::forward<Args>( args )... }, this->queue_ );
+                enqueue_succeeded = this->enqueue_fire( self_destructed_work{ std::forward<Args>( args )... } );
             }
             else
 #       endif
@@ -571,6 +567,15 @@ private:
 
     void wake_all_workers() noexcept;
 
+    // Claims and signals up to count idle workers (other than skip, if it is
+    // a worker), returns the number of them - or, for a pool with only the
+    // shared semaphore to signal, signals count. Waking a sleeping worker is
+    // a system call, signalling one that is awake is not. The queued work the
+    // caller wants them for has to be queued before the call (see the idle
+    // set).
+    static constexpr hardware_concurrency_t no_worker{ static_cast<hardware_concurrency_t>( -1 ) };
+    hardware_concurrency_t wake_idle( hardware_concurrency_t count, hardware_concurrency_t skip = no_worker ) noexcept;
+
     // Tracked by the process-wide dispatch_tracking counter (in_flight_count()/
     // wait_until_idle()): used only by the fire_and_forget/dispatch path, whose
     // self_destructed_work wrapper pairs every increment here with an
@@ -604,6 +609,12 @@ private:
         // producer token operation a coherence miss against the worker's spin
         // (measured on the fire path's flat profile).
         alignas( thrd_lite::destructive_interference_size ) thrd_lite::semaphore event_;
+        // Set while the worker runs an item (so, unlike event_'s tokens, also
+        // while it runs one it was woken for): queuing behind it then leaves
+        // the item waiting for however long that one takes. Shares event_'s
+        // line - dispatch reads both together. (A bit of the idle set per
+        // item would be a contended read-modify-write per item.)
+        std::atomic<bool> executing_{ false };
         alignas( thrd_lite::destructive_interference_size ) thrd_lite::spin_lock token_mutex_; // producer tokens are not thread safe (support concurrent spread_the_sweat calls)
         std::optional<my_queue::producer_token_t>                                token_;
 #   ifdef __linux__
@@ -617,9 +628,33 @@ private:
     // worker nobody signals never reaches it. Always targeting the first worker
     // therefore runs every dispatched item on that one thread with the rest of
     // the pool asleep - i.e. no concurrency at all on the fire-and-forget
-    // dispatch path. spread_the_sweat is unaffected: it targets workers
-    // explicitly and wakes each one it uses.
+    // dispatch path. For the same reason an item must never be left queued
+    // only behind a worker that is busy running something else while other
+    // workers sleep: enqueue_on() then wakes an idle one, which steals it (see
+    // the idle set below). spread_the_sweat is unaffected: it targets workers
+    // explicitly and wakes the first one it uses (which wakes the rest).
     worker_thread & next_dispatch_target() noexcept;
+    bool            enqueue_fire        ( work_t && ) noexcept;
+    bool            enqueue_on          ( worker_thread &, work_t && ) noexcept;
+
+    // The idle set (see idle_group below for its layout): one bit per worker that waits for work (spins or sleeps in
+    // its event, not claimed), clear for the one that runs or looks for work,
+    // and from the moment someone claimed (and so signalled) it until it wakes
+    // up. It is the one place where producers learn who can be woken: a
+    // producer claims workers from it (wake_idle()). A worker adds itself only
+    // when it is about to wait, so the set is not touched while a worker has
+    // items to run. The pairing: a producer queues, fences, then looks at the
+    // set; a worker sets its bit, fences, then looks at the queue once more.
+    // So either the worker sees the item or the producer sees the worker (and
+    // claims and signals it). A worker never sleeps (or exits) while the queue
+    // has items either, so an item that a dequeue spuriously reports as
+    // missing (concurrent dequeues in progress make the queue look empty for a
+    // moment) is still found. What the set cannot say is that a worker that
+    // is not in it runs a long item: executing_ does (see enqueue_on()).
+    void                   set_idle ( hardware_concurrency_t worker_index ) noexcept; // followed by a fence
+    void                   withdraw_idle( hardware_concurrency_t worker_index ) noexcept;
+    bool                   claim_idle( hardware_concurrency_t worker_index ) noexcept; // if it is idle: claims it and signals it
+    void                   propagate_spread_wake( hardware_concurrency_t worker_index ) noexcept;
 
 #if defined( __ANDROID__ )
     // Partial fix attempt for slow thread synchronization on older Android
@@ -637,6 +672,12 @@ private:
     std::atomic<bool                  > brexit_     = false;
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
     std::atomic<std::uint32_t         > dispatch_rotor_ = 0; // see next_dispatch_target()
+    // The idle set: the workers are divided into groups, each in a word of
+    // its own cache line, so that workers that run out of work at the same
+    // time (the end of a spread) do not all update the same line.
+    static constexpr hardware_concurrency_t idle_group{ 16 };
+    struct alignas( thrd_lite::destructive_interference_size ) idle_word { std::atomic<std::uint64_t> bits{ 0 }; };
+    std::unique_ptr<idle_word[]> idle_;
 #endif
 
     /// \todo Further queue refinements.

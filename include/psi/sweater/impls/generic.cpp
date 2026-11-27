@@ -16,6 +16,10 @@
 #include "generic.hpp"
 #include <psi/build/attributes.hpp>
 #include "../dispatch_tracking.hpp"
+
+#include <algorithm>
+#include <bit>
+#include <thread>
 //------------------------------------------------------------------------------
 #if PSI_SWEATER_EXACT_WORKER_SELECTION && defined( _WIN32 ) && !defined( _WIN64 )
 struct _IMAGE_DOS_HEADER;
@@ -90,6 +94,17 @@ std::uint32_t shop::worker_spin_count{ 1000 };
 std::uint32_t shop::caller_spin_count{ 100 * 1000 };
 #endif // PSI_SWEATER_USE_CALLER_THREAD
 #endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
+
+// A seq_cst read-modify-write is a full barrier on x86; elsewhere it takes a
+// fence to order the load that follows it.
+static void fence_after_rmw() noexcept
+{
+#if defined( __x86_64__ ) || defined( __i386__ ) || defined( _M_X64 ) || defined( _M_IX86 )
+    std::atomic_signal_fence( std::memory_order_seq_cst );
+#else
+    std::atomic_thread_fence( std::memory_order_seq_cst );
+#endif
+}
 
 auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_index ) noexcept
 {
@@ -175,6 +190,41 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
 
             work_t work;
 
+            auto const run
+            {
+                [ & ]() noexcept
+                {
+#               if PSI_SWEATER_EXACT_WORKER_SELECTION
+                    // Work queued on this worker since it last looked now
+                    // waits behind the item about to run - possibly for long
+                    // - so an idle worker is woken to steal it. The
+                    // store -> fence -> token check half of the pairing with
+                    // enqueue_on()'s signal -> fence -> executing_ load:
+                    // either the enqueuer sees this worker busy or this sees
+                    // its token (a token for work that was stolen meanwhile
+                    // just wakes a worker that finds nothing).
+                    auto & self{ parent.pool_[ worker_index ] };
+                    if ( !thrd_lite::slow_thread_signals )
+                    {
+                        self.executing_.exchange( true, std::memory_order_seq_cst );
+                        fence_after_rmw();
+                        if ( work_event.try_wait() ) [[ unlikely ]]
+                            parent.wake_idle( 1, worker_index );
+                    }
+#               endif // EWS
+                    events::worker_work_begin( worker_index );
+                    work();
+                    parent.work_completed();
+                    events::worker_work_end  ( worker_index );
+#               if PSI_SWEATER_EXACT_WORKER_SELECTION
+                    // No fence needed: a worker is not asleep or about to be
+                    // until it announces it (see the idle set), and the
+                    // announcement is what pairs with the producers.
+                    self.executing_.store( false, std::memory_order_relaxed );
+#               endif // EWS
+                }
+            };
+
             // One-shot per-worker init hook (weak no-op unless a consumer
             // overrides it — e.g. rama installs mimalloc's mi_thread_init).
             events::worker_thread_init( worker_index );
@@ -188,23 +238,50 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
                     PSI_LIKELY( queue.dequeue_from_producer( work, *producer_token ) )
                 ) [[ likely ]]
                 {
-                    events::worker_work_begin( worker_index );
-                    work();
-                    parent.work_completed();
-                    events::worker_work_end  ( worker_index );
+                    run();
                 }
 #           endif // EWS
                 // Work stealing for EWS
                 while ( queue.dequeue( work, consumer_token ) ) [[ likely ]]
                 {
-                    events::worker_work_begin( worker_index );
-                    work();
-                    parent.work_completed();
-                    events::worker_work_end  ( worker_index );
+                    run();
                 }
 
+#           if PSI_SWEATER_EXACT_WORKER_SELECTION
+                // A signal that is already waiting is a look at the queue that
+                // somebody asked for: take it and look, without anything
+                // else (the common case of a stream of items, each of which
+                // signals).
+                if ( !thrd_lite::slow_thread_signals && work_event.try_wait() )
+                    continue;
+#           endif // EWS
                 if ( PSI_UNLIKELY( exit.load( std::memory_order_relaxed ) ) )
                     return;
+                // Neither sleep past an item that is still queued: the
+                // dequeues above can miss one that concurrent dequeues are in
+                // the middle of taking (they only look empty), and every
+                // producer has signalled someone else. Announce that this
+                // worker waits (see the idle set) before looking once more:
+                // either an item that is queued meanwhile is seen here, or
+                // its producer sees the announcement and signals this worker.
+#           if PSI_SWEATER_EXACT_WORKER_SELECTION
+                if ( !thrd_lite::slow_thread_signals )
+                {
+                    parent.set_idle( worker_index );
+                    if ( !queue.empty() ) [[ unlikely ]]
+                    {
+                        parent.withdraw_idle( worker_index );
+                        std::this_thread::yield();
+                        continue;
+                    }
+                }
+                else
+#           endif // EWS
+                if ( !queue.empty() ) [[ unlikely ]]
+                {
+                    std::this_thread::yield();
+                    continue;
+                }
                 events::worker_sleep_begin( worker_index );
 #           if PSI_SWEATER_SPIN_BEFORE_SUSPENSION
                 work_event.wait( worker_spin_count );
@@ -213,18 +290,21 @@ auto shop::worker_loop( [[ maybe_unused ]] hardware_concurrency_t const worker_i
 #           endif // PSI_SWEATER_SPIN_BEFORE_SUSPENSION
                 events::worker_sleep_end  ( worker_index );
 #           if PSI_SWEATER_EXACT_WORKER_SELECTION
-                // Freshly woken with work still in flight: continue the spread
-                // wake tree (see propagate_spread_wake) before starting to
-                // consume. Keyed off the shop-wide item counter, NOT the
-                // queue's own view: moodycamel consumers can observe a
-                // spuriously empty queue while token-enqueued items exist,
-                // and a false negative here can strand a sleeping worker
-                // whose token items the (also-fallible) stealing consumers
-                // never reach -- a join deadlock (caught by TSan-scheduled
-                // stress runs). A false POSITIVE (counter > 0 for work that
-                // is merely executing) just costs two redundant notifies.
-                if ( !thrd_lite::slow_thread_signals && parent.number_of_items() != 0 )
-                    parent.propagate_spread_wake( worker_index );
+                // Woken (by a claim, which cleared the bit, or by a signal sent
+                // to this worker in particular, which did not).
+                if ( !thrd_lite::slow_thread_signals )
+                {
+                    parent.withdraw_idle( worker_index );
+                    // Freshly woken with work still in flight: continue the
+                    // spread wake tree (see propagate_spread_wake) before
+                    // starting to consume. Keyed off the shop-wide item
+                    // counter, which can be ahead of what the queue shows
+                    // (moodycamel consumers can observe a spuriously empty
+                    // queue while items exist). A false positive (items that
+                    // are merely executing) costs a look at two idle bits.
+                    if ( parent.number_of_items() != 0 )
+                        parent.propagate_spread_wake( worker_index );
+                }
 #           endif // EWS
             }
         }
@@ -475,6 +555,9 @@ void shop::create_pool( hardware_concurrency_t const size )
     pool_ = { p_workers.get(), size };
 #endif // !PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
 
+#   if PSI_SWEATER_EXACT_WORKER_SELECTION
+    idle_ = std::make_unique<idle_word[]>( ( size + idle_group - 1U ) / idle_group ); // zeroed: workers set their own bits
+#   endif // EWS
     for ( hardware_concurrency_t worker_index{ 0 }; worker_index < size; ++worker_index )
     {
 #   if PSI_SWEATER_EXACT_WORKER_SELECTION
@@ -497,6 +580,9 @@ void shop::stop_and_destroy_pool() noexcept
     wake_all_workers();
     for ( auto & worker : pool_ )
         worker.join();
+#if PSI_SWEATER_EXACT_WORKER_SELECTION
+    idle_.reset();
+#endif
 #if PSI_SWEATER_MAX_HARDWARE_CONCURRENCY
     pool_.clear();
 #else
@@ -597,7 +683,7 @@ auto shop::dispatch_workers
         }
         BOOST_ASSERT( number_of_slices );
         // Wake only the FIRST worker of this dispatch run (the wake-tree root);
-        // the rest are woken by the workers themselves (propagate_spread_wake) --
+        // the rest are woken by the workers themselves (the worker loop) --
         // off the caller's critical path.
         BOOST_VERIFY( pool_[ worker_index ].enqueue( std::make_move_iterator( slices ), number_of_slices, queue_, /*notify:*/ work_part == 0 ) ); //...mrmlj...todo err handling
         iteration = end_iteration;
@@ -875,7 +961,7 @@ bool shop::spread_work
                     work_semaphore_.signal( number_of_dispatched_work_parts );
                 else
 #           endif
-                    wake_all_workers();
+                    wake_idle( number_of_dispatched_work_parts, no_worker );
                 events::worker_bulk_signal_end();
             }
             else
@@ -1013,7 +1099,7 @@ shop::worker_thread & shop::next_dispatch_target() noexcept
     auto const workers{ number_of_worker_threads() };
     BOOST_ASSUME( workers > 0 );
     // Depth-bounded sticky dispatch: stay on the current target while its
-    // backlog is small, spill to the next worker only once it piles up. The
+    // backlog is small, spill to another worker only once it piles up. The
     // backlog proxy is the target's event semaphore's unconsumed-token count
     // (one signal per enqueued item; an awake worker burns leftover tokens
     // through its empty-drain wait() cycles, so the count only accumulates
@@ -1030,15 +1116,62 @@ shop::worker_thread & shop::next_dispatch_target() noexcept
     // where it matters (items long enough to overlap) and traded for syscall
     // elision only where it does not (items shorter than the dispatch cost).
     // The stealing dequeue path remains the backstop for any imbalance.
+    // The token count says nothing about the item the worker is running (it
+    // consumed that token when it woke up), so a worker busy with a long item
+    // shows no backlog: executing_ covers that - an item queued behind it
+    // would wait for that item to finish while the rest of the pool sleeps
+    // (the sleeping workers would only steal it once signalled).
     constexpr std::int32_t sticky_dispatch_depth{ 2 };
-    auto rotor { dispatch_rotor_.load( std::memory_order_relaxed ) };
-    auto target{ &pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ] };
-    if ( target->event_.pending() > sticky_dispatch_depth )
+    auto const rotor { dispatch_rotor_.load( std::memory_order_relaxed ) };
+    auto &     target{ pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ] };
+    if ( !target.executing_.load( std::memory_order_relaxed ) && ( target.event_.pending() <= sticky_dispatch_depth ) ) [[ likely ]]
+        return target;
+    // Spill to a worker that waits for work, if there is one...
+    for ( hardware_concurrency_t word{ 0 }; word * idle_group < workers; ++word )
     {
-        rotor  = dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) + 1;
-        target = &pool_[ static_cast<hardware_concurrency_t>( rotor % workers ) ];
+        auto const idle{ idle_[ word ].bits.load( std::memory_order_relaxed ) };
+        if ( idle )
+        {
+            auto const found{ static_cast<hardware_concurrency_t>( word * idle_group + std::countr_zero( idle ) ) };
+            dispatch_rotor_.store( found, std::memory_order_relaxed );
+            return pool_[ found ];
+        }
     }
-    return *target;
+    // ...or spread the backlog round-robin when nobody waits.
+    auto const next{ dispatch_rotor_.fetch_add( 1, std::memory_order_relaxed ) + 1 };
+    return pool_[ static_cast<hardware_concurrency_t>( next % workers ) ];
+}
+
+bool shop::enqueue_fire( work_t && work ) noexcept
+{
+    return enqueue_on( next_dispatch_target(), std::move( work ) );
+}
+
+// The target may have started running an item since it was picked, leaving
+// the work queued behind it: the signal -> fence -> executing_ load half of the
+// pairing with the worker loop's executing_ store -> fence -> token check, and
+// then a worker that waits is woken to steal the item.
+bool shop::enqueue_on( worker_thread & target, work_t && work ) noexcept
+{
+    auto const enqueued{ target.enqueue( std::move( work ), queue_ ) }; // ends with the signal, a read-modify-write
+    fence_after_rmw();
+    if ( target.executing_.load( std::memory_order_relaxed ) ) [[ unlikely ]]
+        wake_idle( 1, static_cast<hardware_concurrency_t>( &target - &pool_[ 0 ] ) );
+    return enqueued;
+}
+
+void shop::set_idle( hardware_concurrency_t const worker_index ) noexcept
+{
+    idle_[ worker_index / idle_group ].bits.fetch_or( std::uint64_t{ 1 } << ( worker_index % idle_group ), std::memory_order_seq_cst );
+    fence_after_rmw();
+}
+
+void shop::withdraw_idle( hardware_concurrency_t const worker_index ) noexcept
+{
+    auto const bit { std::uint64_t{ 1 } << ( worker_index % idle_group ) };
+    auto &     word{ idle_[ worker_index / idle_group ].bits };
+    if ( word.load( std::memory_order_relaxed ) & bit ) // not claimed
+        word.fetch_and( ~bit, std::memory_order_relaxed );
 }
 
 void shop::worker_thread::notify() noexcept { event_.signal(); }
@@ -1071,6 +1204,16 @@ bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, 
     return success;
 }
 
+bool shop::claim_idle( hardware_concurrency_t const worker_index ) noexcept
+{
+    auto const bit{ std::uint64_t{ 1 } << ( worker_index % idle_group ) };
+    auto &     word{ idle_[ worker_index / idle_group ].bits };
+    if ( !( word.load( std::memory_order_relaxed ) & bit ) || !( word.fetch_and( ~bit, std::memory_order_seq_cst ) & bit ) )
+        return false;
+    pool_[ worker_index ].notify(); // the bit was set: it is ours to signal
+    return true;
+}
+
 // Spread wake propagation: a worker woken with (spread) work still in
 // flight wakes its two children in the binary wake tree over ABSOLUTE
 // worker indices, rooted at worker 0 (children of i are 2i+1 / 2i+2 --
@@ -1080,18 +1223,57 @@ bool shop::worker_thread::enqueue( std::move_iterator< work_t * > const p_work, 
 // its critical path (the measured dominant term of small-spread joins: one
 // syscall per worker, ~1-4 us each). The caller wakes only the tree root;
 // propagation is a heuristic best-effort -- a chain that skips a worker
-// (HMP dispatch starting mid-pool, a worker draining the queue early)
-// simply means the remaining work is done by the already-awake threads and
-// the (always-participating, work-stealing) caller.
+// (HMP dispatch starting mid-pool, a worker draining the queue early, a
+// worker that is not idle) simply means the remaining work is done by the
+// already-awake threads and the (always-participating, work-stealing)
+// caller. The children are the workers whose queues the slices were handed
+// to, which is why they and not just any idle workers are woken here.
 void shop::propagate_spread_wake( hardware_concurrency_t const worker_index ) noexcept
 {
     auto const workers{ number_of_worker_threads() };
     auto const left   { static_cast<hardware_concurrency_t>( 2 * worker_index + 1 ) };
     auto const right  { static_cast<hardware_concurrency_t>( 2 * worker_index + 2 ) };
-    if ( left  < workers ) { pool_[ left  ].notify(); }
-    if ( right < workers ) { pool_[ right ].notify(); }
+    if ( left  < workers ) { claim_idle( left  ); }
+    if ( right < workers ) { claim_idle( right ); }
 }
+
 #endif // PSI_SWEATER_EXACT_WORKER_SELECTION
+
+hardware_concurrency_t shop::wake_idle( hardware_concurrency_t count, [[ maybe_unused ]] hardware_concurrency_t const skip ) noexcept
+{
+#if PSI_SWEATER_EXACT_WORKER_SELECTION
+    if ( !thrd_lite::slow_thread_signals )
+    {
+        std::atomic_thread_fence( std::memory_order_seq_cst ); // queued work -> fence -> the set, see the idle set's pairing
+        hardware_concurrency_t woken{ 0 };
+        auto const words{ ( number_of_worker_threads() + idle_group - 1U ) / idle_group };
+        for ( hardware_concurrency_t word_index{ 0 }; ( word_index < words ) && count; ++word_index )
+        {
+            auto & word{ idle_[ word_index ].bits };
+            auto   idle{ word.load( std::memory_order_relaxed ) };
+            if ( ( skip != no_worker ) && ( skip / idle_group == word_index ) )
+                idle &= ~( std::uint64_t{ 1 } << ( skip % idle_group ) );
+            while ( idle && count )
+            {
+                auto const bit_index{ static_cast<unsigned>( std::countr_zero( idle ) ) };
+                idle &= idle - 1;
+                if ( claim_idle( static_cast<hardware_concurrency_t>( word_index * idle_group + bit_index ) ) )
+                {
+                    ++woken;
+                    --count;
+                }
+            }
+        }
+        return woken;
+    }
+#endif // EWS
+#if !PSI_SWEATER_EXACT_WORKER_SELECTION || defined( __ANDROID__ )
+    work_semaphore_.signal( count );
+    return count;
+#else
+    BOOST_UNREACHABLE();
+#endif
+}
 
 #ifdef __clang__
 #pragma clang diagnostic pop
