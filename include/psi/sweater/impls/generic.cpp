@@ -995,18 +995,6 @@ void shop::wake_all_workers() noexcept
     }
 }
 
-//...mrmlj...allowing underflow/overflow because of late fetch_add in fire_and_forget and concurrent invocation 'races'
-void shop::work_added    ( hardware_concurrency_t const items ) noexcept
-{
-    work_items_.fetch_add( items, std::memory_order_acquire );
-    if ( items ) { detail::in_flight_inc(); }
-}
-void shop::work_added_untracked( hardware_concurrency_t const items ) noexcept
-{
-    work_items_.fetch_add( items, std::memory_order_acquire );
-}
-void shop::work_completed(                                    ) noexcept { /*thrd_lite::detail::underflow_checked_dec( work_items_        );*/ work_items_.fetch_sub( 1    , std::memory_order_release ); }
-
 #if PSI_SWEATER_EXACT_WORKER_SELECTION
 shop::worker_thread & shop::next_dispatch_target() noexcept
 {
@@ -1040,8 +1028,6 @@ shop::worker_thread & shop::next_dispatch_target() noexcept
     }
     return *target;
 }
-
-void shop::worker_thread::notify() noexcept { event_.signal(); }
 
 bool shop::worker_thread::enqueue( work_t && __restrict work, my_queue & __restrict queue ) noexcept
 {
