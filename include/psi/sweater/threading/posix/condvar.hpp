@@ -17,11 +17,7 @@
 //------------------------------------------------------------------------------
 #include "mutex.hpp"
 
-#include <algorithm>
-#include <cerrno>
 #include <chrono>
-#include <ctime>
-#include <limits>
 #include <mutex>
 #include <pthread.h>
 //------------------------------------------------------------------------------
@@ -38,7 +34,8 @@ namespace psi::thrd_lite
 //    CLOCK_MONOTONIC condattr clock.
 #if defined( __APPLE__ )
 #   define PSI_THRD_LITE_CONDVAR_RELATIVE_NP
-#elif ( defined( __GLIBC__ ) && ( ( __GLIBC__ > 2 ) || ( ( __GLIBC__ == 2 ) && ( __GLIBC_MINOR__ >= 30 ) ) ) ) ||       ( defined( __ANDROID__ ) && ( __ANDROID_API__ >= 30 ) )
+#elif ( defined( __GLIBC__ ) && ( ( __GLIBC__ > 2 ) || ( ( __GLIBC__ == 2 ) && ( __GLIBC_MINOR__ >= 30 ) ) ) ) || \
+      ( defined( __ANDROID__ ) && ( __ANDROID_API__ >= 30 ) )
 #   define PSI_THRD_LITE_CONDVAR_CLOCKWAIT
 #else
 #   define PSI_THRD_LITE_CONDVAR_MONOTONIC_ATTR
@@ -70,12 +67,7 @@ public:
     // spurious wakeup: callers recheck their predicate, see wait_until()).
     // A negative timeout is treated as zero.
     bool wait( lock_t  & lock                     , std::chrono::milliseconds const timeout ) noexcept { return wait( *lock.mutex(), timeout ); }
-    bool wait( mutex_t & mutex /*must be locked*/ , std::chrono::milliseconds const timeout ) noexcept
-    {
-        auto const result{ timed_wait( mutex.mutex_, timeout ) };
-        BOOST_ASSERT( ( result == 0 ) || ( result == ETIMEDOUT ) );
-        return result == 0;
-    }
+    bool wait( mutex_t & mutex /*must be locked*/ , std::chrono::milliseconds timeout ) noexcept;
 
     // Waits until pred() holds or the deadline passes; returns pred()'s final value.
     template <typename Pred>
@@ -92,67 +84,13 @@ public:
     }
 
 private:
-    // The timeout split into a timespec, saturated instead of overflowing.
-    static ::timespec add( ::timespec ts, std::chrono::milliseconds const timeout ) noexcept
-    {
-        using sec_t = decltype( ts.tv_sec );
-        auto const ms  { std::max<std::chrono::milliseconds::rep>( timeout.count(), 0 ) };
-        auto const secs{ ms / 1000 };
-        ts.tv_nsec += static_cast<long>( ms % 1000 ) * 1'000'000L;
-        if ( ts.tv_nsec >= 1'000'000'000L )
-        {
-            ts.tv_nsec -= 1'000'000'000L;
-            ++ts.tv_sec;
-        }
-        auto constexpr max_sec{ std::numeric_limits<sec_t>::max() };
-        if ( secs > static_cast<std::chrono::milliseconds::rep>( max_sec - ts.tv_sec ) )
-            ts.tv_sec = max_sec;
-        else
-            ts.tv_sec += static_cast<sec_t>( secs );
-        return ts;
-    }
-
-#if !defined( PSI_THRD_LITE_CONDVAR_RELATIVE_NP )
-    static ::timespec monotonic_deadline( std::chrono::milliseconds const timeout ) noexcept
-    {
-        ::timespec now;
-        BOOST_VERIFY( ::clock_gettime( CLOCK_MONOTONIC, &now ) == 0 );
-        return add( now, timeout );
-    }
-#endif
-
-    int timed_wait( pthread_mutex_t & mutex, std::chrono::milliseconds const timeout ) noexcept
-    {
-#if   defined( PSI_THRD_LITE_CONDVAR_RELATIVE_NP )
-        auto const relative{ add( ::timespec{}, timeout ) };
-        return ::pthread_cond_timedwait_relative_np( &cv_, &mutex, &relative );
-#elif defined( PSI_THRD_LITE_CONDVAR_CLOCKWAIT )
-        auto const deadline{ monotonic_deadline( timeout ) };
-        return ::pthread_cond_clockwait( &cv_, &mutex, CLOCK_MONOTONIC, &deadline );
-#else
-        auto const deadline{ monotonic_deadline( timeout ) };
-        return ::pthread_cond_timedwait( &cv_, &mutex, &deadline );
-#endif
-    }
-
 #if defined( PSI_THRD_LITE_CONDVAR_MONOTONIC_ATTR )
-    static void init( pthread_cond_t & cv ) noexcept
-    {
-        ::pthread_condattr_t attr;
-        BOOST_VERIFY( ::pthread_condattr_init    ( &attr                  ) == 0 );
-        BOOST_VERIFY( ::pthread_condattr_setclock( &attr, CLOCK_MONOTONIC ) == 0 );
-        BOOST_VERIFY( ::pthread_cond_init        ( &cv  , &attr           ) == 0 );
-        BOOST_VERIFY( ::pthread_condattr_destroy ( &attr                  ) == 0 );
-    }
+    static void init( pthread_cond_t & ) noexcept; // a CLOCK_MONOTONIC condattr clock
 #endif
 
 private:
     pthread_cond_t cv_;
 }; // class pthread_condition_variable
-
-#undef PSI_THRD_LITE_CONDVAR_RELATIVE_NP
-#undef PSI_THRD_LITE_CONDVAR_CLOCKWAIT
-#undef PSI_THRD_LITE_CONDVAR_MONOTONIC_ATTR
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite

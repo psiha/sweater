@@ -19,7 +19,6 @@
 
 #include <boost/assert.hpp>
 
-#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
@@ -62,11 +61,7 @@ public:
     // Same contract as above (false = timed out); a negative timeout is treated
     // as zero and an overlong one is clamped just short of INFINITE.
     bool wait( lock_t  & lock                , std::chrono::milliseconds const timeout ) noexcept { return wait( *lock.mutex(), timeout ); }
-    bool wait( mutex_t & m /*must be locked*/, std::chrono::milliseconds const timeout ) noexcept
-    {
-        auto const ms{ std::clamp<std::chrono::milliseconds::rep>( timeout.count(), 0, INFINITE - 1 ) };
-        return wait( m, static_cast<std::uint32_t>( ms ) );
-    }
+    bool wait( mutex_t & m /*must be locked*/, std::chrono::milliseconds timeout ) noexcept;
 
     // Waits until pred() holds or the deadline passes; returns pred()'s final value.
     template <typename Pred>
