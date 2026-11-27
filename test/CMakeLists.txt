@@ -94,6 +94,9 @@ endif()
 # smoke_test.cpp / sweat_shop_stress_test.cpp.
 sweater_add_test( sweater_future_test future_test.cpp )
 
+# psi::thrd_lite::condition_variable timed wait + wait_until() (condvar.hpp).
+sweater_add_test( sweater_condvar_test condvar_test.cpp )
+
 # Standalone psi::thrd_lite::outcome_promise/outcome_future pair
 # (outcome_future.hpp) -- only built when the Outcome dependency is opted
 # into (see sweater.cmake's PSI_SWEATER_WITH_OUTCOME block).

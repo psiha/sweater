@@ -18,6 +18,10 @@
 #include "mutex.hpp"
 
 #include <boost/assert.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <mutex>
 
 #include <windows.h>
@@ -53,6 +57,29 @@ public:
         auto const result( ::SleepConditionVariableSRW( &cv_, &m.lock_, milliseconds, 0/*CONDITION_VARIABLE_LOCKMODE_SHARED*/ ) );
         BOOST_ASSERT( result || ::GetLastError() == ERROR_TIMEOUT );
         return result != false;
+    }
+
+    // Same contract as above (false = timed out); a negative timeout is treated
+    // as zero and an overlong one is clamped just short of INFINITE.
+    bool wait( lock_t  & lock                , std::chrono::milliseconds const timeout ) noexcept { return wait( *lock.mutex(), timeout ); }
+    bool wait( mutex_t & m /*must be locked*/, std::chrono::milliseconds const timeout ) noexcept
+    {
+        auto const ms{ std::clamp<std::chrono::milliseconds::rep>( timeout.count(), 0, INFINITE - 1 ) };
+        return wait( m, static_cast<std::uint32_t>( ms ) );
+    }
+
+    // Waits until pred() holds or the deadline passes; returns pred()'s final value.
+    template <typename Pred>
+    bool wait_until( lock_t & lock, std::chrono::steady_clock::time_point const deadline, Pred pred ) noexcept( noexcept( pred() ) )
+    {
+        while ( !pred() )
+        {
+            auto const remaining{ deadline - std::chrono::steady_clock::now() };
+            if ( remaining <= remaining.zero() )
+                return false;
+            wait( lock, std::chrono::ceil<std::chrono::milliseconds>( remaining ) );
+        }
+        return true;
     }
 
 private:
