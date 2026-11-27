@@ -13,9 +13,7 @@
 ///
 ////////////////////////////////////////////////////////////////////////////////
 //------------------------------------------------------------------------------
-#include "condvar.hpp"
-
-#include <algorithm>
+#include "../condvar.hpp"
 //------------------------------------------------------------------------------
 namespace psi::thrd_lite
 {
@@ -23,8 +21,7 @@ namespace psi::thrd_lite
 
 bool win32_condition_variable::wait( mutex_t & m /*must be locked*/, std::chrono::milliseconds const timeout ) noexcept
 {
-    auto const ms{ std::clamp<std::chrono::milliseconds::rep>( timeout.count(), 0, INFINITE - 1 ) };
-    return wait( m, static_cast<std::uint32_t>( ms ) );
+    return wait( m, clamp_timeout_ms( timeout ) );
 }
 
 //------------------------------------------------------------------------------

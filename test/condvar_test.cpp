@@ -121,6 +121,49 @@ TEST( CondVar, MovedFromAndMovedToBothWait )
     while ( target.wait( lock, 1ms ) ) {}
 }
 
+TEST( CondVar, MoveLeavesTheSourceIntact )
+{
+    // The move constructs a fresh condvar: a source with a waiter keeps its waiter.
+    condition_variable source;
+    condition_variable::mutex_t m;
+    bool ready{ false };
+    std::thread waiter{ [ & ] {
+        lock_t lock{ m };
+        while ( !ready )
+            source.wait( lock );
+    } };
+    std::this_thread::sleep_for( 20ms );
+    {
+        condition_variable target{ std::move( source ) }; // moving and destroying must not disturb the waiter
+    }
+    { lock_t const lock{ m }; ready = true; }
+    source.notify_all();
+    waiter.join();
+}
+
+TEST( CondVar, OverlongTimeoutIsClamped )
+{
+    EXPECT_EQ( clamp_timeout_ms( -5ms                                    ), 0u          );
+    EXPECT_EQ( clamp_timeout_ms( 1500ms                                  ), 1500u       );
+    EXPECT_EQ( clamp_timeout_ms( std::chrono::milliseconds::max()        ), 0xFFFF'FFFEu );
+
+    condition_variable cv;
+    condition_variable::mutex_t m;
+    lock_t lock{ m };
+    std::thread notifier{ [ & ] {
+        std::this_thread::sleep_for( 20ms );
+        lock_t const l{ m };
+        cv.notify_one();
+    } };
+    cv.wait( lock, std::chrono::milliseconds::max() ); // must neither overflow nor return an error
+    notifier.join();
+}
+
+#if !defined( _WIN32 ) && !defined( PSI_THRD_LITE_CONDVAR_MONOTONIC_ATTR )
+// Global/static condvars must not need dynamic initialisation.
+constinit condition_variable static_cv;
+#endif
+
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
 //------------------------------------------------------------------------------

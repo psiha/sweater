@@ -97,6 +97,23 @@ sweater_add_test( sweater_future_test future_test.cpp )
 # psi::thrd_lite::condition_variable timed wait + wait_until() (condvar.hpp).
 sweater_add_test( sweater_condvar_test condvar_test.cpp )
 
+# The same tests against the condattr (CLOCK_MONOTONIC + pthread_cond_init) fallback
+# implementation, which the stock Apple/glibc builds never select (and Apple cannot build). The condvar .cpp is
+# compiled straight into the executable (the library is deliberately not linked) so the
+# forced define cannot disagree with the library's translation units.
+if ( NOT WIN32 AND NOT APPLE ) # (Apple has no pthread_condattr_setclock)
+    find_package( Threads REQUIRED )
+    add_executable( sweater_condvar_monotonic_attr_test condvar_test.cpp ../include/psi/sweater/threading/posix/condvar.cpp )
+    target_compile_definitions( sweater_condvar_monotonic_attr_test PRIVATE PSI_THRD_LITE_CONDVAR_MONOTONIC_ATTR )
+    target_include_directories( sweater_condvar_monotonic_attr_test PRIVATE ../include )
+    if ( build_SOURCE_DIR )
+        target_include_directories( sweater_condvar_monotonic_attr_test PRIVATE "${build_SOURCE_DIR}/include" )
+    endif()
+    target_link_libraries( sweater_condvar_monotonic_attr_test PRIVATE GTest::gtest_main Boost::boost Threads::Threads )
+    set_target_properties( sweater_condvar_monotonic_attr_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test" )
+    add_test( NAME sweater_condvar_monotonic_attr_test COMMAND sweater_condvar_monotonic_attr_test )
+endif()
+
 # Standalone psi::thrd_lite::outcome_promise/outcome_future pair
 # (outcome_future.hpp) -- only built when the Outcome dependency is opted
 # into (see sweater.cmake's PSI_SWEATER_WITH_OUTCOME block).
