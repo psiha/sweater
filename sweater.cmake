@@ -172,6 +172,7 @@ endif()
 
 
 set( sources_threading_posix
+    ${src_root}/threading/posix/condvar.cpp
     ${src_root}/threading/posix/condvar.hpp
     ${src_root}/threading/posix/mutex.hpp
     ${src_root}/threading/posix/rw_mutex.hpp
@@ -187,6 +188,7 @@ endif()
 
 
 set( sources_threading_windows
+    ${src_root}/threading/windows/condvar.cpp
     ${src_root}/threading/windows/condvar.hpp
     ${src_root}/threading/windows/futex.cpp
     ${src_root}/threading/windows/mutex.hpp

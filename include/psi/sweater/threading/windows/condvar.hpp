@@ -18,6 +18,9 @@
 #include "mutex.hpp"
 
 #include <boost/assert.hpp>
+
+#include <chrono>
+#include <cstdint>
 #include <mutex>
 
 #include <windows.h>
@@ -30,14 +33,16 @@ namespace psi::thrd_lite
 // http://developers.slashdot.org/story/07/02/26/1211220/pthreads-vs-win32-threads
 // http://nasutechtips.blogspot.com/2010/11/slim-read-write-srw-locks.html
 
-class win32_condition_variable
+class win32_condition_variable : public condvar_wait_until<win32_condition_variable>
 {
 public:
     using mutex_t = win32_slim_mutex;
     using lock_t  = std::unique_lock<mutex_t>;
 
     win32_condition_variable(                                   ) noexcept : cv_( CONDITION_VARIABLE_INIT ) {}
-    win32_condition_variable( win32_condition_variable && other ) noexcept : cv_{ other.cv_ } { other.cv_ = CONDITION_VARIABLE_INIT; }
+    // A condition variable must have no waiters when moved: the new object is
+    // freshly initialised and the source is left alone.
+    win32_condition_variable( win32_condition_variable &&       ) noexcept : cv_( CONDITION_VARIABLE_INIT ) {}
     win32_condition_variable( win32_condition_variable const &  ) = delete ;
    ~win32_condition_variable(                                   ) = default;
 
@@ -55,9 +60,14 @@ public:
         return result != false;
     }
 
+    // Same contract as above (false = timed out); a negative timeout is treated
+    // as zero and an overlong one is clamped just short of INFINITE.
+    bool wait( lock_t  & lock                , std::chrono::milliseconds const timeout ) noexcept { return wait( *lock.mutex(), timeout ); }
+    bool wait( mutex_t & m /*must be locked*/, std::chrono::milliseconds timeout ) noexcept;
+
 private:
     ::CONDITION_VARIABLE cv_;
-}; // class win32_condition_variable
+}; // class win32_condition_variable : public condvar_wait_until<win32_condition_variable>
 
 //------------------------------------------------------------------------------
 } // namespace psi::thrd_lite
